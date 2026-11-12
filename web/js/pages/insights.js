@@ -1,10 +1,9 @@
 // Анализ и подсказки: найденные проблемы по сайтам и серверу, оценка показателей, справочник сценариев.
 import { api } from '../api.js';
-import { h, mount, icon, badge, kpi, tabs, segmented, loading, empty, fmtNum, fmtMs, fmtPct, fmtInt, debounce } from '../ui.js';
-import { ctx } from '../app.js';
+import { h, mount, icon, badge, kpi, tabs, segmented, loading, empty, fmtNum, fmtMs, fmtPct, fmtInt, debounce, toast, table, fmtDate, popover } from '../ui.js';
+import { ctx, can } from '../app.js';
 import { loadCatalog, findingView, levelOf, metricHint, LEVEL_CLASS, LEVEL_TEXT } from '../advice.js';
 import { openHelp } from '../help.js';
-import { popover } from '../ui.js';
 
 const RANGES = [['900', '15 мин'], ['3600', '1 час'], ['21600', '6 часов'], ['86400', '24 часа'], ['604800', '7 дней']];
 
@@ -44,12 +43,16 @@ export async function render(root) {
     mount(tabBar, tabs([
       { id: 'found', label: 'Найдено', badge: (c.crit + c.warn + c.info) || null, badgeKind: c.crit ? 'bad' : c.warn ? 'warn' : '' },
       { id: 'metrics', label: 'Показатели' },
+      { id: 'history', label: 'История' },
       { id: 'catalog', label: 'Справочник сценариев', badge: cat.scenarios.length },
+      { id: 'thresholds', label: 'Пороги' },
       { id: 'muted', label: 'Скрытые', badge: res.muted.length || null },
     ], st.tab, (t) => { st.tab = t; draw(); }));
     if (st.tab === 'found') drawFound();
     else if (st.tab === 'metrics') drawMetrics();
     else if (st.tab === 'catalog') drawCatalog();
+    else if (st.tab === 'history') drawHistory();
+    else if (st.tab === 'thresholds') drawThresholds();
     else drawMuted();
   }
 
@@ -116,7 +119,7 @@ export async function render(root) {
       mount(list, items.length ? Object.values(groups).map(g => h('div', { class: 'mb' }, h('h3', { class: 'group-title' }, `${g.title} (${g.items.length})`),
         g.items.map(s => h('div', { class: 'scenario' },
           h('h4', {}, s.title, firing.has(s.id) ? badge('сейчас найдено', 'bad') : null, muted.has(s.id) ? badge('скрыто', 'outline') : null),
-          h('div', { class: 'when' }, 'Когда: ', s.when),
+          h('div', { class: 'when' }, 'Когда: ', s.when, s.custom ? h('div', { class: 'status-4' }, s.custom) : null),
           h('div', { class: 'small' }, s.what),
           s.causes.length || s.actions.length ? h('details', { class: 'small mt' }, h('summary', {}, 'Причины и действия'),
             h('div', { class: 'grid g2 mt' },
@@ -129,6 +132,54 @@ export async function render(root) {
     mount(box, h('p', { class: 'muted small' }, 'Все ситуации, которые распознаёт встроенный анализ, с условиями срабатывания. Тот же справочник — в документации, глава 18.'),
       h('div', { class: 'mb' }, search), list);
     drawList();
+  }
+
+  async function drawHistory() {
+    mount(box, loading());
+    const ev = await api('/events', { query: { source: 'insights', limit: 500 } });
+    if (st.tab !== 'history') return;
+    mount(box, h('p', { class: 'muted small' }, 'Когда проблемы уровня «проблема» и «внимание» появлялись и устранялись (анализ последних 15 минут выполняется раз в минуту).'),
+      ev.length ? table([
+        { title: 'Время', render: (e) => h('span', { class: 'small nowrap' }, fmtDate(e.ts, { sec: false })) },
+        { title: '', render: (e) => badge(e.level === 'error' ? 'проблема' : e.level === 'warning' ? 'внимание' : 'устранено', e.level === 'error' ? 'bad' : e.level === 'warning' ? 'warn' : 'good') },
+        { title: 'Событие', render: (e) => h('span', {}, e.message) },
+      ], ev) : empty('История пуста', 'Здесь появятся моменты обнаружения и устранения проблем.', null, 'history'));
+  }
+
+  function drawThresholds() {
+    const ids = Object.keys(cat.metrics).filter(k => cat.metrics[k].dir && cat.metrics[k].default_warn != null);
+    const edit = {};
+    const admin = can('admin');
+    const rows = ids.map(id => {
+      const m = cat.metrics[id];
+      edit[id] = { warn: m.warn, crit: m.crit };
+      const inp = (key) => h('input', { type: 'number', step: 'any', min: 0, value: m[key], disabled: !admin, style: { width: '110px' },
+        oninput: (e) => { edit[id][key] = e.target.value === '' ? null : Number(e.target.value); } });
+      return h('tr', {}, h('td', {}, h('b', {}, m.label), m.custom ? badge('свои', 'info') : null, h('div', { class: 'muted small' }, m.dir === 'above' ? 'плохо, когда выше порога' : 'плохо, когда ниже порога')),
+        h('td', {}, inp('warn'), m.unit ? h('span', { class: 'muted small' }, ' ' + m.unit) : null),
+        h('td', {}, inp('crit'), m.unit ? h('span', { class: 'muted small' }, ' ' + m.unit) : null),
+        h('td', { class: 'muted small' }, `${m.default_warn} / ${m.default_crit}`),
+        h('td', {}, admin && m.custom ? h('button', { class: 'btn sm ghost', onclick: () => save({ [id]: null }) }, 'По умолчанию') : null));
+    });
+    const save = async (patch) => {
+      await api('/insights/thresholds', { method: 'PUT', body: { thresholds: patch } });
+      toast('Пороги сохранены', 'good');
+      Object.assign(cat, await loadCatalog(true));
+      load();
+    };
+    mount(box, h('p', { class: 'muted small' }, 'Пороги определяют цвет карточек показателей и срабатывание сценариев анализа (например, «Высокая доля ошибок 5xx» использует пороги «Ошибки 5xx»). Изменять может администратор.'),
+      h('div', { class: 'table-wrap' }, h('table', { class: 't' },
+        h('thead', {}, h('tr', {}, h('th', {}, 'Показатель'), h('th', {}, 'Внимание'), h('th', {}, 'Проблема'), h('th', {}, 'По умолчанию'), h('th', {}))),
+        h('tbody', {}, rows))),
+      admin ? h('div', { class: 'row mt' }, h('button', { class: 'btn primary', onclick: () => {
+        const patch = {};
+        for (const id of ids) {
+          const m = cat.metrics[id], e = edit[id];
+          if (e.warn !== m.warn || e.crit !== m.crit) patch[id] = { warn: e.warn ?? m.warn, crit: e.crit ?? m.crit };
+        }
+        if (!Object.keys(patch).length) { toast('Изменений нет', 'info'); return; }
+        save(patch);
+      } }, icon('check'), 'Сохранить пороги')) : null);
   }
 
   function drawMuted() {

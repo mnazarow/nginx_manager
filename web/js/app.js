@@ -210,6 +210,7 @@ async function route(keep = false) {
   const [path, qs] = hash.split('?');
   ctx.route = path; ctx.params = Object.fromEntries(new URLSearchParams(qs || ''));
   document.querySelector('.app')?.classList.remove('nav-open');
+  document.querySelectorAll('.modal-back, .popover').forEach(el => el.remove());
   const name = PAGES[path];
   const page = document.getElementById('page');
   if (!page) return;
@@ -220,16 +221,24 @@ async function route(keep = false) {
   const navItem = NAV.flatMap(g => g[1]).find(i => i[0] === path);
   topEls.title.textContent = navItem ? navItem[1] : '';
   document.title = (navItem ? navItem[1] + ' — ' : '') + 'Nginx Manager';
-  if (!keep) mount(page, loading());
+  // Каждый переход рисует страницу в собственный контейнер: если предыдущая страница ещё загружает данные,
+  // её запоздалый результат попадёт в отсоединённый контейнер и не затрёт новую страницу.
+  const seq = ++navSeq;
+  const view = h('div', { class: 'view' });
+  if (!keep) mount(view, loading());
+  mount(page, view);
   try {
     const mod = await import(`./pages/${name}.js`);
-    const cleanup = await mod.render(page, ctx);
+    if (seq !== navSeq) return;
+    const cleanup = await mod.render(view, ctx);
+    if (seq !== navSeq) { if (typeof cleanup === 'function') { try { cleanup(); } catch { /* */ } } return; }
     if (typeof cleanup === 'function') ctx.cleanup = cleanup;
   } catch (e) {
     console.error(e);
-    if (e.status !== 401) mount(page, h('div', { class: 'alert bad' }, 'Не удалось открыть страницу: ', e.message));
+    if (seq === navSeq && e.status !== 401) mount(page, h('div', { class: 'alert bad' }, 'Не удалось открыть страницу: ', e.message));
   }
 }
+let navSeq = 0;
 
 async function boot() {
   try {

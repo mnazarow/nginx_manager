@@ -1206,7 +1206,7 @@ class GlobalSettings(Model):
 # =============================================================================
 PANEL_TABS = [("stats", "Статистика и хранение"), ("network", "Сеть и внешний IP"), ("security", "Безопасность панели"),
               ("bans", "Блокировки IP"), ("acme", "Let's Encrypt"), ("monitor", "Мониторинг"),
-              ("backup", "Резервные копии")]
+              ("reports", "Отчёты"), ("backup", "Резервные копии")]
 
 
 class PanelSettings(Model):
@@ -1289,10 +1289,28 @@ class PanelSettings(Model):
                                      ph="203.0.113.0/24",
                                      help="Ваши офисы, мониторинг, партнёры. 127.0.0.1 и «Доступ к панели только с IP» "
                                           "не блокируются всегда")
+    # ---------------------------------------------------------------- регулярные отчёты
+    report_enabled: bool = F(False, label="Отправлять регулярный отчёт", tab="reports",
+                             help="Сводка нагрузки, ошибок, проблем по анализу и состояния в выбранные каналы")
+    report_period: Literal["day", "week"] = F("day", label="Период", tab="reports",
+                                              labels={"day": "Ежедневно (за прошедшие сутки)",
+                                                      "week": "Еженедельно (за прошедшие 7 суток)"})
+    report_hour: int = F(9, label="Час отправки", tab="reports", ge=0, le=23, help="По времени сервера")
+    report_weekday: Literal["0", "1", "2", "3", "4", "5", "6"] = F(
+        "0", label="День недели", tab="reports", show={"report_period": ["week"]},
+        labels={"0": "Понедельник", "1": "Вторник", "2": "Среда", "3": "Четверг", "4": "Пятница", "5": "Суббота",
+                "6": "Воскресенье"})
+    report_channels: List[int] = F(factory=list, label="Каналы", tab="reports", ui="channels",
+                                   help="Каналы настраиваются в разделе «Оповещения → Каналы уведомлений»")
+    insight_thresholds: Dict[str, Dict[str, float]] = F(factory=dict, label="Пороги анализа", ui="hidden",
+                                                        help="Свои пороги показателей (раздел «Анализ → Пороги»)")
     insights_muted: List[str] = F(factory=list, label="Скрытые подсказки анализа", ui="hidden",
                                   help="Сценарии, которые не показываются в «Анализе и подсказках»")
     backup_keep: int = F(14, label="Хранить автоматических копий", tab="backup", ge=1, le=365)
     backup_hour: int = F(3, label="Час ежедневного резервного копирования", tab="backup", ge=0, le=23)
+    backup_keep_update: int = F(5, label="Хранить копий перед обновлениями", tab="backup", ge=1, le=100,
+                                help="Копии базы, кода прежней версии и nginx.conf, которые делает update.sh и "
+                                     "nmctl backup. Ручные копии из панели не удаляются")
 
     @field_validator("panel_allow")
     @classmethod

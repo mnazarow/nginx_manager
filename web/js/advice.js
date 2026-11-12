@@ -108,7 +108,7 @@ function details(f, onChange) {
       f.causes?.length ? h('div', {}, h('h4', {}, 'Вероятные причины'), h('ul', {}, f.causes.map(c => h('li', {}, c)))) : null,
       f.actions?.length ? h('div', {}, h('h4', {}, 'Что сделать'), h('ol', {}, f.actions.map(c => h('li', {}, c)))) : null),
     ev && ev.rows && ev.rows.length ? h('div', {}, h('h4', {}, 'Данные'), table(ev.columns.map((c, i) => ({ title: c, num: i > 0 && typeof ev.rows[0][i] === 'number', render: (r) => r[i] == null ? '—' : typeof r[i] === 'number' ? r[i].toLocaleString('ru-RU') : h('span', { class: i === 0 ? 'mono small' : 'small' }, String(r[i])) })), ev.rows, { cls: 'compact' })) : null,
-    h('div', { class: 'muted small' }, h('b', {}, 'Условие: '), f.when),
+    h('div', { class: 'muted small' }, h('b', {}, 'Условие: '), f.when, f.custom ? h('div', {}, f.custom) : null),
     h('div', { class: 'row', style: { flexWrap: 'wrap' } },
       (f.links || []).map(l => h('a', { class: 'btn sm', href: l.href + (f.site !== '*' && ['#/analytics', '#/requests'].includes(l.href) ? `?site=${f.site}` : '') }, l.label)),
       f.doc?.page ? h('button', { class: 'btn sm', onclick: () => openHelp(f.doc.page, f.doc.section) }, icon('book'), 'Документация') : null,

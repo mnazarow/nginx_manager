@@ -4,18 +4,12 @@
 """
 import os
 import shutil
-import sys
-import tempfile
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
-os.environ.setdefault("NM_CONF_FILE", "/nonexistent")
-TMP = Path(tempfile.mkdtemp(prefix="nm-tests-"))
-os.environ.update(NM_DATA_DIR=str(TMP / "data"), NM_MANAGED_DIR=str(TMP / "managed"),
-                  NM_NGINX_CONF=str(TMP / "nginx.conf"), NM_LOG_DIR=str(TMP / "logs"), NM_CACHE_DIR=str(TMP / "cache"))
+TMP = Path(os.environ["NM_TEST_TMP"])  # готовит tests/conftest.py
 
 from app import validators as V  # noqa: E402
 from app.models import (Backend, BasicAuthUser, CacheSettings, GlobalSettings, Location, PanelSettings,  # noqa: E402
@@ -328,3 +322,23 @@ def test_insights_catalog_integrity():
     assert assess("err5", 50, requests=5) == "ok"          # мало данных
     assert assess("hit_ratio", 10, requests=500) == "warn" and assess("hit_ratio", 80, requests=500) == "ok"
     assert assess("connections", 950, extra={"capacity": 1000}) == "crit"
+
+
+def test_prune_backups():
+    import time as _t
+    from app.config import settings
+    from app.services.backup import prune_backups
+    d = settings.backups_dir
+    d.mkdir(parents=True, exist_ok=True)
+    for i in range(8):
+        for name in (f"nginx-manager-2026010{i}-000000-cli.db", f"nginx-manager-2026010{i}-000000-auto.db",
+                     f"code-1.0.{i}-2026010{i}.tar.gz", f"nginx.conf-2026010{i}-000000",
+                     f"nginx-manager-2026010{i}-000000-manual.db"):
+            p = d / name
+            p.write_text("x")
+            os.utime(p, (_t.time() - 1000 + i, _t.time() - 1000 + i))
+    removed = prune_backups(keep_auto=3, keep_update=2)
+    assert len(list(d.glob("*-cli.db"))) == 2 and len(list(d.glob("*-auto.db"))) == 3
+    assert len(list(d.glob("code-*.tar.gz"))) == 2 and len(list(d.glob("nginx.conf-*"))) == 4
+    assert len(list(d.glob("*-manual.db"))) == 8  # ручные копии не удаляются
+    assert sorted(p.name for p in d.glob("code-*"))[-1] == "code-1.0.7-20260107.tar.gz" and removed

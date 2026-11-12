@@ -368,6 +368,42 @@ class App:
                 log.exception("watchdog")
             await asyncio.sleep(10)
 
+    def _insights_history(self, findings: List[Dict[str, Any]]) -> None:
+        """Журнал появления и устранения проблем (уровни «проблема» и «внимание») — вкладка «История» анализа."""
+        cur = {f["fid"]: f for f in findings if f["level"] in ("crit", "warn")}
+        prev = getattr(self, "_ins_prev", None)
+        self._ins_prev = cur
+        if prev is None:  # первый проход после запуска — только запоминаем
+            return
+        for fid, f in cur.items():
+            if fid not in prev:
+                where = f"{f['site_name']}: " if f["site"] != "*" else ""
+                self.db.event("error" if f["level"] == "crit" else "warning", "insights",
+                              f"Обнаружено: {where}{f['title']} — {f['summary']}"[:500],
+                              {"id": f["id"], "fid": fid, "level": f["level"], "site": f["site"]})
+        for fid, f in prev.items():
+            if fid not in cur:
+                where = f"{f['site_name']}: " if f["site"] != "*" else ""
+                dur = time.time() - (f.get("since") or time.time())
+                self.db.event("info", "insights", f"Устранено: {where}{f['title']}"
+                              + (f" (длилось ~{max(1, round(dur / 60))} мин)" if f.get("since") else ""),
+                              {"id": f["id"], "fid": fid, "site": f["site"]})
+
+    async def maybe_send_report(self) -> None:
+        from .services import reports
+        p = self.panel()
+        key = reports.due(p)
+        if not key or self.db.kv_get("last_report") == key:
+            return
+        self.db.kv_set("last_report", key)
+        rep = await asyncio.to_thread(reports.build, self, p.report_period)
+        res = await reports.send(self, rep, list(p.report_channels))
+        ok = [r for r in res if r["ok"]]
+        self.db.event("info" if ok else "error", "reports",
+                      f"{rep['title']}: отправлен в {len(ok)} из {len(res)} каналов"
+                      + ("" if len(ok) == len(res) else "; ошибки: " + "; ".join(
+                          f"{r.get('name', r['id'])}: {r.get('error')}" for r in res if not r["ok"])))
+
     async def periodic(self) -> None:
         await asyncio.sleep(20)
         last_diag = last_cert = 0.0
@@ -378,6 +414,7 @@ class App:
                 # встроенный анализ за последние 15 минут — для значка в меню и метрики оповещений
                 res = await asyncio.to_thread(self.insights.evaluate, now - 900, now, "*")
                 self.insights.last = {"counts": res["counts"], "findings": res["findings"][:50], "ts": now}
+                self._insights_history(res["findings"])
             except Exception:
                 log.exception("анализ метрик")
             try:
@@ -390,6 +427,7 @@ class App:
                     await self.certs.auto_renew(after=self.after_cert_issued)
                 lt = time.localtime(now)
                 today = time.strftime("%Y-%m-%d", lt)
+                await self.maybe_send_report()
                 if lt.tm_hour == p.backup_hour and self.db.kv_get("last_auto_backup") != today:
                     self.db.kv_set("last_auto_backup", today)
                     from .services.backup import auto_backup

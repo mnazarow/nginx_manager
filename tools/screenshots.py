@@ -19,6 +19,7 @@ PAGES = [
     ("events", "#/events", 1500), ("users", "#/users", 1500), ("audit", "#/audit", 1500), ("settings", "#/settings", 1500),
     ("backup", "#/backup", 1500), ("profile", "#/profile", 1500), ("docs", "#/docs", 2000),
     ("bans", "#/bans", 2500), ("settings-bans", "#/settings?tab=bans", 1500),
+    ("settings-reports", "#/settings?tab=reports", 1500), ("insights-thresholds", "#/insights?tab=thresholds", 3000),
 ]
 
 

@@ -25,6 +25,20 @@ from ..stats.parsing import CATEGORY_INFO, ERROR_CATEGORIES
 LEVELS = {"ok": 0, "info": 1, "warn": 2, "crit": 3}
 LEVEL_LABELS = {"ok": "норма", "info": "к сведению", "warn": "внимание", "crit": "проблема"}
 
+def N(x: float) -> str:
+    """Целое число с разделителем разрядов: 44820 → «44 820»."""
+    return f"{int(round(x or 0)):,}".replace(",", "\u00a0")
+
+
+def P(x: float, d: int = 1) -> str:
+    """Проценты с десятичной запятой: 7.42 → «7,4%»."""
+    return f"{x:.{d}f}".replace(".", ",") + "%"
+
+
+def MS(x: float) -> str:
+    return f"{N(x)} мс"
+
+
 # =============================================================================
 #  Показатели (подсказки на карточках)
 # =============================================================================
@@ -118,7 +132,7 @@ METRICS: Dict[str, Dict[str, Any]] = {
                "(вкладка «Безопасность» сайта) и автоблокировка сканеров.",
         doc=("18-insights.md", "безопасность")),
     "backends_down": dict(
-        label="Недоступные бэкенды", unit="", dir="above", warn=0.5, crit=0.5,
+        label="Недоступные бэкенды", unit="", dir="above", warn=0.5, crit=0.5, fixed=True,
         desc="Серверы приложений, не прошедшие активную проверку панели.",
         how="Состояние DOWN после «Неудач до DOWN» подряд неуспешных проверок.",
         norm="0. Любой недоступный основной сервер снижает запас прочности; если недоступны все — сайт "
@@ -669,6 +683,14 @@ for _cid, _p, _title, _lvl, _hint in ERROR_CATEGORIES:
 SCENARIOS: Dict[str, Scenario] = {s.id: s for s in S}
 
 
+# Сценарии, условия которых берут пороги из показателей (свои пороги — раздел «Анализ → Пороги»)
+SCENARIO_METRIC = {
+    "e5xx_rate": "err5", "e4xx_rate": "err4", "latency_p95": "p95", "slow_backend": "urt_avg", "cpu_high": "cpu",
+    "mem_high": "mem", "disk_high": "disk", "load_high": "load", "cache_low_hit": "hit_ratio", "bots_share": "bots",
+    "backend_slow": "backend_latency", "backend_unstable": "uptime",
+}
+
+
 def scenario_dict(s: Scenario) -> Dict[str, Any]:
     return {"id": s.id, "group": s.group, "group_title": GROUP_TITLES[s.group], "title": s.title, "when": s.when,
             "what": s.what, "causes": s.causes, "actions": s.actions,
@@ -687,6 +709,39 @@ class Analyzer:
         self.first_seen: Dict[str, float] = {}
         self.last: Dict[str, Any] = {"counts": {"crit": 0, "warn": 0, "info": 0}, "findings": [], "ts": 0}
 
+    # ---------------------------------------------------------------- пороги
+    def thresholds(self) -> Dict[str, Dict[str, float]]:
+        """Действующие пороги показателей: значения по умолчанию с учётом своих (настройки панели)."""
+        over = self.app.panel().insight_thresholds or {}
+        out = {}
+        for k, m in METRICS.items():
+            if m.get("warn") is None or m.get("fixed"):
+                continue
+            o = over.get(k) or {}
+            out[k] = {"warn": float(o.get("warn", m["warn"])), "crit": float(o.get("crit", m["crit"])),
+                      "custom": bool(o)}
+        return out
+
+    def level(self, metric: str, value: Optional[float]) -> str:
+        t = self._thr.get(metric) if hasattr(self, "_thr") else None
+        t = t or self.thresholds().get(metric)
+        m = METRICS[metric]
+        if value is None or not t:
+            return "ok"
+        if m["dir"] == "above":
+            return "crit" if value >= t["crit"] else "warn" if value >= t["warn"] else "ok"
+        return "crit" if value <= t["crit"] else "warn" if value <= t["warn"] else "ok"
+
+    def custom_note(self, sid: str) -> str:
+        mid = SCENARIO_METRIC.get(sid)
+        t = self.thresholds().get(mid) if mid else None
+        if not t or not t["custom"]:
+            return ""
+        m = METRICS[mid]
+        sign = "≥" if m["dir"] == "above" else "≤"
+        unit = f" {m['unit']}" if m.get("unit") else ""
+        return f"Свои пороги: внимание {sign} {t['warn']:g}{unit}, проблема {sign} {t['crit']:g}{unit}."
+
     # ---------------------------------------------------------------- каталог
     def capacity(self) -> int:
         g = self.app.global_settings()
@@ -701,13 +756,17 @@ class Analyzer:
         metrics = {k: {kk: vv for kk, vv in v.items() if kk != "doc"} | {"doc": {"page": v["doc"][0],
                                                                                    "section": v["doc"][1]}}
                    for k, v in METRICS.items()}
+        for k, t in self.thresholds().items():
+            metrics[k]["default_warn"], metrics[k]["default_crit"] = METRICS[k]["warn"], METRICS[k]["crit"]
+            metrics[k]["warn"], metrics[k]["crit"], metrics[k]["custom"] = t["warn"], t["crit"], t["custom"]
         cap = self.capacity()
         metrics["connections"]["warn"] = round(cap * METRICS["connections"]["warn_ratio"])
         metrics["connections"]["crit"] = round(cap * METRICS["connections"]["crit_ratio"])
         metrics["connections"]["capacity"] = cap
         return {"metrics": metrics, "levels": LEVEL_LABELS,
                 "groups": [{"id": g, "title": t} for g, t in GROUPS],
-                "scenarios": [scenario_dict(s) for s in S], "muted": list(self.app.panel().insights_muted)}
+                "scenarios": [dict(scenario_dict(s), custom=self.custom_note(s.id)) for s in S],
+                "muted": list(self.app.panel().insights_muted)}
 
     # ---------------------------------------------------------------- данные
     def _baseline(self, site: str, start: float) -> Optional[Dict[str, Any]]:
@@ -734,6 +793,7 @@ class Analyzer:
         if hit and time.time() - hit[0] < self.CACHE_TTL:
             return hit[1]
         out: List[Dict[str, Any]] = []
+        self._thr = self.thresholds()
         state = self.app.last_applied_state() or self.app.nginx.load_state()
         sites = {str(sid): s for sid, s in state.sites if s.enabled}
         span = max(60.0, end - start)
@@ -745,7 +805,8 @@ class Analyzer:
             fid = f"{sid}:{site_id}:{key_extra}"
             now = time.time()
             first = self.first_seen.setdefault(fid, now) if recent else None
-            out.append({**scenario_dict(sc), "fid": fid, "level": level, "site": site_id,
+            out.append({**scenario_dict(sc), "custom": self.custom_note(sid), "fid": fid, "level": level,
+                        "site": site_id,
                         "site_name": sites[site_id].name if site_id in sites else ("Все сайты" if site_id == "*"
                                                                                    else site_id),
                         "summary": summary, "evidence": evidence, "value": value, "since": first})
@@ -785,28 +846,28 @@ class Analyzer:
         n = cur["requests"]
         codes = {int(k): v for k, v in (cur.get("codes") or {}).items() if str(k).isdigit()}
         st = self.app.stats
-        if n >= 50 and cur["err5_pct"] >= 1:
+        if n >= 50 and self.level("err5", cur["err5_pct"]) != "ok":
             s5 = sum(v for c, v in codes.items() if 500 <= c < 600)
             dom = sorted(((c, v) for c, v in codes.items() if 500 <= c < 600), key=lambda x: -x[1])
             top = st.tops(start, end, s_id, "e5xx", 5)
-            add("e5xx_rate", "crit" if cur["err5_pct"] >= 5 else "warn", s_id,
-                f"{cur['err5_pct']:.2f}% ответов — ошибки сервера ({s5} из {n}); "
-                + ", ".join(f"{c}: {v}" for c, v in dom[:4]),
+            add("e5xx_rate", self.level("err5", cur["err5_pct"]), s_id,
+                f"{P(cur['err5_pct'], 2)} ответов — ошибки сервера ({N(s5)} из {N(n)}); "
+                + ", ".join(f"{c}: {N(v)}" for c, v in dom[:4]),
                 {"columns": ["Адрес", "Ответов"], "rows": [[t["key"], t["count"]] for t in top]}, cur["err5_pct"])
             for code, sid in ((502, "e502"), (504, "e504"), (503, "e503"), (500, "e500")):
                 c = codes.get(code, 0)
                 if c >= 5 and s5 and c / s5 >= 0.2:
                     rows = [[t["key"].split(" ", 1)[-1], t["count"]] for t in top if t["key"].startswith(f"{code} ")]
-                    add(sid, "crit" if cur["err5_pct"] >= 5 else "warn", s_id,
-                        f"{c} ответов {code} ({c / s5 * 100:.0f}% всех 5xx)",
+                    add(sid, self.level("err5", cur["err5_pct"]), s_id,
+                        f"{N(c)} ответов {code} ({P(c / s5 * 100, 0)} всех 5xx)",
                         {"columns": ["Адрес", "Ответов"], "rows": rows} if rows else None, c)
             if s_id != "*" and n >= 20 and cur["err5_pct"] >= 90:
-                add("site_down", "crit", s_id, f"{cur['err5_pct']:.0f}% запросов завершились ошибкой 5xx", None,
+                add("site_down", "crit", s_id, f"{P(cur['err5_pct'], 0)} запросов завершились ошибкой 5xx", None,
                     cur["err5_pct"])
-        if n >= 100 and cur["err4_pct"] >= 15:
-            add("e4xx_rate", "crit" if cur["err4_pct"] >= 35 else "warn", s_id,
-                f"{cur['err4_pct']:.1f}% ответов — 4xx; " + ", ".join(
-                    f"{c}: {v}" for c, v in sorted(((c, v) for c, v in codes.items() if 400 <= c < 500),
+        if n >= 100 and self.level("err4", cur["err4_pct"]) != "ok":
+            add("e4xx_rate", self.level("err4", cur["err4_pct"]), s_id,
+                f"{P(cur['err4_pct'])} ответов — 4xx; " + ", ".join(
+                    f"{c}: {N(v)}" for c, v in sorted(((c, v) for c, v in codes.items() if 400 <= c < 500),
                                                    key=lambda x: -x[1])[:5]), None, cur["err4_pct"])
         if n:
             def share(*cs):
@@ -825,23 +886,24 @@ class Analyzer:
                                             (499, "e499", 2, 10, "warn"), (444, "e444", 10, 20, "info")):
                 c, p = share(code)
                 if c >= mn and p >= pct:
-                    add(sid, lvl, s_id, f"{c} ответов {code} ({p:.1f}% запросов)",
+                    add(sid, lvl, s_id, f"{N(c)} ответов {code} ({P(p)} запросов)",
                         e4(code) if code not in (444, 499) else None, p)
             c, p = share(413)
             if c:
-                add("e413", "warn", s_id, f"{c} запросов отклонено из-за размера тела", e4(413), c)
+                add("e413", "warn", s_id, f"{N(c)} запросов отклонено из-за размера тела", e4(413), c)
             c, p = share(400, 414, 431, 494)
             if c >= 10 and p >= 1:
-                add("e400", "warn", s_id, f"{c} некорректных запросов ({p:.1f}%)", e4(400), p)
+                add("e400", "warn", s_id, f"{N(c)} некорректных запросов ({P(p)})", e4(400), p)
         # производительность
-        if n >= 50 and cur["p95"] >= 1000:
-            add("latency_p95", "crit" if cur["p95"] >= 3000 else "warn", s_id,
-                f"p95 = {cur['p95']:.0f} мс (p50 {cur['p50']:.0f} мс, среднее бэкенда {cur['urt_avg']:.0f} мс)",
+        if n >= 50 and self.level("p95", cur["p95"]) != "ok":
+            add("latency_p95", self.level("p95", cur["p95"]), s_id,
+                f"p95 = {MS(cur['p95'])} (p50 {MS(cur['p50'])}, среднее бэкенда {MS(cur['urt_avg'])})",
                 None, cur["p95"])
-        if n >= 50 and cur["urt_avg"] >= 500 and cur["rt_avg"] and cur["urt_avg"] >= 0.7 * cur["rt_avg"]:
+        if n >= 50 and self.level("urt_avg", cur["urt_avg"]) != "ok" and cur["rt_avg"] and \
+                cur["urt_avg"] >= 0.7 * cur["rt_avg"]:
             top = st.tops(start, end, s_id, "slow", 5)
-            add("slow_backend", "crit" if cur["urt_avg"] >= 1500 else "warn", s_id,
-                f"бэкенд отвечает в среднем за {cur['urt_avg']:.0f} мс из {cur['rt_avg']:.0f} мс общего времени",
+            add("slow_backend", self.level("urt_avg", cur["urt_avg"]), s_id,
+                f"бэкенд отвечает в среднем за {MS(cur['urt_avg'])} из {MS(cur['rt_avg'])} общего времени",
                 {"columns": ["Адрес", "Запросов", "Среднее, мс"], "rows": [[t["key"], t["count"], t.get("avg_ms")]
                                                                           for t in top]} if top else None,
                 cur["urt_avg"])
@@ -850,7 +912,7 @@ class Analyzer:
                                               f"{cur['urt_avg']:.0f} мс", None, cur["rt_avg"] - cur["urt_avg"])
         if n >= 100 and cur.get("slow", 0) / n >= 0.05:
             top = st.tops(start, end, s_id, "slow", 5)
-            add("slow_share", "warn", s_id, f"{cur['slow']} медленных запросов ({cur['slow'] / n * 100:.1f}%)",
+            add("slow_share", "warn", s_id, f"{N(cur['slow'])} медленных запросов ({P(cur['slow'] / n * 100)})",
                 {"columns": ["Адрес", "Запросов", "Среднее, мс"], "rows": [[t["key"], t["count"], t.get("avg_ms")]
                                                                           for t in top]} if top else None,
                 cur["slow"] / n * 100)
@@ -866,50 +928,50 @@ class Analyzer:
                         None, 0)
                 else:
                     add("traffic_drop", "crit" if rps < 0.05 * base["rps"] else "warn", s_id,
-                        f"{rps:.2f} запросов/с против {base['rps']:.2f} в среднем за прошлые сутки "
-                        f"({rps / base['rps'] * 100:.0f}%)", None, rps)
+                        f"{rps:.2f} запросов/с против {base['rps']:.2f} в среднем за прошлые сутки ".replace(".", ",")
+                        + f"({P(rps / base['rps'] * 100, 0)})", None, rps)
             if rps >= 5 and base["rps"] and rps >= 3 * base["rps"]:
                 add("traffic_spike", "warn", s_id, f"{rps:.1f} запросов/с — в {rps / base['rps']:.1f} раза больше "
                                                    f"обычного ({base['rps']:.2f})", None, rps)
         if n >= 300:
             ips = st.tops(start, end, s_id, "ip", 3)
             if ips and ips[0]["count"] / n >= 0.3:
-                add("single_ip", "warn", s_id, f"{ips[0]['key']}: {ips[0]['count']} запросов "
-                                               f"({ips[0]['count'] / n * 100:.0f}%)",
+                add("single_ip", "warn", s_id, f"{ips[0]['key']}: {N(ips[0]['count'])} запросов "
+                                               f"({P(ips[0]['count'] / n * 100, 0)})",
                     {"columns": ["IP-адрес", "Запросов"], "rows": [[t["key"], t["count"]] for t in ips]},
                     ips[0]["count"] / n * 100, key_extra=ips[0]["key"])
-        if n >= 200 and cur.get("bots", 0) / n >= 0.5:
-            add("bots_share", "info", s_id, f"{cur['bots'] / n * 100:.0f}% запросов от ботов", None,
+        if n >= 200 and self.level("bots", cur.get("bots", 0) / n * 100) != "ok":
+            add("bots_share", "info", s_id, f"{P(cur['bots'] / n * 100, 0)} запросов от ботов", None,
                 cur["bots"] / n * 100)
         tls = cur.get("tls") or {}
         tls_n = sum(tls.values())
         old = sum(v for k, v in tls.items() if k in ("TLSv1", "TLSv1.1"))
         if tls_n >= 100 and old / tls_n >= 0.01:
-            add("tls_legacy", "info", s_id, f"{old} запросов по TLS 1.0/1.1 ({old / tls_n * 100:.1f}%)", None,
+            add("tls_legacy", "info", s_id, f"{N(old)} запросов по TLS 1.0/1.1 ({P(old / tls_n * 100)})", None,
                 old / tls_n * 100)
         cache = cur.get("cache") or {}
         cache_n = sum(cache.values())
         if s_id in sites:
             s = sites[s_id]
             cache_on = s.cache.enabled or any(lc.enabled and lc.cache == "on" for lc in s.locations)
-            if cache_on and cache_n >= 200 and cur["hit_ratio"] < 20:
-                add("cache_low_hit", "warn", s_id, f"HIT {cur['hit_ratio']:.0f}% из {cache_n} ответов; "
+            if cache_on and cache_n >= 200 and self.level("hit_ratio", cur["hit_ratio"]) != "ok":
+                add("cache_low_hit", self.level("hit_ratio", cur["hit_ratio"]), s_id, f"HIT {P(cur['hit_ratio'], 0)} из {N(cache_n)} ответов; "
                     + ", ".join(f"{k}: {v}" for k, v in sorted(cache.items(), key=lambda x: -x[1])[:4]), None,
                     cur["hit_ratio"])
             if (s.type == "proxy" and not cache_on and not s.performance.static_expires and n >= 500
                     and cur.get("static", 0) / n >= 0.4):
-                add("static_no_cache", "info", s_id, f"{cur['static'] / n * 100:.0f}% запросов — статика", None,
+                add("static_no_cache", "info", s_id, f"{P(cur['static'] / n * 100, 0)} запросов — статика", None,
                     cur["static"] / n * 100)
             if s.ssl.enabled and not s.ssl.force_https and n >= 100 and (n - tls_n) / n >= 0.1:
-                add("http_not_redirected", "info", s_id, f"{(n - tls_n) / n * 100:.0f}% запросов по HTTP", None,
+                add("http_not_redirected", "info", s_id, f"{P((n - tls_n) / n * 100, 0)} запросов по HTTP", None,
                     (n - tls_n) / n * 100)
             if not s.ssl.enabled and n >= 50:
                 add("no_https", "warn" if s.type != "redirect" else "info", s_id,
-                    f"{n} запросов по незащищённому HTTP за период", None, n)
+                    f"{N(n)} запросов по незащищённому HTTP за период", None, n)
         if cache_n >= 100:
             stale = cache.get("STALE", 0) + cache.get("UPDATING", 0)
             if stale / cache_n >= 0.05:
-                add("cache_stale", "info", s_id, f"{stale} устаревших ответов ({stale / cache_n * 100:.0f}% кэша)",
+                add("cache_stale", "info", s_id, f"{N(stale)} устаревших ответов ({P(stale / cache_n * 100, 0)} кэша)",
                     None, stale / cache_n * 100)
 
     def _site_config_rules(self, add, sites: Dict[str, Any], start: float, end: float) -> None:
@@ -940,13 +1002,13 @@ class Analyzer:
                 add("backend_down", "warn" if t.backup else "crit", sid,
                     f"{t.owner_name}: {t.address}:{t.port} — {t.last_error or 'нет ответа'}", None, 1,
                     key_extra=t.key)
-            elif t.state == "up" and t.last_latency >= 0.5:
-                add("backend_slow", "crit" if t.last_latency >= 2 else "warn", sid,
+            elif t.state == "up" and self.level("backend_latency", t.last_latency * 1000) != "ok":
+                add("backend_slow", self.level("backend_latency", t.last_latency * 1000), sid,
                     f"{t.owner_name}: {t.address}:{t.port} отвечает за {t.last_latency * 1000:.0f} мс", None,
                     t.last_latency * 1000, key_extra=t.key)
             if t.checks >= 20:
                 up = (t.checks - t.fails) / t.checks * 100
-                if 50 <= up < 99:
+                if up >= 50 and self.level("uptime", up) != "ok":
                     add("backend_unstable", "warn", sid, f"{t.owner_name}: {t.address}:{t.port} — доступность "
                                                          f"{up:.1f}% ({t.fails} неудачных из {t.checks})", None, up,
                         key_extra=t.key)
@@ -960,7 +1022,7 @@ class Analyzer:
                     None, len(prim), key_extra=owner)
         passive = sum(app.stats.agg.passive_upstream.values())
         if site == "*" and passive >= 10:
-            add("passive_errors", "warn", "*", f"{passive} ошибок соединения с бэкендами",
+            add("passive_errors", "warn", "*", f"{N(passive)} ошибок соединения с бэкендами",
                 {"columns": ["Бэкенд", "Ошибок"], "rows": [[k, v] for k, v in
                                                            app.stats.agg.passive_upstream.most_common(8)]}, passive)
         if site != "*":
@@ -990,21 +1052,21 @@ class Analyzer:
         sysm = app.stats.system.minute_avg(time.time() - 600, time.time()) or app.stats.system.latest() or {}
         if sysm:
             cpu, mem = sysm.get("cpu", 0), sysm.get("mem", 0)
-            if cpu >= 80:
-                add("cpu_high", "crit" if cpu >= 95 else "warn", "*", f"CPU {cpu:.0f}% в среднем за 10 минут "
+            if self.level("cpu", cpu) != "ok":
+                add("cpu_high", self.level("cpu", cpu), "*", f"CPU {cpu:.0f}% в среднем за 10 минут "
                     f"(nginx {sysm.get('nginx_cpu', 0):.0f}%)", None, cpu)
             swap = sysm.get("swap", 0)
-            if mem >= 85 or swap >= 20:
-                add("mem_high", "crit" if mem >= 95 else "warn", "*", f"память {mem:.0f}%, swap {swap:.0f}%", None,
+            if self.level("mem", mem) != "ok" or swap >= 20:
+                add("mem_high", "crit" if self.level("mem", mem) == "crit" else "warn", "*", f"память {mem:.0f}%, swap {swap:.0f}%", None,
                     mem)
             latest = app.stats.system.latest() or {}
             disk = max(latest.get("disk", 0), latest.get("disk_log", 0))
-            if disk >= 85:
-                add("disk_high", "crit" if disk >= 95 else "warn", "*", f"заполнено {disk:.0f}%", None, disk)
+            if self.level("disk", disk) != "ok":
+                add("disk_high", self.level("disk", disk), "*", f"заполнено {disk:.0f}%", None, disk)
             cpus = latest.get("cpus") or 1
             load = sysm.get("load1", 0) / cpus
-            if load >= 1.5:
-                add("load_high", "crit" if load >= 3 else "warn", "*", f"load {sysm.get('load1', 0):.2f} при {cpus} "
+            if self.level("load", load) != "ok":
+                add("load_high", self.level("load", load), "*", f"load {sysm.get('load1', 0):.2f} при {cpus} "
                                                                       f"ядрах ({load:.1f} на ядро)", None, load)
         # сертификаты
         try:
@@ -1060,5 +1122,5 @@ class Analyzer:
             if n >= _LOG_MIN.get(lvl, 10):
                 sample = self.app.db.one("SELECT message FROM errors WHERE category=? AND ts>=? AND ts<? ORDER BY id "
                                          "DESC LIMIT 1", (cid, start, end))
-                add(f"log_{cid}", _LOG_LEVEL.get(lvl, "info"), where_site, f"{n} записей за период",
+                add(f"log_{cid}", _LOG_LEVEL.get(lvl, "info"), where_site, f"{N(n)} записей за период",
                     {"columns": ["Последнее сообщение"], "rows": [[(sample or {}).get("message", "")[:300]]]}, n)

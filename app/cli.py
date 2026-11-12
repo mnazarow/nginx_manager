@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import getpass
 import json
 import sys
@@ -115,6 +116,13 @@ def cmd_diag(a) -> int:
         for t in st.tailers:
             t.status = "ok" if t.path.exists() else "файл не найден"
             t.lines_total = -1
+            # позиция чтения — из сохранённого сервисом состояния (иначе отставание = весь размер файла)
+            try:
+                saved = app.db.kv_get(f"tail:{t.name}") or {}
+                stt = os.stat(t.path)
+                t.pos = saved.get("pos", stt.st_size) if saved.get("ino") == stt.st_ino else stt.st_size
+            except OSError:
+                pass
         return await app.diag.run_all()
     res = asyncio.run(go())
     group = None
@@ -207,9 +215,13 @@ def cmd_allowlist(a) -> int:
 
 def cmd_backup(a) -> int:
     from .core import App
-    from .services.backup import db_backup
-    p = db_backup(App(), "cli")
+    from .services.backup import db_backup, prune_backups
+    app = App()
+    p = db_backup(app, "cli")
     print(f"Резервная копия: {p}")
+    removed = prune_backups(app.panel().backup_keep, app.panel().backup_keep_update)
+    if removed:
+        print(f"Удалено старых копий: {len(removed)}")
     return 0
 
 

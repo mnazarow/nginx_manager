@@ -834,6 +834,41 @@ async def insights_catalog(request: Request, user=Depends(viewer)):
     return nm(request).insights.catalog()
 
 
+class ThresholdsBody(BaseModel):
+    thresholds: Dict[str, Optional[Dict[str, float]]]
+
+
+@router.put("/insights/thresholds")
+async def insights_thresholds(body: ThresholdsBody, request: Request, user=Depends(admin)):
+    """Свои пороги показателей: {metric: {warn, crit}} или {metric: null} — вернуть значения по умолчанию."""
+    from ..services.insights import METRICS
+    app = nm(request)
+    p = app.panel()
+    cur = dict(p.insight_thresholds or {})
+    for k, v in body.thresholds.items():
+        m = METRICS.get(k)
+        if not m or m.get("warn") is None or m.get("fixed"):
+            raise HTTPException(400, f"Показатель «{k}» не имеет настраиваемых порогов")
+        if v is None:
+            cur.pop(k, None)
+            continue
+        w, c = float(v.get("warn", m["warn"])), float(v.get("crit", m["crit"]))
+        if w < 0 or c < 0:
+            raise HTTPException(400, f"{m['label']}: пороги не могут быть отрицательными")
+        if m["dir"] == "above" and c < w:
+            raise HTTPException(400, f"{m['label']}: порог «проблема» должен быть не меньше порога «внимание»")
+        if m["dir"] == "below" and c > w:
+            raise HTTPException(400, f"{m['label']}: порог «проблема» должен быть не больше порога «внимание»")
+        if w == m["warn"] and c == m["crit"]:
+            cur.pop(k, None)
+        else:
+            cur[k] = {"warn": w, "crit": c}
+    app.save_panel(p.model_copy(update={"insight_thresholds": cur}))
+    app.insights._cache.clear()
+    audit(request, user, "insight_thresholds", ", ".join(body.thresholds), cur)
+    return {"ok": True, "thresholds": app.insights.thresholds()}
+
+
 @router.post("/insights/mute")
 async def insights_mute(request: Request, id: str = Body(..., embed=True), mute: bool = Body(True, embed=True),
                         user=Depends(operator)):
@@ -847,6 +882,33 @@ async def insights_mute(request: Request, id: str = Body(..., embed=True), mute:
     app.insights._cache.clear()
     audit(request, user, "insight_muted" if mute else "insight_unmuted", id)
     return {"ok": True, "muted": muted}
+
+
+# =============================================================================
+#  Регулярные отчёты
+# =============================================================================
+@router.get("/reports/preview")
+async def report_preview(request: Request, period: str = "day", user=Depends(viewer)):
+    from ..services import reports
+    if period not in ("day", "week"):
+        raise HTTPException(400, "period: day | week")
+    return await asyncio.to_thread(reports.build, nm(request), period)
+
+
+@router.post("/reports/send")
+async def report_send(request: Request, period: str = Body("day", embed=True),
+                      channels: Optional[List[int]] = Body(None, embed=True), user=Depends(operator)):
+    from ..services import reports
+    app = nm(request)
+    if period not in ("day", "week"):
+        raise HTTPException(400, "period: day | week")
+    ids = channels if channels is not None else list(app.panel().report_channels)
+    if not ids:
+        raise HTTPException(400, "Не выбраны каналы: укажите их в «Настройки панели → Отчёты»")
+    rep = await asyncio.to_thread(reports.build, app, period)
+    res = await reports.send(app, rep, ids)
+    audit(request, user, "report_sent", rep["title"], {"channels": ids, "results": res})
+    return {"title": rep["title"], "results": res}
 
 
 # =============================================================================

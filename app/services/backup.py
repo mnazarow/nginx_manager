@@ -133,14 +133,31 @@ def db_backup(app, label: str = "manual") -> Path:
     return dest
 
 
+def prune_backups(keep_auto: int, keep_update: int) -> List[str]:
+    """Удалить старые копии: ежедневные (оставить keep_auto), сделанные при обновлениях и из консоли — базы,
+    код прежних версий и nginx.conf (оставить keep_update каждого вида). Ручные копии из панели не трогаются."""
+    d = settings.backups_dir
+    removed: List[str] = []
+    groups = [(sorted(d.glob("nginx-manager-*-auto.db")), keep_auto),
+              (sorted(d.glob("nginx-manager-*-cli.db")), keep_update),
+              (sorted(d.glob("nginx-manager-*-preupdate.db")), keep_update),
+              (sorted(d.glob("code-*.tar.gz"), key=lambda p: p.stat().st_mtime), keep_update),
+              (sorted(d.glob("nginx.conf-*")), keep_update * 2)]
+    for files, keep in groups:
+        for old in files[:-keep] if keep > 0 else files:
+            old.unlink(missing_ok=True)
+            if old.suffix == ".db":
+                old.with_suffix(".json").unlink(missing_ok=True)
+            removed.append(old.name)
+    return removed
+
+
 def auto_backup(app) -> Path:
     p = db_backup(app, "auto")
-    keep = app.panel().backup_keep
-    autos = sorted(settings.backups_dir.glob("nginx-manager-*-auto.db"))
-    for old in autos[:-keep]:
-        old.unlink(missing_ok=True)
-        old.with_suffix(".json").unlink(missing_ok=True)
-    app.db.event("info", "backup", f"Автоматическая резервная копия: {p.name}")
+    pnl = app.panel()
+    removed = prune_backups(pnl.backup_keep, pnl.backup_keep_update)
+    app.db.event("info", "backup", f"Автоматическая резервная копия: {p.name}"
+                 + (f"; удалено старых копий: {len(removed)}" if removed else ""))
     return p
 
 
