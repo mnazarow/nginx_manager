@@ -105,9 +105,9 @@ function details(f, onChange) {
   return h('div', { class: 'col' },
     h('p', {}, f.what),
     h('div', { class: 'grid g2' },
-      f.causes?.length ? h('div', {}, h('h4', {}, 'Вероятные причины'), h('ul', {}, f.causes.map(c => h('li', {}, c)))) : null,
-      f.actions?.length ? h('div', {}, h('h4', {}, 'Что сделать'), h('ol', {}, f.actions.map(c => h('li', {}, c)))) : null),
-    ev && ev.rows && ev.rows.length ? h('div', {}, h('h4', {}, 'Данные'), table(ev.columns.map((c, i) => ({ title: c, num: i > 0 && typeof ev.rows[0][i] === 'number', render: (r) => r[i] == null ? '—' : typeof r[i] === 'number' ? r[i].toLocaleString('ru-RU') : h('span', { class: i === 0 ? 'mono small' : 'small' }, String(r[i])) })), ev.rows, { cls: 'compact' })) : null,
+      f.causes?.length ? h('div', {}, h('h3', { class: 'sub-h' }, 'Вероятные причины'), h('ul', {}, f.causes.map(c => h('li', {}, c)))) : null,
+      f.actions?.length ? h('div', {}, h('h3', { class: 'sub-h' }, 'Что сделать'), h('ol', {}, f.actions.map(c => h('li', {}, c)))) : null),
+    ev && ev.rows && ev.rows.length ? h('div', {}, h('h3', { class: 'sub-h' }, 'Данные'), table(ev.columns.map((c, i) => ({ title: c, num: i > 0 && typeof ev.rows[0][i] === 'number', render: (r) => r[i] == null ? '—' : typeof r[i] === 'number' ? r[i].toLocaleString('ru-RU') : h('span', { class: i === 0 ? 'mono small' : 'small' }, String(r[i])) })), ev.rows, { cls: 'compact' })) : null,
     h('div', { class: 'muted small' }, h('b', {}, 'Условие: '), f.when, f.custom ? h('div', {}, f.custom) : null),
     h('div', { class: 'row', style: { flexWrap: 'wrap' } },
       (f.links || []).map(l => h('a', { class: 'btn sm', href: l.href + (f.site !== '*' && ['#/analytics', '#/requests'].includes(l.href) ? `?site=${f.site}` : '') }, l.label)),
@@ -155,7 +155,7 @@ export function insightsCard(res, { limit = 4, link = '#/insights', title = 'А�
   const items = foldSame((res.findings || []).filter(f => f.level !== 'info')).slice(0, limit);
   const info = (res.findings || []).filter(f => f.level === 'info').length;
   return h('div', { class: 'card insights-card' },
-    h('div', { class: 'card-head' }, h('div', {}, h('h3', {}, title),
+    h('div', { class: 'card-head' }, h('div', {}, h('h2', {}, title),
       h('div', { class: 'sub' }, c.crit || c.warn ? `проблем: ${c.crit || 0} · требуют внимания: ${c.warn || 0}${info ? ` · к сведению: ${info}` : ''}`
         : info ? `серьёзных проблем нет · к сведению: ${info}` : `проверено сценариев: ${res.checked || 0} — проблем не найдено`)),
       h('a', { class: 'btn sm', href: link }, 'Подробнее')),

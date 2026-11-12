@@ -50,7 +50,7 @@ export async function render(root) {
       } catch (e) { errors = errorsToMap(e); draw(); }
     };
     const m = modal({ title: s ? `Поток: ${s.name}` : 'Новый поток', size: 'xl',
-      body: h('div', { class: 'grid split' }, form, h('div', {}, h('h4', { class: 'mb' }, 'Конфигурация'), prev)),
+      body: h('div', { class: 'grid split' }, form, h('div', {}, h('h3', { class: 'mb' }, 'Конфигурация'), prev)),
       footer: can('operator') ? [h('button', { class: 'btn', onclick: () => m.close() }, 'Отмена'), h('button', { class: 'btn', onclick: () => save(false) }, 'Сохранить'),
         h('button', { class: 'btn primary', onclick: () => save(true) }, 'Сохранить и применить')] : null });
   }

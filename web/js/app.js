@@ -1,6 +1,6 @@
 // Каркас приложения: вход, навигация, верхняя панель, применение конфигурации.
 import { api, live, setUnauthorizedHandler, showError } from './api.js';
-import { h, mount, icon, toast, modal, badge, fmtDur, diffBlock, loading, clear } from './ui.js';
+import { h, mount, icon, toast, modal, badge, fmtDur, diffBlock, loading, clear, a11y } from './ui.js';
 import { setSchema } from './forms.js';
 import { openPageHelp } from './help.js';
 import { openPalette, installPalette } from './palette.js';
@@ -66,8 +66,8 @@ function loginPage() {
   } },
   h('div', { class: 'field' }, h('label', {}, 'Пользователь'), user),
   h('div', { class: 'field' }, h('label', {}, 'Пароль'), pass), otpField, err, btn);
-  mount(root, h('div', { class: 'login-wrap' }, h('div', { class: 'card login-card' },
-    h('div', { class: 'brand' }, h('div', { class: 'brand-logo' }, icon('bolt')), h('div', {}, 'Nginx Manager', h('small', {}, 'Управление обратным прокси'))),
+  mount(root, h('main', { class: 'login-wrap' }, h('div', { class: 'card login-card' },
+    h('div', { class: 'brand' }, h('div', { class: 'brand-logo' }, icon('bolt')), h('div', {}, h('h1', { class: 'brand-name' }, 'Nginx Manager'), h('small', {}, 'Управление обратным прокси'))),
     form, h('div', { class: 'muted small mt' }, 'Забыли пароль? На сервере: ', h('code', {}, 'nmctl user passwd admin')))));
 }
 setUnauthorizedHandler(() => { if (ctx.user) { ctx.user = null; loginPage(); } });
@@ -105,6 +105,7 @@ function layout() {
   mount(root, h('div', { class: 'app' },
     h('div', { class: 'nav-backdrop', onclick: () => document.querySelector('.app')?.classList.remove('nav-open') }),
     h('aside', { class: 'sidebar' },
+      h('a', { class: 'skip-link', href: '#/', onclick: (e) => { e.preventDefault(); const m = document.getElementById('page'); m.tabIndex = -1; m.focus(); } }, 'Перейти к содержимому'),
       h('div', { class: 'brand' }, h('div', { class: 'brand-logo' }, icon('bolt')), h('div', {}, 'Nginx Manager', h('small', {}, 'v' + ctx.state.version))),
       nav,
       h('div', { class: 'sidebar-foot' }, h('div', {}, ctx.user.username, ' · ', ctx.user.role_label || ctx.user.role),
@@ -226,7 +227,7 @@ async function route(keep = false) {
   if (ctx.cleanup) { try { ctx.cleanup(); } catch { /* */ } ctx.cleanup = null; }
   live.send('live', { on: false }); live.send('errors', { on: false });
   drawTop();
-  if (!name) { mount(page, h('div', { class: 'empty' }, h('h3', {}, 'Страница не найдена'))); return; }
+  if (!name) { mount(page, h('div', { class: 'empty' }, h('h1', {}, 'Страница не найдена'))); return; }
   const navItem = NAV.flatMap(g => g[1]).find(i => i[0] === path);
   topEls.title.textContent = navItem ? navItem[1] : '';
   document.title = (navItem ? navItem[1] + ' — ' : '') + 'Nginx Manager';
@@ -268,6 +269,14 @@ async function boot() {
 }
 
 window.addEventListener('unhandledrejection', (e) => { if (e.reason && e.reason.status) e.preventDefault(); });
+// доступность: подписи полей, имена кнопок-значков — для всего, что появляется на странице (см. a11y в ui.js)
+{
+  const added = new Set(); let raf = 0;
+  new MutationObserver((ms) => {
+    for (const m of ms) for (const n of m.addedNodes) if (n.nodeType === 1) added.add(n);
+    if (!raf) raf = requestAnimationFrame(() => { raf = 0; for (const n of added) if (n.isConnected) a11y(n); added.clear(); });
+  }).observe(document.body, { childList: true, subtree: true });
+}
 boot();
 
 export { showError };

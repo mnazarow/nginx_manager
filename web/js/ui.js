@@ -67,8 +67,59 @@ export function icon(name, cls = '') {
   s.setAttribute('viewBox', '0 0 24 24'); s.setAttribute('fill', 'none'); s.setAttribute('stroke', 'currentColor');
   s.setAttribute('stroke-width', '1.8'); s.setAttribute('stroke-linecap', 'round'); s.setAttribute('stroke-linejoin', 'round');
   if (cls) s.setAttribute('class', cls);
+  s.setAttribute('aria-hidden', 'true'); s.setAttribute('data-icon', name);
   const p = document.createElementNS('http://www.w3.org/2000/svg', 'path'); p.setAttribute('d', P[name] || P.file);
   s.appendChild(p); return s;
+}
+
+// ---------- Доступность (экранные дикторы, клавиатура) ----------
+// Проставляется автоматически для всего, что появляется на странице (наблюдатель в app.js): подписи полей связываются
+// с полями, у полей без подписи и кнопок-значков появляется доступное имя, прокручиваемый код получает фокус.
+const ICON_LABEL = { trash: 'Удалить', edit: 'Изменить', x: 'Закрыть', copy: 'Копировать', refresh: 'Обновить', eye: 'Показать',
+  download: 'Скачать', upload: 'Загрузить', play: 'Включить', pause: 'Приостановить', plus: 'Добавить', search: 'Найти',
+  gear: 'Настройки', check: 'Проверить', history: 'История', key: 'Ключ', bell: 'Оповещения', sun: 'Светлая тема',
+  moon: 'Тёмная тема', logout: 'Выйти', ban: 'Заблокировать', book: 'Документация', bulb: 'Подсказка', list: 'Меню',
+  power: 'Включить или выключить', tool: 'Исправить', wrench: 'Исправить', file: 'Файл', chart: 'График', globe: 'Сайт' };
+let a11ySeq = 0;
+function hasName(el) {
+  if (el.getAttribute('aria-label') || el.getAttribute('aria-labelledby') || el.getAttribute('title') || el.closest('label')) return true;
+  return !!(el.id && document.querySelector(`label[for="${CSS.escape(el.id)}"]`));
+}
+export function a11y(root) {
+  if (!root || root.nodeType !== 1) return root;
+  const all = (sel) => (root.matches(sel) ? [root] : []).concat([...root.querySelectorAll(sel)]);
+  for (const lab of all('.field > label:not([for])')) {
+    if (lab.querySelector('input,select,textarea')) continue;
+    const ctl = [...lab.parentElement.querySelectorAll('input:not([type=hidden]),select,textarea')].find((c) => !c.closest('label'));
+    if (!ctl || ctl.getAttribute('aria-label')) continue;
+    if (!ctl.id) ctl.id = `nm-f${++a11ySeq}`;
+    lab.htmlFor = ctl.id;
+  }
+  for (const el of all('input:not([type=hidden]),select,textarea')) {
+    if (hasName(el)) continue;
+    const opt = el.tagName === 'SELECT' && el.options.length ? el.options[0] : null;
+    const name = el.placeholder || (opt && opt.value === '' ? opt.textContent : '');
+    if (name) el.setAttribute('aria-label', name.trim());
+  }
+  for (const el of all('button,a.btn,[role=button]')) {
+    if (el.textContent.trim() || el.getAttribute('aria-label') || el.getAttribute('title')) continue;
+    const ic = el.querySelector('svg[data-icon]');
+    const name = ic && ICON_LABEL[ic.getAttribute('data-icon')];
+    if (name) el.setAttribute('aria-label', name);
+  }
+  for (const el of all('pre:not([tabindex])')) if (el.classList.contains('code') || el.scrollWidth > el.clientWidth + 1) el.tabIndex = 0;  // прокручиваемый код — с клавиатуры
+  for (const el of all('th')) {  // пустой заголовок над кнопками строк
+    if (el.textContent.trim() || el.querySelector('.sr-only')) continue;
+    const t = el.closest('table'); const cell = t && t.tBodies[0] && t.tBodies[0].rows[0] && t.tBodies[0].rows[0].cells[el.cellIndex];
+    if (cell && cell.querySelector('button,a.btn')) el.append(h('span', { class: 'sr-only' }, 'Действия'));
+  }
+  for (const el of all('.table-wrap:not([tabindex])')) {  // таблица шире экрана прокручивается и с клавиатуры
+    if (el.scrollWidth <= el.clientWidth + 1) continue;
+    const head = el.closest('.card') && el.closest('.card').querySelector('.card-head h2, .card-head h3');
+    el.tabIndex = 0; el.setAttribute('role', 'region');
+    el.setAttribute('aria-label', `Таблица${head ? ' «' + head.textContent.trim() + '»' : ' ' + (++a11ySeq)} (прокручивается)`);
+  }
+  return root;
 }
 
 // ---------- Форматирование ----------
@@ -142,7 +193,7 @@ export function statusClass(code) { return 'status-' + String(code)[0]; }
 // ---------- Уведомления ----------
 export function toast(msg, kind = 'info', title = '', timeout = 5000) {
   let box = $('.toasts');
-  if (!box) { box = h('div', { class: 'toasts' }); document.body.appendChild(box); }
+  if (!box) { box = h('div', { class: 'toasts', role: 'region', 'aria-label': 'Уведомления', 'aria-live': 'polite' }); document.body.appendChild(box); }
   const t = h('div', { class: 'toast ' + kind }, title ? h('b', {}, title) : null, msg);
   box.appendChild(t);
   setTimeout(() => { t.style.opacity = '0'; t.style.transition = 'opacity .3s'; setTimeout(() => t.remove(), 300); }, kind === 'bad' ? timeout * 2 : timeout);
@@ -221,7 +272,7 @@ export function promptDlg(title, label, value = '', { placeholder = '', textarea
 // ---------- Компоненты ----------
 export function card(title, body, { sub = '', actions = null, cls = '', flush = false } = {}) {
   return h('div', { class: 'card ' + cls },
-    title ? h('div', { class: 'card-head' }, h('div', {}, h('h3', {}, title), sub ? h('div', { class: 'sub' }, sub) : null), actions ? h('div', { class: 'row' }, actions) : null) : null,
+    title ? h('div', { class: 'card-head' }, h('div', {}, h('h2', {}, title), sub ? h('div', { class: 'sub' }, sub) : null), actions ? h('div', { class: 'row' }, actions) : null) : null,
     h('div', { class: 'card-body' + (flush ? ' flush' : '') }, body));
 }
 
@@ -246,7 +297,8 @@ export function stateBadge(state) {
 export function table(columns, rows, { onRow, empty = 'Нет данных', cls = '', rowClass } = {}) {
   if (!rows || !rows.length) return h('div', { class: 'empty' }, empty);
   return h('div', { class: 'table-wrap' }, h('table', { class: 't ' + cls },
-    h('thead', {}, h('tr', {}, columns.map(c => h('th', { class: c.num ? 'num' : '', style: c.width ? { width: c.width } : null }, c.title)))),
+    h('thead', {}, h('tr', {}, columns.map(c => h('th', { class: c.num ? 'num' : '', style: c.width ? { width: c.width } : null },
+      c.title || h('span', { class: 'sr-only' }, c.srTitle || 'Действия'))))),
     h('tbody', {}, rows.map(r => h('tr', { class: (onRow ? 'clickable ' : '') + (rowClass ? rowClass(r) : ''), onclick: onRow ? (e) => { if (!e.target.closest('button,a,input,label')) onRow(r); } : null },
       columns.map(c => {
         const v = c.render ? c.render(r) : r[c.key];
@@ -270,7 +322,7 @@ export function segmented(options, value, onChange) {
 }
 
 export function empty(title, text = '', action = null, ic = 'file') {
-  return h('div', { class: 'empty' }, icon(ic), h('h3', {}, title), text ? h('div', {}, text) : null, action ? h('div', { class: 'mt' }, action) : null);
+  return h('div', { class: 'empty' }, icon(ic), h('h2', {}, title), text ? h('div', {}, text) : null, action ? h('div', { class: 'mt' }, action) : null);
 }
 
 export function loading(text = 'Загрузка…') { return h('div', { class: 'loading' }, h('span', { class: 'spinner' }), ' ', text); }

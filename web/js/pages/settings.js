@@ -30,6 +30,9 @@ export async function render(root, c) {
         toast(bad.length ? `Ошибки: ${bad.map(x => `${x.name || x.id}: ${x.error}`).join('; ')}` : `Проверочное уведомление отправлено (${r.results.length})`, bad.length ? 'bad' : 'good');
       } }, icon('bell'), 'Отправить проверочное'),
       h('span', { class: 'muted small' }, 'Сначала сохраните настройки, если меняли каналы.')));
+    if (tab === 'monitor') form.appendChild(h('div', { class: 'row mt', style: { flexWrap: 'wrap' } },
+      h('a', { class: 'btn sm', href: '/api/metrics/grafana-dashboard', title: 'JSON для «Dashboards → New → Import» в Grafana 9+; источник данных — Prometheus, собирающий /metrics' }, icon('download'), 'Скачать дашборд Grafana'),
+      h('a', { class: 'btn sm ghost', href: '#/docs?p=09-monitoring.md&s=дашборд-grafana' }, icon('book'), 'Как подключить')));
     if (tab === 'security') form.appendChild(h('div', { class: 'alert warn mt' }, 'Если вы потеряете доступ из-за списка IP — выполните на сервере: ', h('code', {}, 'nmctl allowlist clear'), '.'));
   };
   mount(root,

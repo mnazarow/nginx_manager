@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from contextlib import asynccontextmanager
 
@@ -32,12 +33,23 @@ def _fmt_errors(errors) -> list:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from .core import App
+    from .services.backup import apply_pending_restore, restore_report
+    res = apply_pending_restore()  # запланированное восстановление базы — до того, как её кто-то откроет
+    if res is not None:
+        if res["ok"]:
+            log.warning("База восстановлена из копии %s", res.get("source"))
+        else:
+            log.error("Восстановление базы из копии %s не выполнено: %s", res.get("source"), res.get("error"))
     nm = App()
     pw = nm.ensure_admin()
     if pw:
         log.warning("Создан администратор admin с паролем: %s (смените после входа)", pw)
     app.state.nm = nm
     await nm.start()
+    try:
+        restore_report(nm)
+    except Exception:  # noqa: BLE001 — запись в журнал не должна мешать запуску
+        log.exception("Не удалось записать итог восстановления базы")
     try:
         yield
     finally:
@@ -115,7 +127,7 @@ def create_app() -> FastAPI:
     @app.get("/healthz", include_in_schema=False)
     async def healthz(request: Request):
         nm = request.app.state.nm
-        return {"ok": True, "version": VERSION, "nginx": nm.nginx.is_running()}
+        return {"ok": True, "version": VERSION, "nginx": nm.nginx.is_running(), "started": nm.started}
 
     @app.get("/metrics", include_in_schema=False)
     async def metrics(request: Request):
@@ -137,17 +149,28 @@ def create_app() -> FastAPI:
 
 
 def run() -> None:
-    import os
+    import inspect
     import uvicorn
+    from . import process
     os.umask(0o022)  # файлы конфигурации должны читаться воркерами nginx
     logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO),
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s", stream=sys.stdout)
     kw = {}
     if settings.tls_cert and settings.tls_key:
         kw.update(ssl_certfile=settings.tls_cert, ssl_keyfile=settings.tls_key)
-    uvicorn.run(create_app(), host=settings.bind_host, port=settings.bind_port, log_level=settings.log_level,
-                proxy_headers=True, forwarded_allow_ips=",".join(settings.trust_proxy), access_log=False,
-                ws_ping_interval=20, ws_ping_timeout=20, **kw)
+    if "timeout_graceful_shutdown" in inspect.signature(uvicorn.Config.__init__).parameters:
+        kw["timeout_graceful_shutdown"] = 10  # открытые WebSocket не должны задерживать остановку
+    config = uvicorn.Config(create_app(), host=settings.bind_host, port=settings.bind_port,
+                            log_level=settings.log_level, proxy_headers=True,
+                            forwarded_allow_ips=",".join(settings.trust_proxy), access_log=False,
+                            ws_ping_interval=20, ws_ping_timeout=20, **kw)
+    process.server = uvicorn.Server(config)
+    process.server.run()
+    if process.restart:
+        log.warning("Перезапуск панели…")
+        logging.shutdown()
+        sys.stdout.flush()
+        os.execv(sys.executable, [sys.executable, "-m", "app.main"])
 
 
 app = create_app()

@@ -4,11 +4,12 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import os
 import re
 import sqlite3
 import time
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from ..config import VERSION, settings
 
@@ -196,13 +197,16 @@ def db_backup(app, label: str = "manual") -> Path:
 
 
 def prune_backups(keep_auto: int, keep_update: int) -> List[str]:
-    """Удалить старые копии: ежедневные (оставить keep_auto), сделанные при обновлениях и из консоли — базы,
-    код прежних версий и nginx.conf (оставить keep_update каждого вида). Ручные копии из панели не трогаются."""
+    """Удалить старые копии: ежедневные (оставить keep_auto), сделанные при обновлениях, из консоли, перед импортом
+    и восстановлением — базы, код прежних версий и nginx.conf (оставить keep_update каждого вида). Ручные копии из
+    панели и скачанные из хранилища не трогаются."""
     d = settings.backups_dir
     removed: List[str] = []
     groups = [(sorted(d.glob("nginx-manager-*-auto.db")), keep_auto),
               (sorted(d.glob("nginx-manager-*-cli.db")), keep_update),
               (sorted(d.glob("nginx-manager-*-preupdate.db")), keep_update),
+              (sorted(d.glob("nginx-manager-*-before-import.db")), keep_update),
+              (sorted(d.glob("nginx-manager-*-before-restore.db")), keep_update),
               (sorted(d.glob("code-*.tar.gz"), key=lambda p: p.stat().st_mtime), keep_update),
               (sorted(d.glob("nginx.conf-*")), keep_update * 2)]
     for files, keep in groups:
@@ -384,6 +388,233 @@ def offsite_check(app) -> Dict[str, Any]:
 def list_backups() -> List[Dict[str, Any]]:
     out = []
     for p in sorted(settings.backups_dir.glob("nginx-manager-*"), reverse=True):
+        if p.suffix not in (".db", ".json", ".gz", ".enc"):  # служебные файлы SQLite (-wal, -shm) и временные
+            continue
         st = p.stat()
         out.append({"name": p.name, "size": st.st_size, "mtime": st.st_mtime, "kind": p.suffix[1:]})
     return out
+
+
+# =============================================================================
+#  Восстановление базы из копии
+# =============================================================================
+#  Работающую базу нельзя подменить «на ходу»: её держат открытой сборщик статистики, фоновые задачи и запросы.
+#  Поэтому восстановление двухшаговое: панель проверяет копию, сохраняет текущую базу (before-restore), кладёт
+#  копию в data_dir/restore-pending.db и перезапускается; при старте, ДО открытия базы, apply_pending_restore()
+#  ещё раз проверяет копию и заменяет ею файл базы. Итог пишется в журнал событий и аудита уже новой базы.
+RESTORE_PENDING = "restore-pending.db"
+RESTORE_META = "restore-pending.json"
+RESTORE_RESULT = "restore-result.json"
+RESTORE_LAST = "restore-last.json"
+SQLITE_MAGIC = b"SQLite format 3\x00"
+
+
+def _ro_connect(path: Path) -> sqlite3.Connection:
+    """Открыть файл копии только для чтения, не создавая рядом -wal/-shm (immutable: файл никто не меняет)."""
+    from urllib.request import pathname2url
+    return sqlite3.connect(f"file:{pathname2url(str(Path(path).resolve()))}?immutable=1", uri=True)
+
+
+def inspect_db(path: Path) -> Dict[str, Any]:
+    """Проверить файл базы перед восстановлением и рассказать, что в нём. Любая проблема — ValueError с понятным
+    текстом: не SQLite, повреждена, не база панели, сделана более новой версией, нет ни одного администратора."""
+    from ..db import SCHEMA
+    path = Path(path)
+    if not path.is_file():
+        raise ValueError(f"Файл не найден: {path.name}")
+    with open(path, "rb") as f:
+        head = f.read(16)
+    if head != SQLITE_MAGIC:
+        hint = ""
+        if head[:2] == b"\x1f\x8b":
+            hint = " — это сжатый файл (.gz), сначала распакуйте его"
+        elif head.startswith(b"Salted__"):
+            hint = " — это зашифрованный файл (.enc), сначала расшифруйте его"
+        elif head.lstrip()[:1] == b"{":
+            hint = " — это экспорт настроек (JSON): загрузите его через «Импорт настроек»"
+        raise ValueError(f"{path.name} не является файлом базы SQLite{hint}")
+    con = None
+    try:
+        con = _ro_connect(path)
+        chk = con.execute("PRAGMA quick_check").fetchone()[0]
+        if chk != "ok":
+            raise ValueError(f"База в копии повреждена (проверка целостности: {str(chk)[:200]})")
+        ver = con.execute("PRAGMA user_version").fetchone()[0]
+        tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if ver < 1 or not {"sites", "users", "kv", "config_versions"} <= tables:
+            raise ValueError(f"{path.name} — база SQLite, но не база Nginx Manager")
+        if ver > len(SCHEMA):
+            raise ValueError(f"Копия сделана более новой версией панели (схема базы {ver}, эта версия знает схемы "
+                             f"до {len(SCHEMA)}) — сначала обновите панель, затем восстанавливайте")
+        users = [{"username": r[0], "role": r[1], "disabled": bool(r[2])}
+                 for r in con.execute("SELECT username, role, disabled FROM users ORDER BY username")]
+        admins = [u["username"] for u in users if u["role"] == "admin" and not u["disabled"]]
+        if not admins:
+            raise ValueError("В копии нет ни одного активного администратора — после восстановления войти в панель "
+                             "было бы невозможно")
+
+        def count(t: str) -> int:
+            return con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] if t in tables else 0
+
+        until = 0.0
+        for t in ("events", "audit_log", "stats_minute"):
+            if t in tables:
+                until = max(until, con.execute(f"SELECT COALESCE(MAX(ts), 0) FROM {t}").fetchone()[0] or 0)
+        last = con.execute("SELECT id, ts FROM config_versions WHERE status='applied' ORDER BY id DESC LIMIT 1") \
+            .fetchone()
+        st = path.stat()
+        return {"name": path.name, "size": st.st_size, "mtime": st.st_mtime, "schema": ver,
+                "schema_current": len(SCHEMA), "sites": count("sites"), "streams": count("streams"),
+                "certificates": count("certificates"), "alert_rules": count("alert_rules"),
+                "users": users, "admins": admins, "data_until": until or None,
+                "last_applied": {"id": last[0], "ts": last[1]} if last else None}
+    except sqlite3.DatabaseError as e:
+        raise ValueError(f"Не удалось прочитать базу из копии: {e}") from e
+    finally:
+        if con is not None:
+            con.close()
+
+
+def _read_json(path: Path) -> Optional[Dict[str, Any]]:
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def _write_json(path: Path, data: Dict[str, Any]) -> None:
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1))
+    tmp.chmod(0o600)
+    os.replace(tmp, path)
+
+
+def restore_pending() -> Optional[Dict[str, Any]]:
+    """Запланированное, но ещё не выполненное восстановление (или None)."""
+    if not (settings.data_dir / RESTORE_PENDING).exists():
+        return None
+    return _read_json(settings.data_dir / RESTORE_META) or {}
+
+
+def schedule_restore(app, src: Path, user: str = "", ip: str = "") -> Dict[str, Any]:
+    """Шаг 1 (работающая панель): проверить копию, сохранить текущую базу, положить копию на место ожидания.
+    Сам файл базы заменит apply_pending_restore() при следующем запуске."""
+    import shutil
+    src = Path(src)
+    info = inspect_db(src)
+    safety = db_backup(app, "before-restore")
+    pend = settings.data_dir / RESTORE_PENDING
+    tmp = pend.with_name(pend.name + ".tmp")
+    shutil.copyfile(src, tmp)
+    tmp.chmod(0o600)
+    os.replace(tmp, pend)
+    meta = {"source": src.name, "user": user, "ip": ip, "ts": time.time(), "safety": safety.name}
+    _write_json(settings.data_dir / RESTORE_META, meta)
+    return {**meta, "info": info}
+
+
+def cancel_restore() -> bool:
+    found = (settings.data_dir / RESTORE_PENDING).exists()
+    for n in (RESTORE_PENDING, RESTORE_META):
+        (settings.data_dir / n).unlink(missing_ok=True)
+    return found
+
+
+def _running_config(db_path: Path) -> Optional[Dict[str, Any]]:
+    """Последняя применённая версия конфигурации в текущей базе — то, что сейчас работает в nginx."""
+    if not db_path.exists():
+        return None
+    con = sqlite3.connect(str(db_path), timeout=30)
+    try:
+        con.row_factory = sqlite3.Row
+        r = con.execute("SELECT * FROM config_versions WHERE status='applied' ORDER BY id DESC LIMIT 1").fetchone()
+        return dict(r) if r else None
+    except sqlite3.DatabaseError:
+        return None
+    finally:
+        con.close()
+
+
+def _carry_running_config(db_path: Path, running: Optional[Dict[str, Any]]) -> Optional[int]:
+    """Перенести в восстановленную базу версию конфигурации, которая реально работает в nginx. Тогда панель покажет
+    честные «неприменённые изменения» (разницу между восстановленными настройками и работающим nginx), а к прежней
+    конфигурации можно будет откатиться из «Истории версий»."""
+    if not running:
+        return None
+    con = sqlite3.connect(str(db_path), timeout=30)
+    try:
+        last = con.execute("SELECT checksum FROM config_versions WHERE status='applied' ORDER BY id DESC LIMIT 1") \
+            .fetchone()
+        if last and last[0] and last[0] == running.get("checksum"):
+            return None  # в nginx работает ровно то, что применено в копии
+        cur = con.execute(
+            "INSERT INTO config_versions(ts,username,comment,source,status,files,state,output,checksum) "
+            "VALUES(?,?,?,?,?,?,?,?,?)",
+            (time.time(), running.get("username") or "system",
+             f"Работавшая в nginx конфигурация на момент восстановления базы (в прежней базе — версия "
+             f"{running['id']})", "restore", "applied", running["files"], running["state"], "",
+             running.get("checksum")))
+        vid = cur.lastrowid
+        con.execute("INSERT INTO kv(key,value) VALUES('applied_version',?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (json.dumps(vid),))
+        con.commit()
+        return vid
+    finally:
+        con.close()
+
+
+def apply_pending_restore() -> Optional[Dict[str, Any]]:
+    """Шаг 2 (запуск панели, база ещё не открыта): заменить файл базы запланированной копией.
+    При любой ошибке остаётся прежняя база. Итог — в data_dir/restore-result.json (его прочтёт restore_report)."""
+    d = settings.data_dir
+    pend = d / RESTORE_PENDING
+    if not pend.exists():
+        return None
+    res: Dict[str, Any] = dict(_read_json(d / RESTORE_META) or {}, ok=False, done_at=time.time(), error="")
+    db = settings.db_path
+    try:
+        info = inspect_db(pend)
+        running = _running_config(db)
+        # сначала служебные файлы прежней базы: чужой журнал WAL нельзя оставлять рядом с новой базой
+        for suf in ("-wal", "-shm", "-journal"):
+            Path(str(db) + suf).unlink(missing_ok=True)
+        os.replace(pend, db)
+        os.chmod(db, 0o600)
+        res.update(ok=True, schema=info["schema"], data_until=info["data_until"], sites=info["sites"],
+                   carried_version=_carry_running_config(db, running))
+    except Exception as e:  # noqa: BLE001 — панель должна запуститься с прежней базой при любой ошибке
+        res["error"] = str(e).replace(RESTORE_PENDING, res.get("source") or RESTORE_PENDING)[:500]
+        pend.unlink(missing_ok=True)
+    (d / RESTORE_META).unlink(missing_ok=True)
+    _write_json(d / RESTORE_RESULT, res)
+    return res
+
+
+def restore_report(app) -> Optional[Dict[str, Any]]:
+    """После запуска: записать итог восстановления в журналы (уже восстановленной) базы и разослать уведомление."""
+    d = settings.data_dir
+    res = _read_json(d / RESTORE_RESULT)
+    if res is None:
+        return None
+    who = res.get("user") or "nmctl"
+    src = res.get("source") or "?"
+    if res.get("ok"):
+        try:
+            pend = app.pending().get("pending")
+        except Exception:  # noqa: BLE001
+            pend = None
+        res["pending"] = bool(pend)
+        msg = (f"База восстановлена из копии {src} (запросил {who}); прежняя база сохранена как "
+               f"{res.get('safety') or '—'}.")
+        msg += (" Настройки в базе отличаются от работающей конфигурации nginx — проверьте изменения и примените."
+                if pend else " Работающая конфигурация nginx совпадает с восстановленной.")
+        app.db.event("warning", "backup", msg, res)
+        app.db.audit(who, res.get("ip"), "backup_restored", src, {"safety": res.get("safety"),
+                                                                 "carried_version": res.get("carried_version")})
+    else:
+        app.db.event("error", "backup", f"Восстановление базы из копии {src} не выполнено: {res.get('error')}. "
+                                        "Панель работает с прежней базой.", res)
+        app.db.audit(who, res.get("ip"), "backup_restore_failed", src, {"error": res.get("error")})
+    app.db.kv_set("last_restore", res)
+    os.replace(d / RESTORE_RESULT, d / RESTORE_LAST)
+    return res

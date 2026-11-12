@@ -23,8 +23,9 @@ PAGES = [
     ("geo-tab", "#/bans?tab=countries", 3000), ("analytics-sla", "#/analytics?view=sla", 3000),
     ("analytics-heatmap", "#/analytics?view=heatmap", 3000), ("certs-dns", "#/certs?tab=dns", 2000),
     ("settings-acme", "#/settings?tab=acme", 1500), ("settings-events", "#/settings?tab=events", 1500),
+    ("settings-monitor", "#/settings?tab=monitor", 1500),
 ]
-SCENES = {"geo-site", "sites-bulk", "backup-s3"}  # снимки с действиями: --only geo-site,sites-bulk или --extras
+SCENES = {"geo-site", "sites-bulk", "backup-s3", "backup-restore"}  # снимки с действиями: --only geo-site,sites-bulk или --extras
 
 
 async def main(a):
@@ -35,7 +36,8 @@ async def main(a):
         ctx = await browser.new_context(viewport={"width": a.width, "height": a.height}, device_scale_factor=a.scale,
                                         locale="ru-RU", color_scheme=a.theme)
         page = await ctx.new_page()
-        page.on("console", lambda m: errors.append(f"[console.{m.type}] {m.text}") if m.type in ("error",) else None)
+        page.on("console", lambda m: errors.append(f"[console.{m.type}] {m.text}")
+                if m.type == "error" and "status of 401" not in m.text else None)
         page.on("pageerror", lambda e: errors.append(f"[pageerror] {e}"))
         # адрес ответа с ошибкой (в консоли браузера его нет); 401 до входа — норма
         page.on("response", lambda r: errors.append(f"[http {r.status}] {r.request.method} {r.url}")
@@ -102,6 +104,17 @@ async def scenes(page, a, only):
         await page.wait_for_timeout(500)
         await page.screenshot(path=f"{a.out}/backup-s3.png")
         print("backup-s3: ok")
+    if not only or "backup-restore" in only:
+        # окно проверки копии перед восстановлением (сама копия не восстанавливается — окно закрывается)
+        await page.goto(f"{a.url}/#/backup")
+        await page.wait_for_timeout(2000)
+        btn = page.locator("table.t tbody tr", has_text="-manual.db").locator("button", has_text="Восстановить").first
+        await btn.click()
+        await page.wait_for_selector(".modal dl.kv", timeout=15000)
+        await page.wait_for_timeout(400)
+        await page.screenshot(path=f"{a.out}/backup-restore.png")
+        await page.keyboard.press("Escape")
+        print("backup-restore: ok")
 
 
 async def extras(page, a):

@@ -22,7 +22,7 @@ export async function render(root) {
     if (!fromInp.value || !toInp.value) return;
     st.from = new Date(fromInp.value).getTime() / 1000; st.to = new Date(toInp.value).getTime() / 1000; load();
   } }, 'Показать'));
-  const siteSel = h('select', { onchange: (e) => { st.site = e.target.value; load(); } }, h('option', { value: '*' }, 'Все сайты'),
+  const siteSel = h('select', { 'aria-label': 'Сайт', onchange: (e) => { st.site = e.target.value; load(); } }, h('option', { value: '*' }, 'Все сайты'),
     sites.map(s => h('option', { value: String(s.id), selected: String(s.id) === st.site }, s.name)));
   const rangeBar = h('div', { class: 'toolbar' }, segmented([...RANGES, ['custom', 'Период…']], st.range, (v) => {
     st.range = v; custom.classList.toggle('hidden', v !== 'custom'); if (v !== 'custom') { st.from = st.to = null; load(); }

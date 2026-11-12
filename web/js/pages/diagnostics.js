@@ -41,7 +41,7 @@ export async function render(root) {
       // свёрнутая строка «Ещё N проверок» считается за N
       const cnt = (st) => items.filter(x => x.status === st).reduce((a, x) => a + (x.folded || 1), 0);
       const f = cnt('fail'), w = cnt('warn');
-      return h('div', { class: 'card mb' }, h('div', { class: 'card-head' }, h('h3', {}, g), h('div', { class: 'row' }, f ? badge(`ошибок: ${f}`, 'bad') : null, w ? badge(`предупреждений: ${w}`, 'warn') : null, !f && !w ? badge('в порядке', 'good') : null)),
+      return h('div', { class: 'card mb' }, h('div', { class: 'card-head' }, h('h2', {}, g), h('div', { class: 'row' }, f ? badge(`ошибок: ${f}`, 'bad') : null, w ? badge(`предупреждений: ${w}`, 'warn') : null, !f && !w ? badge('в порядке', 'good') : null)),
         h('div', { class: 'card-body flush', style: { marginTop: '10px' } }, items.map(item)));
     }) : h('div', { class: 'alert good' }, 'Проблем не обнаружено 🎉'));
   }

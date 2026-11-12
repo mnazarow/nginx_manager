@@ -8,6 +8,7 @@
     nmctl user list | add | passwd | reset-2fa | disable | enable | delete
     nmctl allowlist clear             снять ограничение доступа к панели по IP
     nmctl backup                      резервная копия БД и настроек
+    nmctl restore <файл.db[.gz|.enc]> восстановить базу из копии (текущая сохраняется)
     nmctl export > settings.json      экспорт настроек
     nmctl import settings.json        импорт настроек
     nmctl versions                    история применённых конфигураций
@@ -23,6 +24,7 @@ import getpass
 import json
 import sys
 import time
+from pathlib import Path
 
 C = {"ok": "\033[32m", "warn": "\033[33m", "fail": "\033[31m", "info": "\033[36m", "skip": "\033[90m",
      "b": "\033[1m", "r": "\033[0m"}
@@ -225,6 +227,133 @@ def cmd_backup(a) -> int:
     return 0
 
 
+def _service_active() -> bool:
+    import shutil
+    import subprocess
+    if not shutil.which("systemctl"):
+        return False
+    return subprocess.run(["systemctl", "is-active", "--quiet", "nginx-manager"], check=False,
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+
+
+def _panel_answers() -> bool:
+    """Отвечает ли панель на своём порту (запущена не как сервис systemd — тогда менять базу под ней нельзя)."""
+    import ssl
+    import urllib.request
+    from .config import settings
+    host = settings.bind_host if settings.bind_host not in ("", "0.0.0.0", "::") else "127.0.0.1"
+    host = f"[{host}]" if ":" in host else host
+    scheme = "https" if settings.tls_cert and settings.tls_key else "http"
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}),
+                                         urllib.request.HTTPSHandler(context=ssl._create_unverified_context()))
+    try:
+        with opener.open(f"{scheme}://{host}:{settings.bind_port}/healthz", timeout=3) as r:
+            return b'"ok"' in r.read(300)
+    except Exception:  # noqa: BLE001 — нет ответа: панель не запущена
+        return False
+
+
+def _prepare_restore_file(path: str) -> Path:
+    """Файл копии → несжатая незашифрованная база в каталоге копий (.enc расшифровывается, .gz распаковывается)."""
+    import gzip
+    import shutil
+    from .config import settings
+    from .services.backup import _decrypt
+    src = Path(path).expanduser().resolve()
+    if not src.is_file():
+        raise ValueError(f"Файл не найден: {src}")
+    work = src
+    tmp = []
+    try:
+        if work.name.endswith(".enc"):
+            pw = os.environ.get("NM_BACKUP_PASS") or getpass.getpass("Пароль шифрования копии: ")
+            dst = settings.backups_dir / work.name
+            if dst != work:
+                shutil.copyfile(work, dst)
+                tmp.append(dst)
+            work = _decrypt(dst, pw)
+        if work.name.endswith(".gz"):
+            out = settings.backups_dir / work.name[:-3]
+            try:
+                with gzip.open(work, "rb") as fi, open(out, "wb") as fo:
+                    shutil.copyfileobj(fi, fo, 1 << 20)
+            except (OSError, EOFError) as e:
+                out.unlink(missing_ok=True)
+                raise ValueError(f"Не удалось распаковать {work.name}: {e}") from e
+            out.chmod(0o600)
+            if work.parent == settings.backups_dir and work != src:
+                tmp.append(work)
+            work = out
+    finally:
+        for t in tmp:
+            t.unlink(missing_ok=True)
+    return work
+
+
+def cmd_restore(a) -> int:
+    """Восстановить базу из копии. Сервис запущен — копия ставится в очередь и сервис перезапускается (замена
+    файла — при старте); остановлен — файл заменяется сразу, итог запишется в журнал при следующем запуске."""
+    from .config import settings
+    from .core import App
+    from .services.backup import (RESTORE_LAST, _read_json, apply_pending_restore, inspect_db, restore_pending,
+                                  schedule_restore)
+    settings.ensure_dirs()
+    if restore_pending() is not None:
+        print(f"{C['warn']}! Восстановление уже запланировано и ждёт перезапуска сервиса.{C['r']} "
+              "Перезапустите сервис: systemctl restart nginx-manager")
+        return 1
+    active = _service_active()
+    if not active and _panel_answers():
+        print(f"{C['fail']}✗ Панель работает, но не как сервис systemd — заменить базу под ней нельзя.{C['r']} "
+              "Восстановите копию из интерфейса («Копии и импорт» → «Восстановить») или остановите панель и "
+              "повторите команду.", file=sys.stderr)
+        return 1
+    src = _prepare_restore_file(a.file)
+    info = inspect_db(src)
+    fmt = lambda ts: time.strftime("%Y-%m-%d %H:%M", time.localtime(ts)) if ts else "—"  # noqa: E731
+    print(f"{C['b']}Копия {src.name}{C['r']}: {info['size'] / 1048576:.1f} МБ, данные по {fmt(info['data_until'])}, "
+          f"схема {info['schema']}" + (f" (будет обновлена до {info['schema_current']})"
+                                      if info["schema"] < info["schema_current"] else ""))
+    print(f"  сайтов {info['sites']}, потоков {info['streams']}, сертификатов {info['certificates']}; "
+          f"администраторы: {', '.join(info['admins'])}")
+    print("  Текущая база будет сохранена (before-restore); пользователи, пароли, настройки, журналы и статистика "
+          "станут такими, как в копии.")
+    if not a.yes:
+        if not sys.stdin.isatty():
+            print("Подтвердите ключом --yes", file=sys.stderr)
+            return 1
+        if input("Восстановить? [y/N] ").strip().lower() not in ("y", "yes", "д", "да"):
+            print("Отменено")
+            return 1
+    app = App()
+    res = schedule_restore(app, src, "nmctl", "local")
+    app.db.close()  # замена файла базы — без открытых соединений этого процесса
+    print(f"Текущая база сохранена: {settings.backups_dir / res['safety']}")
+    t0 = time.time()
+    if active:
+        import subprocess
+        print("Перезапуск сервиса nginx-manager…")
+        subprocess.run(["systemctl", "restart", "nginx-manager"], check=False)
+        while time.time() - t0 < 90:
+            last = _read_json(settings.data_dir / RESTORE_LAST)
+            if restore_pending() is None and last and last.get("done_at", 0) >= t0 - 1:
+                break
+            time.sleep(1)
+        last = _read_json(settings.data_dir / RESTORE_LAST)
+        if not last or last.get("done_at", 0) < t0 - 1:
+            print(f"{C['warn']}! Сервис не подтвердил восстановление за 90 с — смотрите journalctl -u nginx-manager"
+                  f"{C['r']}")
+            return 1
+    else:
+        last = apply_pending_restore()
+    if last and last.get("ok"):
+        print(f"{C['ok']}✓ База восстановлена из {src.name}.{C['r']} Проверьте «Неприменённые изменения» в панели "
+              "(или nmctl apply), если настройки копии отличаются от работающих.")
+        return 0
+    print(f"{C['fail']}✗ Восстановление не выполнено: {(last or {}).get('error')}{C['r']}", file=sys.stderr)
+    return 1
+
+
 def cmd_export(a) -> int:
     from .core import App
     from .services.backup import export_config
@@ -296,6 +425,9 @@ def main(argv=None) -> int:
     p = sub.add_parser("allowlist", help="доступ к панели по IP")
     p.add_argument("action", choices=["show", "clear"])
     sub.add_parser("backup", help="резервная копия")
+    p = sub.add_parser("restore", help="восстановить базу из копии")
+    p.add_argument("file", help="файл копии: .db, .db.gz или .db.gz.enc (пароль — запрос или NM_BACKUP_PASS)")
+    p.add_argument("-y", "--yes", action="store_true", help="не спрашивать подтверждение")
     p = sub.add_parser("export", help="экспорт настроек в JSON")
     p.add_argument("--users", action="store_true")
     p = sub.add_parser("import", help="импорт настроек из JSON")
@@ -311,7 +443,8 @@ def main(argv=None) -> int:
         ap.print_help()
         return 0
     cmd = {"status": cmd_status, "apply": cmd_apply, "test": cmd_test, "diag": cmd_diag, "user": cmd_user,
-           "allowlist": cmd_allowlist, "backup": cmd_backup, "export": cmd_export, "import": cmd_import,
+           "allowlist": cmd_allowlist, "backup": cmd_backup, "restore": cmd_restore, "export": cmd_export,
+           "import": cmd_import,
            "versions": cmd_versions, "rollback": cmd_rollback, "sites": cmd_sites}[a.cmd]
     from .nginx.manager import ApplyError
     try:

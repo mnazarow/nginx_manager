@@ -18,6 +18,9 @@ const A = {
   insight_muted: 'скрыт тип подсказок', insight_thresholds: 'пороги анализа', backup_created: 'создана резервная копия', backup_deleted: 'удалена резервная копия',
   cli_allowlist_clear: 'консоль: снято ограничение доступа по IP', dns_account_created: 'создана учётная запись DNS',
   dns_account_updated: 'изменена учётная запись DNS', dns_account_deleted: 'удалена учётная запись DNS',
+  backup_downloaded_s3: 'копия скачана из хранилища', backup_uploaded: 'копия загружена на сервер',
+  backup_restore_scheduled: 'запланировано восстановление базы', backup_restore_cancelled: 'восстановление базы отменено',
+  backup_restored: 'база восстановлена из копии', backup_restore_failed: 'восстановление базы не удалось',
 };
 
 // действие, которого нет в словаре: управление nginx и команды консоли — по шаблону, остальное — как есть

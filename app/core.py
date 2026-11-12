@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -26,6 +27,41 @@ from .stats.service import StatsService
 from .utils import hash_password
 
 log = logging.getLogger("nm.core")
+_UPSTREAM_RE = re.compile(r"^\s*upstream\s+nm_site_(\d+)\s*\{")
+_FAILOVER_RE = re.compile(r"^\s*server\s+(\S+)\s.*\bdown;\s+#\s*выключен автопереключением")
+
+
+def failover_in_files(files: Dict[str, str]) -> Dict[str, List[str]]:
+    """Бэкенды, выключенные автопереключением в файлах конфигурации (по пометке генератора)."""
+    out: Dict[str, List[str]] = {}
+    for text in files.values():
+        cur = None
+        for ln in text.splitlines():
+            m = _UPSTREAM_RE.match(ln)
+            if m:
+                cur = f"site:{m.group(1)}"
+                continue
+            m = _FAILOVER_RE.match(ln)
+            if m and cur:
+                out.setdefault(cur, []).append(m.group(1))
+    return {k: sorted(v) for k, v in out.items()}
+
+
+def effective_failover(state: State, overrides: Dict[str, List[str]]) -> Dict[str, List[str]]:
+    """Что генератор реально выключит при таких overrides: только существующие и не выключенные вручную серверы,
+    и ничего, если иначе не осталось бы ни одного основного (то же правило, что в Generator.upstream_block)."""
+    out: Dict[str, List[str]] = {}
+    for sid, s in state.sites:
+        dis = set(overrides.get(f"site:{sid}") or [])
+        if not dis or not s.enabled or s.type != "proxy":
+            continue
+        active = [b.key() for b in s.backends if not b.down and not b.backup]
+        if all(k in dis for k in active):
+            continue
+        eff = sorted(b.key() for b in s.backends if b.key() in dis and not b.down)
+        if eff:
+            out[f"site:{sid}"] = eff
+    return out
 
 
 class WSClient:
@@ -64,6 +100,8 @@ class App:
         self.revision = 0
         self._pending_cache: Tuple[int, float, Dict[str, Any]] = (-1, 0.0, {})
         self.nginx_restarts: List[float] = []
+        self._reconcile_sig: Tuple[str, float] = ("", 0.0)
+        self.nginx.overrides_provider = self.failover_overrides
         self.bootstrap()
 
     # ------------------------------------------------------------------
@@ -177,16 +215,46 @@ class App:
         await self.broadcast({"type": "applied", "version": res["version"], "user": username, "source": source})
         return res
 
+    def failover_overrides(self) -> Dict[str, List[str]]:
+        """Бэкенды, которые сейчас нужно держать выключенными (проверки с автопереключением сочли их недоступными)."""
+        return self.health.disabled_by_failover() if self.panel().auto_apply_failover else {}
+
+    async def reconcile_failover(self) -> Optional[Dict[str, Any]]:
+        """Сверка работающей конфигурации с результатами проверок. Расходятся они после применения из nmctl, отката
+        в консоли, восстановления базы или перезапуска панели, пока бэкенд восстановился (переход unknown → up
+        не вызывает переключения). При расхождении — переприменение последней версии с актуальным выключением."""
+        if self.nginx.lock.locked():
+            return None
+        targets = [t for t in self.health.targets.values() if t.check.auto_failover and t.owner.startswith("site:")]
+        if any(t.state == "unknown" for t in targets):
+            return None  # ждём первых проверок после запуска
+        last = self.nginx.last_applied()
+        if not last:
+            return None
+        try:
+            state = State.from_json(json.loads(last["state"]))
+            have = failover_in_files(json.loads(last["files"]))
+        except (ValueError, KeyError, TypeError):
+            return None
+        want = effective_failover(state, self.failover_overrides())
+        if want == have:
+            return None
+        sig = json.dumps([last["id"], want, have], sort_keys=True)
+        if self._reconcile_sig[0] == sig and time.time() - self._reconcile_sig[1] < 600:
+            return None  # то же расхождение уже пытались устранить — не чаще раза в 10 минут
+        self._reconcile_sig = (sig, time.time())
+        log.info("сверка автопереключения: в конфигурации %s, по проверкам %s", have, want)
+        return await self.apply_snapshot("Автопереключение: сверка выключенных бэкендов с результатами проверок",
+                                         "failover")
+
     async def apply_snapshot(self, reason: str, source: str) -> Optional[Dict[str, Any]]:
         """Переприменить последнюю применённую версию с актуальными сертификатами и переключениями бэкендов
-        (неприменённые правки пользователя не затрагиваются)."""
+        (неприменённые правки пользователя не затрагиваются; выключение упавших бэкендов добавит NginxManager)."""
         state = self.last_applied_state()
         if not state:
             return None
         fresh = self.nginx.load_state()
         state.certs = fresh.certs
-        if self.panel().auto_apply_failover:
-            state.overrides = self.health.disabled_by_failover()
         try:
             return await self.apply("system", reason, source, state)
         except ApplyError:
@@ -482,6 +550,7 @@ class App:
                 await self._guard("проверка сертификатов", asyncio.to_thread(self.certs.refresh_all))
                 await self._guard("продление сертификатов", self.certs.auto_renew(after=self.after_cert_issued))
             await self._guard("регулярный отчёт", self.maybe_send_report())
+            await self._guard("сверка автопереключения бэкендов", self.reconcile_failover())
             lt = time.localtime(now)
             today = time.strftime("%Y-%m-%d", lt)
             if lt.tm_hour == p.backup_hour and self.db.kv_get("last_auto_backup") != today:

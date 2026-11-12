@@ -13,7 +13,7 @@ export async function render(root) {
       h('button', { class: 'btn primary', onclick: () => create() }, icon('plus'), 'Добавить пользователя')),
     h('div', { class: 'card' }, table([
       { title: 'Пользователь', render: (u) => h('div', {}, h('b', {}, u.username), u.id === ctx.user.id ? badge('это вы', 'info') : null) },
-      { title: 'Роль', render: (u) => h('select', { style: { width: 'auto' }, onchange: async (e) => { await api(`/users/${u.id}`, { method: 'PUT', body: { role: e.target.value } }); toast('Роль изменена', 'good'); render(root); } },
+      { title: 'Роль', render: (u) => h('select', { style: { width: 'auto' }, 'aria-label': `Роль пользователя ${u.username}`, onchange: async (e) => { await api(`/users/${u.id}`, { method: 'PUT', body: { role: e.target.value } }); toast('Роль изменена', 'good'); render(root); } },
         ROLES.map(([r, l]) => h('option', { value: r, selected: r === u.role }, l.split(' — ')[0]))) },
       { title: '2FA', render: (u) => u.totp_enabled ? badge('включена', 'good') : badge('нет') },
       { title: 'Состояние', render: (u) => u.disabled ? badge('заблокирован', 'bad') : u.must_change_password ? badge('временный пароль', 'warn') : badge('активен', 'good') },

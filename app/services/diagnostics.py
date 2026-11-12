@@ -962,6 +962,19 @@ class Diagnostics:
                 res.append(R("backup_s3_enc", g, "Шифрование копий в хранилище", INFO, "выключено",
                              hint="В копиях есть секреты (токены каналов и DNS, ключи сертификатов, хеши паролей). "
                                   "Задайте пароль шифрования, если хранилищем пользуется кто-то ещё."))
+        from .backup import RESTORE_LAST, _read_json, restore_pending
+        pend = restore_pending()
+        if pend is not None and now - (pend.get("ts") or now) > 120:
+            res.append(R("backup_restore", g, "Восстановление базы", WARN,
+                         f"запланировано восстановление из {pend.get('source')}, но панель так и не перезапустилась",
+                         hint="Перезапустите сервис: systemctl restart nginx-manager — база будет заменена при запуске. "
+                              "Передумали — «Отменить» на странице «Копии и импорт»."))
+        last = _read_json(settings.data_dir / RESTORE_LAST)
+        if last and not last.get("ok") and now - (last.get("done_at") or 0) < 7 * 86400:
+            res.append(R("backup_restore", g, "Восстановление базы", WARN,
+                         f"последнее восстановление (из {last.get('source')}) не выполнено: {last.get('error', '')[:200]}",
+                         hint="Панель работает с прежней базой. Проверьте копию кнопкой «Восстановить» — окно покажет, "
+                              "что с ней не так."))
         return res
 
     async def c_time(self) -> List[Dict[str, Any]]:

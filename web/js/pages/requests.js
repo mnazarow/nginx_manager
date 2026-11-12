@@ -22,7 +22,7 @@ export async function render(root) {
 }
 
 function siteSelect(sites, value, onchange) {
-  return h('select', { onchange: (e) => onchange(e.target.value) }, h('option', { value: '' }, 'Все сайты'),
+  return h('select', { 'aria-label': 'Сайт', onchange: (e) => onchange(e.target.value) }, h('option', { value: '' }, 'Все сайты'),
     sites.map(s => h('option', { value: String(s.id), selected: String(s.id) === value }, s.name)));
 }
 

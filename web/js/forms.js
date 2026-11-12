@@ -266,12 +266,14 @@ function arrayTable(f, obj, ctx, p) {
       if (c.type === 'bool') {
         w = h('label', { class: 'switch', title: c.help || c.label }, h('input', { type: 'checkbox', checked: !!item[c.key], onchange: (e) => { item[c.key] = e.target.checked; changed(ctx); } }), h('span', { class: 'track' }));
       } else if (c.type === 'select') {
-        w = h('select', { onchange: (e) => { item[c.key] = c.options[+e.target.value]; changed(ctx); } }, c.options.map((o, j) => h('option', { value: j, selected: o === item[c.key] }, (c.labels && c.labels[String(o)]) || String(o))));
+        w = h('select', { 'aria-label': `${c.label}, строка ${i + 1}`, onchange: (e) => { item[c.key] = c.options[+e.target.value]; changed(ctx); } }, c.options.map((o, j) => h('option', { value: j, selected: o === item[c.key] }, (c.labels && c.labels[String(o)]) || String(o))));
       } else if (c.type === 'int' || c.type === 'float') {
         w = h('input', { type: 'number', value: item[c.key] ?? '', min: c.min, max: c.max, class: ctx.errors && ctx.errors[cp] ? 'invalid' : '',
+          'aria-label': `${c.label}, строка ${i + 1}`,
           oninput: (e) => { const s = e.target.value; item[c.key] = s === '' ? (c.nullable ? null : c.default) : Number(s); changed(ctx); } });
       } else {
         w = h('input', { type: c.ui === 'password' ? 'password' : 'text', value: item[c.key] ?? '', placeholder: c.ph || '',
+          'aria-label': `${c.label}, строка ${i + 1}`,
           class: ctx.errors && ctx.errors[cp] ? 'invalid' : '', autocomplete: 'new-password', spellcheck: false,
           oninput: (e) => { item[c.key] = e.target.value; changed(ctx); } });
       }
@@ -281,7 +283,7 @@ function arrayTable(f, obj, ctx, p) {
       h('button', { class: 'btn sm icon ghost', type: 'button', title: 'Удалить', onclick: () => { arr.splice(i, 1); draw(); changed(ctx); } }, icon('trash')))));
     mount(wrap,
       arr.length ? h('div', { class: 'table-wrap' }, h('table', { class: 'arr-table' },
-        h('thead', {}, h('tr', {}, cols.map(c => h('th', { title: tipText(c) }, c.label)), h('th', {}))), h('tbody', {}, rows)))
+        h('thead', {}, h('tr', {}, cols.map(c => h('th', { title: tipText(c) }, c.label)), h('th', {}, h('span', { class: 'sr-only' }, 'Действия')))), h('tbody', {}, rows)))
         : h('div', { class: 'help', style: { padding: '6px 0' } }, 'Список пуст'),
       h('div', { class: 'mt-s' }, h('button', { class: 'btn sm', type: 'button', onclick: () => { arr.push(defaults(f.fields)); draw(); changed(ctx); } }, icon('plus'), 'Добавить')));
   };

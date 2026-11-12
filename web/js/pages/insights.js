@@ -14,7 +14,7 @@ export async function render(root) {
   const kp = h('div', { class: 'grid g4 mb' });
   const tabBar = h('div', {});
   const box = h('div', {});
-  const siteSel = h('select', { onchange: (e) => { st.site = e.target.value; load(); } }, h('option', { value: '*' }, 'Все сайты и сервер'),
+  const siteSel = h('select', { 'aria-label': 'Сайт', onchange: (e) => { st.site = e.target.value; load(); } }, h('option', { value: '*' }, 'Все сайты и сервер'),
     sites.map(s => h('option', { value: String(s.id), selected: String(s.id) === st.site }, s.name)));
 
   mount(root,
@@ -62,7 +62,7 @@ export async function render(root) {
     const groups = {};
     list.forEach(f => (groups[f.group] ||= { title: f.group_title, items: [] }).items.push(f));
     mount(box, h('div', { class: 'mb' }, levels),
-      list.length ? Object.values(groups).map(g => h('div', { class: 'mb' }, h('h3', { class: 'group-title' }, g.title),
+      list.length ? Object.values(groups).map(g => h('div', { class: 'mb' }, h('h2', { class: 'group-title' }, g.title),
         h('div', { class: 'card flush-list' }, foldSame(g.items).map(f => findingView(f, { onChange: () => { loadCatalog(true).then(load); } })))))
         : empty(res.findings.length ? 'Нет находок этого уровня' : 'Проблем не найдено',
           `За выбранный период проверено ${res.checked} сценариев. Анализ повторяется автоматически каждые 30 секунд.`, null, 'check'));
@@ -94,7 +94,7 @@ export async function render(root) {
     ];
     mount(box, h('p', { class: 'muted small' }, `Значения за выбранный период (${RANGES.find(r => r[0] === st.range)?.[1]}); ресурсы сервера — текущие. Знак «?» — описание показателя, пороги и рекомендации.`),
       h('div', { class: 'table-wrap' }, h('table', { class: 't' },
-        h('thead', {}, h('tr', {}, h('th', {}, 'Показатель'), h('th', { class: 'num' }, 'Значение'), h('th', {}, 'Оценка'), h('th', {}, 'Что это значит'), h('th', {}))),
+        h('thead', {}, h('tr', {}, h('th', {}, 'Показатель'), h('th', { class: 'num' }, 'Значение'), h('th', {}, 'Оценка'), h('th', {}, 'Что это значит'), h('th', {}, h('span', { class: 'sr-only' }, 'Действия')))),
         h('tbody', {}, rows.map(([id, v, txt, req]) => {
           const m = cat.metrics[id];
           const lv = levelOf(id, v, req);
@@ -116,9 +116,9 @@ export async function render(root) {
       const items = cat.scenarios.filter(s => !q || [s.title, s.when, s.what, ...(s.causes || []), ...(s.actions || [])].join(' ').toLowerCase().includes(q));
       const groups = {};
       items.forEach(s => (groups[s.group] ||= { title: s.group_title, items: [] }).items.push(s));
-      mount(list, items.length ? Object.values(groups).map(g => h('div', { class: 'mb' }, h('h3', { class: 'group-title' }, `${g.title} (${g.items.length})`),
+      mount(list, items.length ? Object.values(groups).map(g => h('div', { class: 'mb' }, h('h2', { class: 'group-title' }, `${g.title} (${g.items.length})`),
         g.items.map(s => h('div', { class: 'scenario' },
-          h('h4', {}, s.title, firing.has(s.id) ? badge('сейчас найдено', 'bad') : null, muted.has(s.id) ? badge('скрыто', 'outline') : null),
+          h('h3', { class: 'sub-h' }, s.title, firing.has(s.id) ? badge('сейчас найдено', 'bad') : null, muted.has(s.id) ? badge('скрыто', 'outline') : null),
           h('div', { class: 'when' }, 'Когда: ', s.when, s.custom ? h('div', { class: 'status-4' }, s.custom) : null),
           h('div', { class: 'small' }, s.what),
           s.causes.length || s.actions.length ? h('details', { class: 'small mt' }, h('summary', {}, 'Причины и действия'),
@@ -154,6 +154,7 @@ export async function render(root) {
       const m = cat.metrics[id];
       edit[id] = { warn: m.warn, crit: m.crit };
       const inp = (key) => h('input', { type: 'number', step: 'any', min: 0, value: m[key], disabled: !admin, style: { width: '110px' },
+        'aria-label': `${m.label}: порог «${key === 'warn' ? 'внимание' : 'проблема'}»`,
         oninput: (e) => { edit[id][key] = e.target.value === '' ? null : Number(e.target.value); } });
       return h('tr', {}, h('td', {}, h('b', {}, m.label), m.custom ? badge('свои', 'info') : null, h('div', { class: 'muted small' }, m.dir === 'above' ? 'плохо, когда выше порога' : 'плохо, когда ниже порога')),
         h('td', {}, inp('warn'), m.unit ? h('span', { class: 'muted small' }, ' ' + m.unit) : null),
@@ -169,7 +170,7 @@ export async function render(root) {
     };
     mount(box, h('p', { class: 'muted small' }, 'Пороги определяют цвет карточек показателей и срабатывание сценариев анализа (например, «Высокая доля ошибок 5xx» использует пороги «Ошибки 5xx»). Изменять может администратор.'),
       h('div', { class: 'table-wrap' }, h('table', { class: 't' },
-        h('thead', {}, h('tr', {}, h('th', {}, 'Показатель'), h('th', {}, 'Внимание'), h('th', {}, 'Проблема'), h('th', {}, 'По умолчанию'), h('th', {}))),
+        h('thead', {}, h('tr', {}, h('th', {}, 'Показатель'), h('th', {}, 'Внимание'), h('th', {}, 'Проблема'), h('th', {}, 'По умолчанию'), h('th', {}, h('span', { class: 'sr-only' }, 'Действия')))),
         h('tbody', {}, rows))),
       admin ? h('div', { class: 'row mt' }, h('button', { class: 'btn primary', onclick: () => {
         const patch = {};

@@ -85,7 +85,7 @@ export async function render(root) {
       rows.length > 1000 ? h('div', { class: 'muted small', style: { padding: '8px 12px' } }, `Показаны первые 1000 серверов из ${rows.length} — уточните поиск.`) : null);
     } else {
       body = shown.slice(0, 200).map(g => h('div', { class: 'card mb' },
-        h('div', { class: 'card-head' }, h('div', {}, h('h3', {}, g.name), h('div', { class: 'sub' }, kindLabel(g))),
+        h('div', { class: 'card-head' }, h('div', {}, h('h2', {}, g.name), h('div', { class: 'sub' }, kindLabel(g))),
           h('button', { class: 'btn sm', onclick: async () => { await api('/health/check', { method: 'POST', body: { key: g.owner } }); load(); } }, icon('refresh'), 'Проверить')),
         h('div', { class: 'card-body flush' }, table(cols, g.items))));
     }

@@ -137,6 +137,7 @@ TAB_IMAGES = {
     ("site", "cache"): "site-editor-cache.png", ("site", "security"): "site-editor-security.png",
     ("global", "ssl"): "global-ssl.png", ("panel", "bans"): "settings-bans.png",
     ("panel", "acme"): "settings-acme.png", ("panel", "events"): "settings-events.png",
+    ("panel", "monitor"): "settings-monitor.png",
 }
 
 
@@ -280,7 +281,7 @@ API_GROUPS = [
     ("/api/sites", "Сайты"), ("/api/streams", "Потоки TCP/UDP"),
     ("/api/config", "Конфигурация и версии"), ("/api/settings", "Настройки"), ("/api/nginx", "Управление nginx"),
     ("/api/certs", "Сертификаты"), ("/api/dns-accounts", "Сертификаты"),
-    ("/api/stats", "Статистика"), ("/api/requests", "Журналы"), ("/api/errors", "Журналы"),
+    ("/api/stats", "Статистика"), ("/api/metrics", "Статистика"), ("/api/requests", "Журналы"), ("/api/errors", "Журналы"),
     ("/api/health", "Бэкенды"), ("/api/diagnostics", "Диагностика"), ("/api/collector", "Диагностика"),
     ("/api/insights", "Анализ и отчёты"), ("/api/reports", "Анализ и отчёты"),
     ("/api/bans", "Блокировки и доступ по странам"), ("/api/geo", "Блокировки и доступ по странам"),

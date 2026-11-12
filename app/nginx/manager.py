@@ -57,6 +57,9 @@ class NginxManager:
         # путь к базе GeoIP (mmdb) или None: та же база, что и для статистики (ищется и при запуске из nmctl)
         self.geo_source: Callable[[], Optional[str]] = self._find_geo_db
         self.geo_stats: Dict[str, Any] = {}
+        # бэкенды, выключенные автопереключением ("site:12" -> ["10.0.0.1:80"]): задаёт панель (по результатам
+        # проверок); в nmctl источника нет — сверку после применения из консоли делает работающая панель
+        self.overrides_provider: Optional[Callable[[], Dict[str, List[str]]]] = None
 
     # =====================================================================
     #  Возможности nginx
@@ -157,7 +160,15 @@ class NginxManager:
         for r in self.db.query("SELECT id, cert_path, key_path, status FROM certificates"):
             ok = r["status"] == "valid" and Path(r["cert_path"]).exists() and Path(r["key_path"]).exists()
             certs[r["id"]] = CertInfo(r["id"], r["cert_path"], r["key_path"], ok)
-        return State(sites, streams, glob, panel, certs)
+        return State(sites, streams, glob, panel, certs, overrides=self._overrides())
+
+    def _overrides(self) -> Dict[str, List[str]]:
+        if self.overrides_provider is None:
+            return {}
+        try:
+            return self.overrides_provider()
+        except Exception:  # noqa: BLE001 — без сведений о проверках бэкенды просто не выключаются
+            return {}
 
     def paths(self, include_root: str) -> Paths:
         return Paths(include_root=include_root, live_root=str(settings.live_dir),
@@ -567,6 +578,9 @@ class NginxManager:
                     source: str = "user") -> Dict[str, Any]:
         async with self.lock:
             st = state or self.load_state()
+            # любое применение (пользователь, откат, сертификаты) сохраняет выключение упавших бэкендов —
+            # иначе применение при упавшем сервере вернуло бы его в работу до следующей смены состояния
+            st.overrides = self._overrides()
             try:
                 res = await asyncio.to_thread(self.apply_sync, st, username, comment, source)
             except ApplyError as e:

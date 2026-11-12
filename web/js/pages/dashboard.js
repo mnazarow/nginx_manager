@@ -132,7 +132,7 @@ export async function render(root) {
       h('div', { class: 'progress ' + (v > 90 ? 'bad' : v > 75 ? 'warn' : '') }, h('div', { style: { width: Math.min(100, v) + '%' } })));
     mount(sysBox, bar('CPU', s.cpu, `load ${fmtNum(s.load1, 2)} / ${s.cpus} ядер`), bar('Память', s.mem, `${fmtBytes(s.mem_used)} из ${fmtBytes(s.mem_total)}`),
       bar('Диск /', s.disk, `свободно ${fmtBytes(s.disk_free)}`),
-      h('div', { class: 'kv small' }, h('dt', {}, 'Сеть'), h('dd', { class: 'num' }, `↓ ${fmtBps(s.net_rx)} · ↑ ${fmtBps(s.net_tx)}`),
+      h('dl', { class: 'kv small' }, h('dt', {}, 'Сеть'), h('dd', { class: 'num' }, `↓ ${fmtBps(s.net_rx)} · ↑ ${fmtBps(s.net_tx)}`),
         h('dt', {}, 'Процессы nginx'), h('dd', { class: 'num' }, `${s.nginx_workers} воркеров · ${fmtBytes(s.nginx_rss)} · CPU ${fmtNum(s.nginx_cpu, 1)}%`)));
   }
 
@@ -160,7 +160,7 @@ export async function render(root) {
       { label: '4xx', value: s24.status['4xx'], color: sc.s4 }, { label: '5xx', value: s24.status['5xx'], color: sc.s5 }], fmtCompact)),
   h('div', { class: 'grid g2 mt', style: { gap: '12px' } },
     h('div', {}, h('div', { class: 'small ink2', style: { marginBottom: '4px' } }, 'Время ответа'),
-      h('div', { class: 'kv small' }, h('dt', {}, 'среднее'), h('dd', { class: 'num' }, fmtMs(s24.rt_avg)), h('dt', {}, 'p95'), h('dd', { class: 'num' }, fmtMs(s24.p95)),
+      h('dl', { class: 'kv small' }, h('dt', {}, 'среднее'), h('dd', { class: 'num' }, fmtMs(s24.rt_avg)), h('dt', {}, 'p95'), h('dd', { class: 'num' }, fmtMs(s24.p95)),
         h('dt', {}, 'p99'), h('dd', { class: 'num' }, fmtMs(s24.p99)), h('dt', {}, 'кэш HIT'), h('dd', { class: 'num' }, fmtPct(s24.hit_ratio)))),
     h('div', {}, h('div', { class: 'small ink2', style: { marginBottom: '4px' } }, 'Частые ошибки nginx'),
       Object.keys(s24.errors).length ? hbars(Object.entries(s24.errors).slice(0, 4).map(([kk, v]) => ({ label: v.title, value: v.count, title: v.hint })), { color: 'var(--s2)' })

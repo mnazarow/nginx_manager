@@ -144,7 +144,7 @@ export function chartCard(title, { sub = '', legend = true, cls = 'chart-box', a
   const canvas = h('canvas');
   const legendEl = h('div', { class: 'legend' });
   const el = h('div', { class: 'card' },
-    h('div', { class: 'card-head' }, h('div', {}, h('h3', {}, title), sub ? h('div', { class: 'sub' }, sub) : null), actions),
+    h('div', { class: 'card-head' }, h('div', {}, h('h2', {}, title), sub ? h('div', { class: 'sub' }, sub) : null), actions),
     legend ? legendEl : null,
     h('div', { class: 'card-body', style: { paddingTop: '6px' } }, h('div', { class: cls }, canvas)));
   return { el, canvas, legendEl };

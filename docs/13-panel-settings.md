@@ -714,6 +714,8 @@ ECDSA (P-256) — короче и быстрее рукопожатие; RSA 204
 
 ### Мониторинг
 
+![Вкладка «Мониторинг»](images/settings-monitor.png)
+
 
 <a id="f-panel-auto_restart_nginx"></a>
 

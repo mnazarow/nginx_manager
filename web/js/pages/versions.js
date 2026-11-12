@@ -3,7 +3,7 @@ import { api } from '../api.js';
 import { h, mount, icon, badge, table, modal, fmtDate, confirmDlg, toast, diffBlock, codeBlock, loading, stateBadge, tabs, downloadText } from '../ui.js';
 import { can, refreshState } from '../app.js';
 
-const SRC = { user: 'пользователь', cli: 'nmctl', rollback: 'откат', failover: 'автопереключение', certs: 'сертификаты', system: 'система' };
+const SRC = { user: 'пользователь', cli: 'nmctl', rollback: 'откат', failover: 'автопереключение', certs: 'сертификаты', restore: 'восстановление базы', system: 'система' };
 
 export async function render(root) {
   const list = await api('/config/versions', { query: { limit: 200 } });

@@ -119,12 +119,12 @@ export async function renderHeatmap(box, site) {
       if (!low || v < low.v) low = { d, hr, v };
     }));
     const hour = (x) => String(x).padStart(2, '0') + ':00';
-    const grid = h('div', { class: 'heatmap', role: 'grid', 'aria-label': `Тепловая карта: ${label}` },
+    const grid = h('div', { class: 'heatmap', role: 'group', 'aria-label': `Тепловая карта: ${label}` },
       h('span', {}), Array.from({ length: 24 }, (_, i) => h('span', { class: 'hm-h' }, i % 3 === 0 ? String(i) : '')),
       cells.map((row, d) => [h('span', { class: 'hm-d' }, DAYS[d]), row.map((c, hr) => {
         const v = valueOf(c);
         const tip = `${DAYS_FULL[d]}, ${hour(hr)}–${hour((hr + 1) % 24)}: ${v == null ? 'нет данных' : fmt(v)}` + (c.n ? ` (часов в выборке: ${c.n})` : '');
-        return h('span', { class: 'hm-c' + (v == null ? ' none' : ''), style: v == null ? null : { background: colors[bin(v)] }, title: tip, tabindex: 0, 'aria-label': tip });
+        return h('span', { class: 'hm-c' + (v == null ? ' none' : ''), style: v == null ? null : { background: colors[bin(v)] }, title: tip, tabindex: 0, role: 'img', 'aria-label': tip });
       })]));
     const step = (max - min) / colors.length;
     const digits = step < 0.01 ? 3 : step < 0.1 ? 2 : 1;  // шаги легенды должны различаться

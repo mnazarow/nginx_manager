@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -1777,6 +1778,142 @@ async def backup_s3_download(request: Request, name: str = Body(..., embed=True)
     return {"name": local}
 
 
+def _backup_file(name: str) -> Path:
+    p = settings.backups_dir / Path(name).name
+    if not p.name.startswith("nginx-manager-") or not p.is_file():
+        raise HTTPException(404, "Копия не найдена")
+    return p
+
+
+@router.get("/backup/inspect/{name}")
+async def backup_inspect(name: str, user=Depends(admin)):
+    """Проверить копию базы перед восстановлением: целостность, версия схемы, сайты, пользователи."""
+    from ..services.backup import inspect_db
+    p = _backup_file(name)
+    try:
+        return await asyncio.to_thread(inspect_db, p)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.get("/backup/restore")
+async def backup_restore_status(user=Depends(admin)):
+    """Запланированное восстановление (если есть), итог последнего и может ли панель перезапуститься сама."""
+    from .. import process
+    from ..services.backup import RESTORE_LAST, _read_json, restore_pending
+    return {"pending": restore_pending(), "last": _read_json(settings.data_dir / RESTORE_LAST),
+            "can_restart": process.can_restart()}
+
+
+@router.post("/backup/restore")
+async def backup_restore(request: Request, name: str = Body(..., embed=True), user=Depends(admin)):
+    """Восстановить базу из копии на сервере: {name}. Текущая база сохраняется (before-restore), панель
+    перезапускается и при старте заменяет файл базы. Пользователи, настройки и статистика — как в копии."""
+    from .. import process
+    from ..services.backup import restore_pending, schedule_restore
+    app = nm(request)
+    p = _backup_file(name)
+    if restore_pending() is not None:
+        raise HTTPException(409, "Восстановление уже запланировано — дождитесь перезапуска панели или отмените его")
+    if app.nginx.lock.locked():
+        raise HTTPException(409, "Сейчас применяется конфигурация — повторите через несколько секунд")
+    try:
+        res = await asyncio.to_thread(schedule_restore, app, p, user["username"], app.auth.client_ip(request))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    audit(request, user, "backup_restore_scheduled", p.name, {"safety": res["safety"]})
+    restart = process.can_restart()
+    if restart:  # ответ должен успеть уйти до остановки сервера
+        asyncio.get_running_loop().call_later(0.8, process.request_restart)
+    return {"ok": True, "safety": res["safety"], "restart": restart, "info": res["info"]}
+
+
+@router.delete("/backup/restore")
+async def backup_restore_cancel(request: Request, user=Depends(admin)):
+    """Отменить запланированное восстановление (пока панель не перезапущена)."""
+    from ..services.backup import cancel_restore
+    found = cancel_restore()
+    if found:
+        audit(request, user, "backup_restore_cancelled")
+    return {"ok": True, "cancelled": found}
+
+
+@router.post("/backup/upload")
+async def backup_upload(request: Request, filename: str = Query(...), user=Depends(admin)):
+    """Загрузить копию на сервер (тело запроса — файл): база .db или .db.gz, экспорт .json. Файл проверяется;
+    база потом восстанавливается кнопкой «Восстановить»."""
+    import gzip
+    import shutil
+    from ..services.backup import inspect_db
+    base = Path(filename).name
+    low = base.lower()
+    if not (low.endswith(".db") or low.endswith(".db.gz") or low.endswith(".json")):
+        raise HTTPException(400, "Можно загрузить базу (.db, .db.gz) или экспорт настроек (.json). Зашифрованную "
+                                 "копию (.enc) сначала расшифруйте — команда есть в документации")
+    ext = ".json" if low.endswith(".json") else ".db.gz" if low.endswith(".gz") else ".db"
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "_", base)
+    if stem.startswith("nginx-manager-"):  # копия этой или другой панели — имя сохраняется
+        dest = settings.backups_dir / stem
+        if dest.exists() or (dest.suffix == ".gz" and dest.with_suffix("").exists()):
+            raise HTTPException(409, f"Копия {dest.name} уже есть на сервере")
+    else:  # произвольное имя: отметка времени + исходное имя (для поиска в списке)
+        orig = re.sub(r"[^a-z0-9]+", "-", base.lower()[:-len(ext)]).strip("-")[:40]
+        prefix = f"nginx-manager-{time.strftime('%Y%m%d-%H%M%S')}-uploaded" + (f"-{orig}" if orig else "")
+        n = 1
+        dest = settings.backups_dir / (prefix + ext)
+        while dest.exists() or dest.with_name(dest.name[:-3]).exists() and ext == ".db.gz":
+            n += 1
+            dest = settings.backups_dir / f"{prefix}-{n}{ext}"
+    tmp = dest.with_name(dest.name + ".part")
+    size = 0
+    limit = 4 << 30
+    try:
+        with open(tmp, "wb") as f:
+            async for chunk in request.stream():
+                size += len(chunk)
+                if size > limit:
+                    raise HTTPException(413, "Файл больше 4 ГБ")
+                f.write(chunk)
+        tmp.chmod(0o600)
+        if not size:
+            raise HTTPException(400, "Пустой файл")
+        if dest.name.endswith(".gz"):
+            out = dest.with_suffix("")
+
+            def _gunzip():
+                with gzip.open(tmp, "rb") as fi, open(out, "wb") as fo:
+                    shutil.copyfileobj(fi, fo, 1 << 20)
+            try:
+                await asyncio.to_thread(_gunzip)
+            except (OSError, EOFError) as e:
+                out.unlink(missing_ok=True)
+                raise HTTPException(400, f"Не удалось распаковать .gz: {e}")
+            out.chmod(0o600)
+            tmp.unlink(missing_ok=True)
+            dest = out
+        else:
+            tmp.rename(dest)
+        if dest.suffix == ".db":
+            try:
+                info = await asyncio.to_thread(inspect_db, dest)
+            except ValueError as e:
+                dest.unlink(missing_ok=True)
+                raise HTTPException(400, str(e))
+        else:
+            try:
+                data = json.loads(dest.read_text(encoding="utf-8"))
+                if not isinstance(data, dict) or data.get("format") != "nginx-manager-export":
+                    raise ValueError
+            except (ValueError, UnicodeDecodeError):
+                dest.unlink(missing_ok=True)
+                raise HTTPException(400, "Это не файл экспорта Nginx Manager")
+            info = None
+    finally:
+        tmp.unlink(missing_ok=True)
+    audit(request, user, "backup_uploaded", dest.name, {"size": size})
+    return {"name": dest.name, "size": dest.stat().st_size, "info": info}
+
+
 @router.get("/backup/download/{name}")
 async def backup_download(name: str, user=Depends(admin)):
     """Скачать резервную копию."""
@@ -1794,6 +1931,16 @@ async def backup_delete(name: str, request: Request, user=Depends(admin)):
         p.unlink()
     audit(request, user, "backup_deleted", name)
     return {"ok": True}
+
+
+@router.get("/metrics/grafana-dashboard")
+async def grafana_dashboard(user=Depends(viewer)):
+    """Дашборд Grafana для метрик Prometheus панели (JSON для импорта в Grafana 9+)."""
+    from ..config import ROOT_DIR
+    p = ROOT_DIR / "packaging" / "grafana" / "nginx-manager.json"
+    if not p.is_file():
+        raise HTTPException(404, "Файл дашборда не найден (packaging/grafana/nginx-manager.json)")
+    return FileResponse(p, media_type="application/json", filename="nginx-manager-grafana.json")
 
 
 @router.post("/import/nginx/preview")

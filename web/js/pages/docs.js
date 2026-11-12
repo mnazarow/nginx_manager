@@ -48,7 +48,7 @@ export async function render(root) {
     res.forEach(r => (groups[r.name] ||= { chapter: r.chapter, items: [] }).items.push(r));
     const out = h('div', {}, h('h1', {}, `Поиск: «${q}»`),
       h('p', { class: 'muted' }, res.length ? `Найдено разделов: ${res.length}` : 'Ничего не найдено. Попробуйте другое слово или директиву nginx (например, proxy_read_timeout).'),
-      Object.entries(groups).map(([n, g]) => h('div', { class: 'doc-results' }, h('h3', {}, g.chapter),
+      Object.entries(groups).map(([n, g]) => h('div', { class: 'doc-results' }, h('h2', {}, g.chapter),
         g.items.map(r => h('a', { class: 'doc-result', href: `#/docs?p=${encodeURIComponent(n)}` + (r.id ? `&s=${encodeURIComponent(r.id)}` : '') + `&hl=${encodeURIComponent(q)}` },
           h('div', { class: 'doc-result-title' }, r.title), h('div', { class: 'doc-result-snippet' }, r.snippet))))));
     highlight(out, q);
@@ -61,6 +61,11 @@ export async function render(root) {
   if (!name) { mount(content, 'Документация не найдена'); return; }
 
   // ---- глава
+  if (!list.some(d => d.name === name)) {
+    drawChapters();
+    mount(content, h('div', { class: 'empty' }, h('h1', {}, 'Глава не найдена'), h('div', {}, `«${name}» нет в документации — выберите главу в списке.`)));
+    return;
+  }
   const md = await docText(name);
   const doc = renderMarkdown(md, name);
   const heads = outline(doc);

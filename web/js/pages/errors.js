@@ -17,7 +17,7 @@ export async function render(root) {
       h('div', { class: 'row' }, h('button', { class: 'btn', onclick: raw }, icon('file'), 'Исходный файл журнала'))),
     h('div', { class: 'toolbar' }, segmented([['3600', '1 час'], ['86400', '24 часа'], ['604800', '7 дней'], ['2592000', '30 дней']], st.range, (v) => { st.range = v; load(); }),
       h('select', { onchange: (e) => { st.level = e.target.value; load(); } }, ['', 'crit', 'error', 'warn', 'notice', 'info'].map(l => h('option', { value: l }, l || 'Все уровни'))),
-      h('select', { onchange: (e) => { st.site = e.target.value; load(); } }, h('option', { value: '' }, 'Все сайты'), sites.map(s => h('option', { value: s.id }, s.name))),
+      h('select', { 'aria-label': 'Сайт', onchange: (e) => { st.site = e.target.value; load(); } }, h('option', { value: '' }, 'Все сайты'), sites.map(s => h('option', { value: s.id }, s.name))),
       h('input', { type: 'search', placeholder: 'Поиск по тексту, IP, бэкенду…', onkeydown: (e) => { if (e.key === 'Enter') { st.q = e.target.value; load(); } } })),
     sumBox,
     tabs([{ id: 'list', label: 'Записи' }, { id: 'live', label: 'В реальном времени' }], 'list', (m) => { st.mode = m; drawMode(); }),
