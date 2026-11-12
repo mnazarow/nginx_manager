@@ -13,7 +13,8 @@ export async function render(root) {
   const silBox = h('div', {});
   mount(root,
     h('div', { class: 'page-head' }, h('div', {}, h('h1', {}, 'Оповещения'),
-      h('p', {}, 'Правила проверяются каждые 10 секунд. Срабатывание — когда условие выполняется дольше заданного времени; восстановление тоже сообщается. Каналы: Telegram, Slack, Discord, e-mail, произвольный webhook.')),
+      h('p', {}, 'Правила проверяются каждые 10 секунд. Срабатывание — когда условие выполняется дольше заданного времени; восстановление тоже сообщается. Каналы: Telegram, Slack, Discord, e-mail, произвольный webhook. Сообщения о событиях (сбой продления сертификата, ошибка применения, перезапуск nginx) настраиваются в ',
+        h('a', { href: '#/settings?tab=events' }, 'настройках панели → «Уведомления о событиях»'), '.')),
       can('operator') ? h('button', { class: 'btn', onclick: () => silenceDialog(loadSil) }, icon('bell'), 'Тишина…') : null),
     silBox,
     tabs([{ id: 'rules', label: 'Правила' }, { id: 'channels', label: 'Каналы уведомлений' }, { id: 'silences', label: 'Тишина' }, { id: 'events', label: 'История' }], tab, (t) => { tab = t; draw(); }),

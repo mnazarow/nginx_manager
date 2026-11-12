@@ -567,7 +567,17 @@ class NginxManager:
                     source: str = "user") -> Dict[str, Any]:
         async with self.lock:
             st = state or self.load_state()
-            res = await asyncio.to_thread(self.apply_sync, st, username, comment, source)
+            try:
+                res = await asyncio.to_thread(self.apply_sync, st, username, comment, source)
+            except ApplyError as e:
+                how = {"user": f"применял {username}", "rollback": f"откат, {username}",
+                       "failover": "автопереключение бэкендов", "certs": "после выпуска сертификата"}
+                first = next((x for x in e.errors if x.get("level") in ("emerg", "error", "crit")), None)
+                detail = re.sub(r"^\d+#\d+:\s*", "", (first or {}).get("message") or str(e))
+                self.db.event("error", "config", f"Конфигурация не применена ({how.get(source, source)}): "
+                                                 f"{detail}"[:600] + ". Работающий nginx не изменён.",
+                              {"user": username, "source": source, "comment": comment, "output": e.output[-2000:]})
+                raise
             self.db.event("info", "config", f"Конфигурация применена (версия {res['version']})",
                           {"user": username, "source": source, "comment": comment})
             return res

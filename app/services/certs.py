@@ -327,6 +327,8 @@ class CertificateService:
              json.dumps({"key_type": req.key_type, "staging": server == acme.CA_DIRECTORIES["letsencrypt-staging"],
                          "email": email, "cert_name": f"nm-{secrets.token_hex(3)}", "server": server,
                          "challenge": req.challenge,
+                         # корневой сертификат своего ACME-сервера — чтобы продление работало и после смены центра
+                         "ca_bundle": panel.acme_ca_bundle if panel.acme_ca == "custom" else "",
                          "dns_account_id": req.dns_account_id if req.challenge == "dns" else 0}), now, now))
         spawn(self._run_certbot(cid, after), name=f"certbot-{cid}")
         return cid
@@ -371,8 +373,10 @@ class CertificateService:
             eab = None
             if panel.acme_eab_kid and panel.acme_eab_hmac and server == acme.directory_for(panel):
                 eab = (panel.acme_eab_kid, panel.acme_eab_hmac)
-            if panel.acme_ca == "custom" and server == panel.acme_directory and panel.acme_ca_bundle:
-                env["REQUESTS_CA_BUNDLE"] = panel.acme_ca_bundle
+            bundle = data.get("ca_bundle") or (panel.acme_ca_bundle if panel.acme_ca == "custom" and
+                                               server == panel.acme_directory else "")
+            if bundle:
+                env["REQUESTS_CA_BUNDLE"] = bundle
             cmd = acme.certbot_command(self.certbot() or "certbot", cert_name=cert_name, domains=domains,
                                        server=server, email=data.get("email", ""),
                                        key_type=data.get("key_type", "ecdsa"), challenge=challenge,
@@ -380,6 +384,14 @@ class CertificateService:
             step(f"Центр сертификации: {acme.ca_title(server)}")
             step("Запуск: " + acme.redact(cmd))
             code, out = await asyncio.to_thread(run, cmd, 600 if challenge == "dns" else 300, None, env)
+            lost = re.search(r"Account (https?://\S+) not found|accountDoesNotExist", out)
+            if code != 0 and lost:
+                # аккаунт удалён на стороне центра (деактивирован, сервер пересоздан): локальная запись certbot
+                # бесполезна — убираем её и повторяем один раз, certbot зарегистрирует новый аккаунт
+                removed = await asyncio.to_thread(forget_acme_account, server, lost.group(1) or "")
+                step(f"Аккаунт ACME не найден у центра сертификации — регистрирую новый (удалено локальных "
+                     f"записей: {removed})")
+                code, out = await asyncio.to_thread(run, cmd, 600 if challenge == "dns" else 300, None, env)
             for line in out.strip().splitlines()[-40:]:
                 step(line)
             if code != 0:
@@ -470,6 +482,26 @@ class CertificateService:
         return False
 
 
+def forget_acme_account(server: str, account_url: str = "", base: str = "/etc/letsencrypt/accounts") -> int:
+    """Удалить локальную запись certbot об аккаунте ACME, которого больше нет у центра. Если адрес аккаунта
+    известен — только её; иначе все аккаунты этого сервера. Возвращает число удалённых записей."""
+    from urllib.parse import urlsplit
+    u = urlsplit(server)
+    d = Path(base) / u.netloc / u.path.strip("/")
+    n = 0
+    if not d.is_dir():
+        return 0
+    for acc in d.iterdir():
+        try:
+            uri = json.loads((acc / "regr.json").read_text()).get("uri", "")
+        except (OSError, ValueError):
+            uri = ""
+        if not account_url or uri == account_url:
+            shutil.rmtree(acc, ignore_errors=True)
+            n += 1
+    return n
+
+
 def lifetime_days(c: Dict[str, Any]) -> float:
     """Срок действия сертификата в днях (90, если неизвестен)."""
     nb, na = c.get("not_before"), c.get("not_after")
@@ -508,6 +540,11 @@ def renew_threshold(not_before: Optional[float], not_after: Optional[float], day
 
 def certbot_hint(out: str) -> str:
     rules = [
+        # нет связи с самим ACME-сервером (а не центра — с нашим сервером): раньше правил про порт 80
+        (r"Requesting \S+: (Connection refused|.*timed out|.*Name or service not known|.*Temporary failure in name "
+         r"resolution|.*Network is unreachable|.*No route to host)|Max retries exceeded with url: /directory",
+         "Нет связи с ACME-сервером центра сертификации: проверьте адрес каталога в настройках панели, DNS и выход "
+         "сервера в интернет (прокси, firewall исходящих соединений). Действующий сертификат не изменён."),
         # DNS-проверка и подключение к центру сертификации — раньше общих правил
         (r"No TXT record found|Incorrect TXT record|NXDOMAIN looking up TXT",
          "Центр сертификации не увидел TXT-запись _acme-challenge: увеличьте «Ожидание распространения записи» в "
@@ -518,12 +555,18 @@ def certbot_hint(out: str) -> str:
          r"Unable to find a Route53 hosted zone",
          "Зона домена не найдена у DNS-провайдера: домен обслуживается другим провайдером, или у токена нет "
          "доступа к этой зоне."),
-        (r"REFUSED|NOTAUTH|BADKEY|BADSIG|BADTIME",
+        (r"Encountered error when making query: The DNS operation timed out|making query.*timed out",
+         "DNS-сервер для динамических обновлений (RFC 2136) не отвечает: проверьте его IP и порт в учётной записи "
+         "DNS, доступ к порту 53 по UDP и TCP (firewall) и что сервер запущен."),
+        (r"(?-i:\b(?:REFUSED|NOTAUTH|BADKEY|BADSIG|BADTIME)\b)",
          "DNS-сервер отклонил динамическое обновление (RFC 2136): проверьте имя и секрет ключа TSIG, алгоритм, "
          "политику update-policy зоны и синхронизацию времени (BADTIME)."),
         (r"manual-auth-hook|hook command .* returned error|Hook '--manual-auth-hook'",
          "Скрипт создания DNS-записи завершился с ошибкой — запустите его вручную с переменными CERTBOT_DOMAIN и "
          "CERTBOT_VALIDATION."),
+        (r"Account \S+ not found|accountDoesNotExist",
+         "Аккаунт ACME не найден у центра сертификации (удалён, деактивирован или сервер пересоздан). Панель "
+         "регистрирует новый автоматически; если ошибка повторяется — проверьте e-mail и EAB в настройках панели."),
         (r"externalAccountRequired|external account|EAB",
          "Центр сертификации требует привязку аккаунта (EAB): укажите Key ID и HMAC-ключ в настройках панели."),
         (r"CERTIFICATE_VERIFY_FAILED|certificate verify failed",

@@ -155,8 +155,9 @@ function widget(f, obj, ctx, p) {
     case 'multiselect': {
       const cur = new Set(v || []);
       const wrap = h('div', { class: 'chips' });
-      const draw = () => mount(wrap, f.options.map(o => h('span', { class: 'chip' + (cur.has(o) ? ' on' : ''), title: (f.labels && f.labels[o]) || '',
-        onclick: () => { cur.has(o) ? cur.delete(o) : cur.add(o); obj[f.key] = f.options.filter(x => cur.has(x)); draw(); changed(ctx); } }, String(o))));
+      // подпись — из labels (если есть), сам код — во всплывающей подсказке
+      const draw = () => mount(wrap, f.options.map(o => h('span', { class: 'chip' + (cur.has(o) ? ' on' : ''), title: f.labels && f.labels[o] ? String(o) : '',
+        onclick: () => { cur.has(o) ? cur.delete(o) : cur.add(o); obj[f.key] = f.options.filter(x => cur.has(x)); draw(); changed(ctx); } }, (f.labels && f.labels[o]) || String(o))));
       draw();
       return wrap;
     }

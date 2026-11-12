@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 import secrets
+import urllib.parse
 from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -1254,7 +1255,7 @@ class GlobalSettings(Model):
 # =============================================================================
 PANEL_TABS = [("stats", "Статистика и хранение"), ("network", "Сеть и внешний IP"), ("security", "Безопасность панели"),
               ("bans", "Блокировки IP"), ("acme", "Сертификаты (ACME)"), ("monitor", "Мониторинг"),
-              ("reports", "Отчёты"), ("backup", "Резервные копии")]
+              ("reports", "Отчёты"), ("events", "Уведомления о событиях"), ("backup", "Резервные копии")]
 
 
 class PanelSettings(Model):
@@ -1316,6 +1317,48 @@ class PanelSettings(Model):
     letsencrypt_key_type: Literal["ecdsa", "rsa"] = F("ecdsa", label="Тип ключа", tab="acme")
     renew_days_before: int = F(30, label="Продлевать за", unit="дн", tab="acme", ge=5, le=60,
                                help="Для коротких сертификатов — не позже, чем за треть срока действия")
+
+    @field_validator("s3_endpoint")
+    @classmethod
+    def _s3_endpoint(cls, v):
+        v = V.http_url(v).rstrip("/")
+        if v and urllib.parse.urlsplit(v).path not in ("", "/"):
+            raise V.ValidationError("Укажите только адрес хранилища, без бакета и пути: https://s3.example.com")
+        return v
+
+    @field_validator("s3_bucket")
+    @classmethod
+    def _s3_bucket(cls, v):
+        v = (v or "").strip()
+        if v and not re.match(r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", v):
+            raise V.ValidationError("Имя бакета: 3–63 символа, строчные латинские буквы, цифры, точки и дефисы")
+        return v
+
+    @field_validator("s3_prefix")
+    @classmethod
+    def _s3_prefix(cls, v):
+        v = (v or "").strip().lstrip("/")
+        if v and (not re.match(r"^[\w./-]{1,200}$", v) or ".." in v.split("/")):
+            raise V.ValidationError("Префикс: латинские буквы, цифры, «_ . - /»")
+        return v if not v or v.endswith("/") else v + "/"
+
+    @field_validator("s3_region", "s3_access_key", "s3_secret_key")
+    @classmethod
+    def _s3_token(cls, v):
+        v = (v or "").strip()
+        if v and any(c.isspace() for c in v):
+            raise V.ValidationError("Без пробелов")
+        return v
+
+    @model_validator(mode="after")
+    def _s3_required(self):
+        if self.s3_enabled:
+            miss = [lbl for k, lbl in (("s3_endpoint", "адрес хранилища"), ("s3_bucket", "бакет"),
+                                       ("s3_access_key", "access key"), ("s3_secret_key", "secret key"))
+                    if not getattr(self, k)]
+            if miss:
+                raise V.ValidationError("Для выгрузки в S3 заполните: " + ", ".join(miss))
+        return self
 
     @field_validator("acme_directory")
     @classmethod
@@ -1399,12 +1442,49 @@ class PanelSettings(Model):
                 "6": "Воскресенье"})
     report_channels: List[int] = F(factory=list, label="Каналы", tab="reports", ui="channels",
                                    help="Каналы настраиваются в разделе «Оповещения → Каналы уведомлений»")
+    # ---------------------------------------------------------------- уведомления о событиях
+    event_channels: List[int] = F(factory=list, label="Каналы", tab="events", ui="channels",
+                                  help="Пусто — уведомления о событиях выключены (события остаются в журнале «События»)")
+    event_sources: List[Literal["certs", "config", "watchdog", "health", "auth", "panel", "backup", "geoip", "bans",
+                                "insights", "reports"]] = F(
+        factory=lambda: ["certs", "config", "watchdog", "auth", "panel", "backup", "geoip"],
+        label="Источники", tab="events",
+        labels={"certs": "Сертификаты", "config": "Применение конфигурации", "watchdog": "Сторож nginx",
+                "health": "Бэкенды", "auth": "Вход в панель", "panel": "Сервис панели", "backup": "Резервные копии",
+                "geoip": "GeoIP", "bans": "Блокировки IP", "insights": "Анализ", "reports": "Отчёты"})
+    event_min_level: Literal["error", "warning", "info"] = F(
+        "warning", label="Минимальный уровень", tab="events",
+        labels={"error": "Только ошибки", "warning": "Ошибки и предупреждения", "info": "Все события"})
+    event_repeat_minutes: int = F(30, label="Не повторять одинаковое событие чаще", unit="мин", tab="events",
+                                  ge=0, le=1440, help="Число повторов придёт со следующим уведомлением")
     insight_thresholds: Dict[str, Dict[str, float]] = F(factory=dict, label="Пороги анализа", ui="hidden",
                                                         help="Свои пороги показателей (раздел «Анализ → Пороги»)")
     insights_muted: List[str] = F(factory=list, label="Скрытые подсказки анализа", ui="hidden",
                                   help="Сценарии, которые не показываются в «Анализе и подсказках»")
     backup_keep: int = F(14, label="Хранить автоматических копий", tab="backup", ge=1, le=365)
     backup_hour: int = F(3, label="Час ежедневного резервного копирования", tab="backup", ge=0, le=23)
+    s3_enabled: bool = F(False, label="Выгружать копии в S3-хранилище", tab="backup",
+                         help="Ежедневная и ручные копии уходят ещё и во внешнее хранилище — переживут потерю сервера")
+    s3_endpoint: str = F("", label="Адрес хранилища (endpoint)", tab="backup", show={"s3_enabled": [True]},
+                         ph="https://storage.yandexcloud.net")
+    s3_region: str = F("us-east-1", label="Регион", tab="backup", show={"s3_enabled": [True]},
+                       help="AWS — регион бакета; Yandex — ru-central1; Cloudflare R2 — auto; MinIO — us-east-1")
+    s3_bucket: str = F("", label="Бакет", tab="backup", show={"s3_enabled": [True]}, ph="backups-example")
+    s3_prefix: str = F("nginx-manager/", label="Префикс (папка) в бакете", tab="backup", show={"s3_enabled": [True]},
+                       help="Для нескольких серверов в одном бакете — свой префикс у каждого")
+    s3_access_key: str = F("", label="Access key ID", tab="backup", show={"s3_enabled": [True]})
+    s3_secret_key: str = F("", label="Secret access key", tab="backup", ui="password", show={"s3_enabled": [True]})
+    s3_path_style: bool = F(True, label="Адресация path-style (endpoint/бакет/ключ)", tab="backup",
+                            show={"s3_enabled": [True]}, adv=True,
+                            help="Нужна MinIO и большинству совместимых хранилищ; выключите для virtual-hosted (бакет.endpoint)")
+    s3_keep: int = F(30, label="Хранить копий в хранилище", tab="backup", show={"s3_enabled": [True]}, ge=0, le=3650,
+                     help="0 — не удалять (например, если хранение настроено правилами жизненного цикла бакета)")
+    s3_include_db: bool = F(True, label="Выгружать и базу данных (со статистикой)", tab="backup",
+                            show={"s3_enabled": [True]},
+                            help="Выключено — только JSON-экспорт настроек (килобайты вместо мегабайт)")
+    s3_encrypt_password: str = F("", label="Пароль шифрования копий", tab="backup", ui="password",
+                                 show={"s3_enabled": [True]},
+                                 help="AES-256 (openssl). Пусто — без шифрования. Потеряете пароль — копии не прочитать")
     backup_keep_update: int = F(5, label="Хранить копий перед обновлениями", tab="backup", ge=1, le=100,
                                 help="Копии базы, кода прежней версии и nginx.conf, которые делает update.sh и "
                                      "nmctl backup. Ручные копии из панели не удаляются")

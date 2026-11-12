@@ -139,18 +139,23 @@ class AuthService:
         return r
 
     def user_by_token(self, token: str) -> Optional[Dict[str, Any]]:
-        r = self.db.one("SELECT t.id tid, t.expires_at texp, u.* FROM api_tokens t JOIN users u ON u.id=t.user_id "
-                        "WHERE t.token_hash=?", (_h(token),))
+        r = self.db.one("SELECT t.id tid, t.expires_at texp, t.role trole, u.* FROM api_tokens t "
+                        "JOIN users u ON u.id=t.user_id WHERE t.token_hash=?", (_h(token),))
         if not r or r["disabled"] or (r["texp"] and r["texp"] < time.time()):
             return None
         self.db.execute("UPDATE api_tokens SET last_used=? WHERE id=?", (time.time(), r["tid"]))
+        # права токена — меньшее из роли токена и текущей роли пользователя (понизили пользователя — понизился и токен)
+        if r["trole"] and ROLES.get(r["trole"], 0) < ROLES.get(r["role"], 0):
+            r["role"] = r["trole"]
         return r
 
-    def create_token(self, uid: int, name: str, days: int = 0) -> str:
+    def create_token(self, uid: int, name: str, days: int = 0, role: str = "") -> str:
+        if role and role not in ROLES:
+            raise ValueError("Неизвестная роль токена")
         token = "nm_" + secrets.token_urlsafe(32)
-        self.db.execute("INSERT INTO api_tokens(user_id,name,token_hash,prefix,created_at,expires_at) "
-                        "VALUES(?,?,?,?,?,?)", (uid, name[:100], _h(token), token[:10], time.time(),
-                                                time.time() + days * 86400 if days else None))
+        self.db.execute("INSERT INTO api_tokens(user_id,name,token_hash,prefix,created_at,expires_at,role) "
+                        "VALUES(?,?,?,?,?,?,?)", (uid, name[:100], _h(token), token[:10], time.time(),
+                                                  time.time() + days * 86400 if days else None, role))
         return token
 
     # ---- текущий пользователь из запроса ------------------------------

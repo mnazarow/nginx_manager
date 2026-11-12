@@ -136,7 +136,7 @@ TAB_IMAGES = {
     ("site", "ssl"): "site-editor-ssl.png", ("site", "locations"): "site-editor-locations.png",
     ("site", "cache"): "site-editor-cache.png", ("site", "security"): "site-editor-security.png",
     ("global", "ssl"): "global-ssl.png", ("panel", "bans"): "settings-bans.png",
-    ("panel", "acme"): "settings-acme.png",
+    ("panel", "acme"): "settings-acme.png", ("panel", "events"): "settings-events.png",
 }
 
 

@@ -117,6 +117,11 @@ def test_certbot_hints_dns():
     assert "EAB" in certbot_hint("urn:ietf:params:acme:error:externalAccountRequired")
     assert "корневой сертификат" in certbot_hint("SSL: CERTIFICATE_VERIFY_FAILED")
     assert "Зона" in certbot_hint("Unable to determine zone identifier for example.com")
+    # «Connection refused» к самому ACME-серверу — не ошибка TSIG и не порт 80 (так было на стенде)
+    h = certbot_hint("An unexpected error occurred:\nValueError: Requesting 127.0.0.1/dir: Connection refused")
+    assert "Нет связи с ACME-сервером" in h
+    assert "порт" in certbot_hint("Timeout during connect (likely firewall problem)")
+    assert "не отвечает" in certbot_hint("PluginError: Encountered error when making query: The DNS operation timed out.")
 
 
 # ----------------------------------------------------------------------------- API
@@ -254,6 +259,7 @@ def test_certbot_command_used_by_service(monkeypatch, tmp_path):
     assert cmd[cmd.index("--server") + 1] == "https://ca.example/dir" and "--authenticator" in cmd
     assert env["AWS_SHARED_CREDENTIALS_FILE"].endswith(".aws") and "--force-renewal" in cmd
     assert job["state"] == "error" and "TXT" in job["error"]
+    assert "REQUESTS_CA_BUNDLE" not in env
     assert row["status"] == "valid" and "TXT" in row["last_error"]  # неудачное продление не портит действующий
     assert os.path.exists(env["AWS_SHARED_CREDENTIALS_FILE"])
 
@@ -298,3 +304,37 @@ def test_cert_expiry_alert_metric_short_certs():
     v1, v2, msg = asyncio.run(go())
     assert v1 == 60                     # короткий в норме — значение по длинному
     assert v2 == 0.1 and "short" in msg  # короткий не продлился — тревога
+
+
+def test_custom_ca_bundle_kept_for_renewal(monkeypatch, tmp_path):
+    """Сертификат своего ACME-сервера продлевается с его корневым сертификатом и после переключения центра."""
+    import asyncio
+
+    from app.core import App
+    calls = []
+    monkeypatch.setattr("app.services.certs.run", lambda cmd, timeout=60, input=None, env=None: (calls.append(env), (1, "x"))[1])
+
+    async def go():
+        app = App()
+        cid = app.db.execute("INSERT INTO certificates(name,type,domains,status,data,created_at,updated_at) "
+                             "VALUES(?,?,?,?,?,?,?)", ("int", "letsencrypt", '["a.internal"]', "valid",
+                                                       json.dumps({"server": "https://ca.internal/dir", "cert_name": "nm-i",
+                                                                   "ca_bundle": "/etc/ssl/internal.pem"}), 0, 0))
+        monkeypatch.setattr(app.certs, "certbot", lambda: "/usr/bin/certbot")
+        monkeypatch.setattr(app.certs, "http01_selftest", lambda d: {"local": True, "remote": True, "dns": []})
+        await app.certs._run_certbot(cid, renew=True)   # в настройках — Let's Encrypt
+        app.db.close()
+    asyncio.run(go())
+    assert calls[-1]["REQUESTS_CA_BUNDLE"] == "/etc/ssl/internal.pem"
+
+
+def test_forget_lost_acme_account(tmp_path):
+    from app.services.certs import forget_acme_account
+    base = tmp_path / "accounts"
+    for acc, uri in (("a1", "https://ca.example:14000/my-account/111"), ("a2", "https://ca.example:14000/my-account/222")):
+        d = base / "ca.example:14000" / "dir" / acc
+        d.mkdir(parents=True)
+        (d / "regr.json").write_text(json.dumps({"uri": uri}))
+    assert forget_acme_account("https://ca.example:14000/dir", "https://ca.example:14000/my-account/222", str(base)) == 1
+    assert [p.name for p in (base / "ca.example:14000" / "dir").iterdir()] == ["a1"]
+    assert forget_acme_account("https://other.example/dir", "", str(base)) == 0

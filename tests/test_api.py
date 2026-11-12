@@ -528,3 +528,34 @@ def test_raw_directives_policy(admin, client):
     assert op.post("/api/sites/preview", params={"test": 1}, json=ok, headers=H).status_code == 403
     admin.delete(f"/api/sites/{sid}", headers=H)
     admin.delete(f"/api/users/{uid}", headers=H)
+
+
+def test_token_roles(admin, client):
+    """Токен «только чтение» для мониторинга; роль токена не выше роли пользователя и следует за её понижением."""
+    r = admin.post("/api/auth/tokens", json={"name": "prom", "days": 30, "role": "viewer"}, headers=H)
+    assert r.status_code == 200, r.text
+    tok = r.json()["token"]
+    t = TestClient(client.app)
+    hdr = {"Authorization": f"Bearer {tok}"}
+    assert t.get("/api/sites", headers=hdr).status_code == 200
+    assert t.post("/api/sites", json=SITE, headers=hdr).status_code == 403            # только чтение
+    assert t.post("/api/auth/tokens", json={"name": "x"}, headers=hdr).status_code == 403  # токен не плодит токены
+    lst = admin.get("/api/auth/tokens").json()
+    assert next(x for x in lst if x["name"] == "prom")["role"] == "viewer"
+    assert admin.post("/api/auth/tokens", json={"name": "bad", "role": "root"}, headers=H).status_code == 400
+    assert admin.post("/api/auth/tokens", json={"name": "bad", "days": -1}, headers=H).status_code == 400
+    # оператор не может выпустить токен администратора; понижение пользователя понижает его токены
+    uid = admin.post("/api/users", json={"username": "tokop", "password": "Tok-Passw0rd!", "role": "operator"},
+                     headers=H).json()["id"]
+    client.app.state.nm.db.execute("UPDATE users SET must_change_password=0 WHERE id=?", (uid,))
+    op = TestClient(client.app)
+    assert op.post("/api/auth/login", json={"username": "tokop", "password": "Tok-Passw0rd!"}).status_code == 200
+    assert op.post("/api/auth/tokens", json={"name": "a", "role": "admin"}, headers=H).status_code == 403
+    optok = op.post("/api/auth/tokens", json={"name": "deploy"}, headers=H).json()["token"]   # как у пользователя
+    site = dict(SITE, name="Токен", domains=["tok.example.com"])
+    r = t.post("/api/sites", json=site, headers={"Authorization": f"Bearer {optok}"})
+    assert r.status_code == 200, r.text
+    admin.delete(f"/api/sites/{r.json()['id']}", headers=H)
+    admin.put(f"/api/users/{uid}", json={"role": "viewer"}, headers=H)
+    assert t.post("/api/sites", json=site, headers={"Authorization": f"Bearer {optok}"}).status_code == 403
+    admin.delete(f"/api/users/{uid}", headers=H)

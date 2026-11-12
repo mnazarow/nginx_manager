@@ -21,6 +21,7 @@ from ..utils import apr1, totp_secret, totp_verify, verify_password
 
 router = APIRouter(prefix="/api")
 MASK = "••••••••"
+PANEL_SECRETS = ("acme_eab_hmac", "s3_secret_key", "s3_encrypt_password")
 
 
 def nm(request: Request):
@@ -67,10 +68,21 @@ async def login(body: LoginBody, request: Request, response: Response):
     except PermissionError as e:
         app.auth.fail(ip)
         app.db.audit(body.username, ip, "login_failed", "", None)
+        if app.auth.locked(ip):
+            p = app.panel()
+            app.db.event("warning", "auth", f"Вход с {ip} заблокирован на {p.login_lock_minutes} мин: "
+                                            f"{p.login_max_attempts} неудачных попыток (последнее имя «{body.username[:60]}»)",
+                         {"ip": ip, "username": body.username[:60]})
         await asyncio.sleep(0.5)
         raise HTTPException(401, str(e))
     if app.panel().require_2fa_admin and u["role"] == "admin" and not u["totp_enabled"]:
         pass  # пользователь будет перенаправлен на настройку 2FA
+    seen = app.db.one("SELECT 1 FROM audit_log WHERE username=? AND action='login' AND ip=? LIMIT 1", (u["username"], ip))
+    if not seen and app.db.one("SELECT 1 FROM audit_log WHERE username=? AND action='login' LIMIT 1", (u["username"],)):
+        # первый вход с этого адреса (но не самый первый вход вообще) — повод проверить, что это вы
+        app.db.event("warning" if u["role"] == "admin" else "info", "auth",
+                     f"Вход пользователя «{u['username']}» ({ROLE_LABELS.get(u['role'], u['role'])}) с нового адреса "
+                     f"{ip}", {"ip": ip, "user_agent": request.headers.get("user-agent", "")[:200]})
     token = app.auth.create_session(u["id"], ip, request.headers.get("user-agent", ""))
     secure = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
     response.set_cookie(COOKIE, token, httponly=True, samesite="strict", secure=secure,
@@ -165,21 +177,31 @@ async def kill_session(sid: str, request: Request, user=Depends(viewer)):
 @router.get("/auth/tokens")
 async def tokens(request: Request, user=Depends(viewer)):
     """API-токены текущего пользователя."""
-    return nm(request).db.query("SELECT id, name, prefix, created_at, expires_at, last_used FROM api_tokens "
+    return nm(request).db.query("SELECT id, name, prefix, created_at, expires_at, last_used, role FROM api_tokens "
                                 "WHERE user_id=? ORDER BY id", (user["id"],))
 
 
 @router.post("/auth/tokens")
-async def create_token(request: Request, name: str = Body(...), days: int = Body(0), user=Depends(viewer)):
-    """Создать API-токен: {name, days} (0 — бессрочно). Токен показывается один раз; права — как у пользователя."""
+async def create_token(request: Request, name: str = Body(...), days: int = Body(0), role: str = Body(""),
+                       user=Depends(viewer)):
+    """Создать API-токен: {name, days (0 — бессрочно), role}. role = viewer | operator | admin — не выше своей роли;
+    пусто — как у пользователя. Токен показывается один раз."""
+    if user.get("via") == "token":  # иначе утёкший токен мог бы выпустить себе «запасной», переживающий отзыв
+        raise HTTPException(403, "Создавать токены можно только из браузерной сессии («Мой профиль»)")
+    if role and role not in ROLE_LABELS:
+        raise HTTPException(400, "Роль токена: viewer, operator или admin")
+    if role and ROLES[role] > ROLES.get(user["role"], 0):
+        raise HTTPException(403, f"Роль токена не может быть выше вашей («{ROLE_LABELS.get(user['role'], user['role'])}»)")
+    if not 0 <= days <= 3650:
+        raise HTTPException(400, "Срок токена — от 0 (бессрочно) до 3650 дней")
     # иначе токен стал бы обходом политики входа: временный пароль или обязательная 2FA администратора
     if user.get("must_change_password"):
         raise HTTPException(403, "Сначала смените временный пароль")
     if user["role"] == "admin" and not user.get("totp_enabled") and nm(request).panel().require_2fa_admin:
         raise HTTPException(403, "Политика панели требует двухфакторную аутентификацию для администраторов — "
                                  "включите её, затем создайте токен")
-    tok = nm(request).auth.create_token(user["id"], name, days)
-    audit(request, user, "token_created", name)
+    tok = nm(request).auth.create_token(user["id"], name, days, role)
+    audit(request, user, "token_created", name, {"role": role or "как у пользователя", "days": days})
     return {"token": tok}
 
 
@@ -756,10 +778,11 @@ async def put_global(request: Request, body: Dict[str, Any] = Body(...), apply: 
 
 @router.get("/settings/panel")
 async def get_panel(request: Request, user=Depends(viewer)):
-    """Настройки панели (секреты — HMAC-ключ EAB — не возвращаются)."""
+    """Настройки панели (секреты — ключ EAB, ключ и пароль шифрования S3 — не возвращаются, вместо них маска)."""
     d = nm(request).panel().model_dump()
-    if d.get("acme_eab_hmac"):
-        d["acme_eab_hmac"] = MASK
+    for k in PANEL_SECRETS:
+        if d.get(k):
+            d[k] = MASK
     return d
 
 
@@ -768,8 +791,9 @@ async def put_panel(request: Request, body: Dict[str, Any] = Body(...), user=Dep
     """Изменить настройки панели (только администратор)."""
     app = nm(request)
     old = app.panel()
-    if body.get("acme_eab_hmac") == MASK:  # секрет не менялся
-        body["acme_eab_hmac"] = old.acme_eab_hmac
+    for k in PANEL_SECRETS:
+        if body.get(k) == MASK:  # секрет не менялся
+            body[k] = getattr(old, k)
     p = PanelSettings.model_validate(body)
     ip = user.get("ip", "")
     if p.require_2fa_admin and not old.require_2fa_admin and not user.get("totp_enabled"):
@@ -1368,6 +1392,21 @@ async def bans_clear(request: Request, source: str = Body("auto", embed=True), u
     return {"ok": ok, "removed": n}
 
 
+@router.post("/events/notify-test")
+async def events_notify_test(request: Request, user=Depends(operator)):
+    """Отправить проверочное уведомление о событии в каналы подписки (настройки панели → «Уведомления о событиях»)."""
+    app = nm(request)
+    p = app.panel()
+    if not p.event_channels:
+        raise HTTPException(400, "Не выбраны каналы — уведомления о событиях выключены")
+    res = await app.events.deliver("warning", "panel", f"Проверка уведомлений о событиях ({user['username']}). "
+                                                        "Так будут выглядеть сообщения о сбоях.",
+                                   force_channels=list(p.event_channels))
+    if not res:
+        raise HTTPException(400, "Выбранные каналы выключены или удалены")
+    return {"results": res}
+
+
 @router.get("/events")
 async def events(request: Request, limit: int = 200, level: str = "", source: str = "", user=Depends(viewer)):
     """Журнал событий панели. ?level, ?source, ?limit."""
@@ -1677,11 +1716,65 @@ async def backup_list(user=Depends(admin)):
 
 @router.post("/backup/create")
 async def backup_create(request: Request, user=Depends(admin)):
-    """Создать резервную копию базы сейчас."""
-    from ..services.backup import db_backup
-    p = await asyncio.to_thread(db_backup, nm(request), "manual")
+    """Создать резервную копию базы сейчас (и выгрузить в S3, если выгрузка включена)."""
+    from ..services.backup import db_backup, offsite_upload
+    app = nm(request)
+    p = await asyncio.to_thread(db_backup, app, "manual")
     audit(request, user, "backup_created", p.name)
-    return {"name": p.name}
+    offsite = await asyncio.to_thread(offsite_upload, app, p) if app.panel().s3_enabled else None
+    return {"name": p.name, "offsite": offsite}
+
+
+def _need_s3(app):
+    if not app.panel().s3_enabled:
+        raise HTTPException(400, "Выгрузка в S3 выключена — включите и сохраните настройки (вкладка «Резервные копии»)")
+
+
+@router.post("/backup/s3/check")
+async def backup_s3_check(request: Request, user=Depends(admin)):
+    """Проверить доступ к S3-хранилищу: записать, найти в списке и удалить маленький объект."""
+    from ..services.backup import offsite_check
+    from ..services.s3 import S3Error
+    app = nm(request)
+    _need_s3(app)
+    try:
+        return await asyncio.to_thread(offsite_check, app)
+    except S3Error as e:
+        hint = {403: "доступ запрещён: проверьте ключи и права на бакет (PutObject, ListBucket, DeleteObject)",
+                404: "бакет не найден: проверьте имя, регион и способ адресации (path-style)",
+                301: "бакет в другом регионе — укажите его регион"}.get(e.status, "")
+        raise HTTPException(400, f"Хранилище ответило: {e}" + (f" — {hint}" if hint else ""))
+    except OSError as e:
+        raise HTTPException(400, f"Нет связи с хранилищем: {e}")
+
+
+@router.get("/backup/s3/list")
+async def backup_s3_list(request: Request, user=Depends(admin)):
+    """Копии в S3-хранилище и результат последней выгрузки."""
+    from ..services.backup import offsite_list
+    app = nm(request)
+    _need_s3(app)
+    try:
+        items = await asyncio.to_thread(offsite_list, app)
+    except Exception as e:
+        raise HTTPException(400, f"Не удалось получить список: {e}")
+    return {"items": items, "last": app.db.kv_get("offsite_last")}
+
+
+@router.post("/backup/s3/download")
+async def backup_s3_download(request: Request, name: str = Body(..., embed=True), user=Depends(admin)):
+    """Скачать копию из S3 в каталог копий сервера (расшифровать и распаковать базу): {name}."""
+    from ..services.backup import offsite_download
+    app = nm(request)
+    _need_s3(app)
+    try:
+        local = await asyncio.to_thread(offsite_download, app, name)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(400, f"Не удалось скачать: {e}")
+    audit(request, user, "backup_downloaded_s3", name)
+    return {"name": local}
 
 
 @router.get("/backup/download/{name}")

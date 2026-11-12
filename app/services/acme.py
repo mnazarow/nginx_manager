@@ -219,4 +219,12 @@ def check_account(acc: DnsAccount) -> Dict[str, Any]:
     if acc.provider == "google":
         d = json.loads(acc.google_json)
         item(bool(d.get("client_email")), f"Сервисный аккаунт: {d.get('client_email', '—')}")
+    if acc.provider == "rfc2136":
+        import socket
+        try:
+            with socket.create_connection((acc.rfc_server, acc.rfc_port), timeout=3):
+                item(True, f"DNS-сервер {acc.rfc_server}:{acc.rfc_port} отвечает (TCP)")
+        except OSError as e:
+            item(False, f"DNS-сервер {acc.rfc_server}:{acc.rfc_port} недоступен по TCP: {e}",
+                 "Проверьте, что сервер запущен и порт 53 открыт для этого сервера (UDP и TCP)")
     return res

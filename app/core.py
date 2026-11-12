@@ -54,6 +54,8 @@ class App:
         self.diag = Diagnostics(self)
         self.bans = BanService(self)
         self.insights = Analyzer(self)
+        from .services.events import EventNotifier
+        self.events = EventNotifier(self)
         self.stats.agg.detector = self.bans.detector
         self.alerts.site_name = self._site_name
         self.clients: Set[WSClient] = set()
@@ -113,12 +115,15 @@ class App:
         self.alerts.start()
         self.bans.start()
         loop = asyncio.get_running_loop()
+        self.events.attach(loop)
+        self.db.on_event = self.events.on_event
         self.tasks += [loop.create_task(self.ticker(), name="ticker"),
                        loop.create_task(self.watchdog(), name="watchdog"),
                        loop.create_task(self.periodic(), name="periodic")]
         self.db.event("info", "panel", f"Nginx Manager {VERSION} запущен")
 
     async def stop(self) -> None:
+        self.db.on_event = None
         for t in self.tasks + [self.health.task, self.alerts.task, self.bans.task]:
             if t:
                 t.cancel()
@@ -184,9 +189,8 @@ class App:
             state.overrides = self.health.disabled_by_failover()
         try:
             return await self.apply("system", reason, source, state)
-        except ApplyError as e:
-            self.db.event("error", source, f"Автоприменение не удалось: {e}", {"output": e.output[-2000:]})
-            return None
+        except ApplyError:
+            return None  # событие об ошибке записал NginxManager.apply
 
     async def after_cert_issued(self, cid: int) -> None:
         state = self.last_applied_state()

@@ -22,9 +22,9 @@ PAGES = [
     ("settings-reports", "#/settings?tab=reports", 1500), ("insights-thresholds", "#/insights?tab=thresholds", 3000),
     ("geo-tab", "#/bans?tab=countries", 3000), ("analytics-sla", "#/analytics?view=sla", 3000),
     ("analytics-heatmap", "#/analytics?view=heatmap", 3000), ("certs-dns", "#/certs?tab=dns", 2000),
-    ("settings-acme", "#/settings?tab=acme", 1500),
+    ("settings-acme", "#/settings?tab=acme", 1500), ("settings-events", "#/settings?tab=events", 1500),
 ]
-SCENES = {"geo-site", "sites-bulk"}  # снимки с действиями: --only geo-site,sites-bulk или --extras
+SCENES = {"geo-site", "sites-bulk", "backup-s3"}  # снимки с действиями: --only geo-site,sites-bulk или --extras
 
 
 async def main(a):
@@ -93,6 +93,15 @@ async def scenes(page, a, only):
         await page.wait_for_timeout(500)
         await page.screenshot(path=f"{a.out}/sites-bulk.png")
         print("sites-bulk: ok")
+    if not only or "backup-s3" in only:
+        # карточка внешнего хранилища — внизу страницы копий
+        await page.goto(f"{a.url}/#/backup")
+        await page.wait_for_timeout(3000)
+        await page.evaluate("""() => { const c = [...document.querySelectorAll('.card')].pop();
+            c.scrollIntoView({block: 'end'}); window.scrollBy(0, 40); }""")
+        await page.wait_for_timeout(500)
+        await page.screenshot(path=f"{a.out}/backup-s3.png")
+        print("backup-s3: ok")
 
 
 async def extras(page, a):

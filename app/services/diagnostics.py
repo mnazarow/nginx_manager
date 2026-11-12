@@ -138,7 +138,7 @@ class Diagnostics:
             checks: List[Callable[[], Awaitable[List[Dict[str, Any]]]]] = [
                 self.c_nginx, self.c_config, self.c_ports, self.c_network, self.c_dns, self.c_backends,
                 self.c_certs, self.c_firewall, self.c_selinux, self.c_system, self.c_limits, self.c_logs,
-                self.c_errors, self.c_traffic, self.c_security, self.c_time,
+                self.c_errors, self.c_traffic, self.c_security, self.c_time, self.c_backups,
             ]
             results: List[Dict[str, Any]] = []
             outs = await asyncio.gather(*(asyncio.wait_for(c(), 60) for c in checks), return_exceptions=True)
@@ -924,6 +924,44 @@ class Diagnostics:
         if basic_nohttps:
             res.append(R("sec_basic_http", g, "Basic Auth без HTTPS", WARN, ", ".join(basic_nohttps),
                          hint="Пароли передаются открытым текстом."))
+        return res
+
+    async def c_backups(self) -> List[Dict[str, Any]]:
+        g = "Резервные копии"
+        res: List[Dict[str, Any]] = []
+        now = time.time()
+        autos = sorted(settings.backups_dir.glob("nginx-manager-*-auto.db"), key=lambda x: x.stat().st_mtime)
+        if autos:
+            age = (now - autos[-1].stat().st_mtime) / 3600
+            res.append(R("backup_auto", g, "Ежедневная копия", OK if age < 36 else WARN,
+                         f"последняя {age:.0f} ч назад ({autos[-1].name})" if age < 36 else
+                         f"последняя {age / 24:.0f} дн. назад — ежедневное копирование не выполняется",
+                         hint="" if age < 36 else "Смотрите «События» (источник «Сервис панели»): фоновая задача "
+                                                   "копирования завершается ошибкой, или сервис не работал в час копирования."))
+        elif now - self.app.started > 36 * 3600:
+            res.append(R("backup_auto", g, "Ежедневная копия", WARN, "ни одной автоматической копии",
+                         hint="Проверьте «Час ежедневного резервного копирования» и журнал «События»."))
+        p = self.app.panel()
+        if p.s3_enabled:
+            last = self.app.db.kv_get("offsite_last") or {}
+            if not last:
+                res.append(R("backup_s3", g, f"Хранилище {p.s3_bucket}", INFO,
+                             "выгрузок ещё не было — первая будет с ежедневной копией",
+                             hint="Проверьте доступ кнопкой «Проверить хранилище» на странице «Копии и импорт»."))
+            elif not last.get("ok"):
+                res.append(R("backup_s3", g, f"Хранилище {p.s3_bucket}", FAIL,
+                             f"последняя выгрузка не удалась: {last.get('error', '')[:200]}",
+                             hint="Копии остаются только на этом сервере. Проверьте ключи, бакет, регион и сеть "
+                                  "(«Проверить хранилище»)."))
+            else:
+                age = (now - last.get("ts", 0)) / 3600
+                res.append(R("backup_s3", g, f"Хранилище {p.s3_bucket}", OK if age < 50 else WARN,
+                             f"последняя выгрузка {age:.0f} ч назад" if age < 50 else
+                             f"последняя выгрузка {age / 24:.0f} дн. назад"))
+            if not p.s3_encrypt_password:
+                res.append(R("backup_s3_enc", g, "Шифрование копий в хранилище", INFO, "выключено",
+                             hint="В копиях есть секреты (токены каналов и DNS, ключи сертификатов, хеши паролей). "
+                                  "Задайте пароль шифрования, если хранилищем пользуется кто-то ещё."))
         return res
 
     async def c_time(self) -> List[Dict[str, Any]]:

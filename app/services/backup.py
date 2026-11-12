@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import re
 import sqlite3
 import time
 from pathlib import Path
@@ -219,7 +220,165 @@ def auto_backup(app) -> Path:
     removed = prune_backups(pnl.backup_keep, pnl.backup_keep_update)
     app.db.event("info", "backup", f"Автоматическая резервная копия: {p.name}"
                  + (f"; удалено старых копий: {len(removed)}" if removed else ""))
+    if pnl.s3_enabled:
+        offsite_upload(app, p)
     return p
+
+
+# =============================================================================
+#  Выгрузка во внешнее S3-хранилище
+# =============================================================================
+OPENSSL_ENC = ["-aes-256-cbc", "-pbkdf2", "-iter", "200000", "-salt"]
+
+
+def s3_client(p):
+    from .s3 import S3Client
+    return S3Client(p.s3_endpoint, p.s3_region, p.s3_bucket, p.s3_access_key, p.s3_secret_key, p.s3_path_style)
+
+
+def _encrypt(src: Path, password: str) -> Path:
+    from ..utils import run
+    dest = src.with_name(src.name + ".enc")
+    code, out = run(["openssl", "enc", *OPENSSL_ENC, "-in", str(src), "-out", str(dest), "-pass", "env:NM_BACKUP_PASS"],
+                    timeout=600, env={"NM_BACKUP_PASS": password})
+    if code != 0:
+        dest.unlink(missing_ok=True)
+        raise RuntimeError("шифрование не удалось: " + out[-300:])
+    dest.chmod(0o600)
+    return dest
+
+
+def _decrypt(src: Path, password: str) -> Path:
+    from ..utils import run
+    dest = src.with_name(src.name[:-4])
+    code, out = run(["openssl", "enc", "-d", *OPENSSL_ENC, "-in", str(src), "-out", str(dest),
+                     "-pass", "env:NM_BACKUP_PASS"], timeout=600, env={"NM_BACKUP_PASS": password})
+    if code != 0:
+        dest.unlink(missing_ok=True)
+        raise ValueError("Не удалось расшифровать: неверный пароль шифрования или файл повреждён")
+    dest.chmod(0o600)
+    return dest
+
+
+def offsite_upload(app, db_path: Path) -> Dict[str, Any]:
+    """Выгрузить копию (база в gzip + JSON-экспорт) в S3, при необходимости зашифровав, и удалить в хранилище
+    копии сверх «Хранить копий в хранилище». Результат — в kv offsite_last и в журнале событий."""
+    import gzip
+    import shutil
+    p = app.panel()
+    files: List[Path] = []
+    tmp: List[Path] = []
+    res: Dict[str, Any] = {"ts": time.time(), "ok": False, "files": [], "error": ""}
+    try:
+        js = db_path.with_suffix(".json")
+        if js.exists():
+            files.append(js)
+        if p.s3_include_db:
+            gz = db_path.with_name(db_path.name + ".gz")
+            with open(db_path, "rb") as fi, gzip.open(gz, "wb", compresslevel=6) as fo:
+                shutil.copyfileobj(fi, fo, 1 << 20)
+            gz.chmod(0o600)
+            files.append(gz)
+            tmp.append(gz)
+        if p.s3_encrypt_password:
+            enc = [_encrypt(f, p.s3_encrypt_password) for f in files]
+            tmp += enc
+            files = enc
+        cl = s3_client(p)
+        for f in files:
+            cl.put_file(p.s3_prefix + f.name, f)
+            res["files"].append({"key": p.s3_prefix + f.name, "size": f.stat().st_size})
+        res["removed"] = prune_offsite(cl, p.s3_prefix, p.s3_keep) if p.s3_keep else []
+        res["ok"] = True
+        size = sum(x["size"] for x in res["files"])
+        app.db.event("info", "backup", f"Копия выгружена в хранилище {p.s3_bucket}: {len(files)} файл(а), "
+                                       f"{size / 1048576:.1f} МБ" + (", зашифровано" if p.s3_encrypt_password else "")
+                     + (f"; удалено старых: {len(res['removed'])}" if res["removed"] else ""))
+    except Exception as e:
+        res["error"] = str(e)[:500]
+        app.db.event("error", "backup", f"Не удалось выгрузить копию в хранилище {p.s3_bucket}: {res['error']}")
+    finally:
+        for f in tmp:
+            f.unlink(missing_ok=True)
+        app.db.kv_set("offsite_last", res)
+    return res
+
+
+def _stamp(key: str) -> str:
+    """Отметка копии в имени: nginx-manager-20261112-030000-auto.db.gz → 20261112-030000-auto."""
+    name = key.rsplit("/", 1)[-1]
+    m = re.match(r"^nginx-manager-(\d{8}-\d{6}-[a-z-]+?)\.", name)
+    return m.group(1) if m else ""
+
+
+def prune_offsite(cl, prefix: str, keep: int) -> List[str]:
+    """Оставить в хранилище `keep` последних копий (копия — все файлы одной отметки времени)."""
+    objs = [o for o in cl.list(prefix) if _stamp(o["key"]) and "/" not in o["key"][len(prefix):]]
+    stamps = sorted({_stamp(o["key"]) for o in objs}, reverse=True)
+    old = set(stamps[keep:])
+    removed = []
+    for o in objs:
+        if _stamp(o["key"]) in old:
+            cl.delete(o["key"])
+            removed.append(o["key"])
+    return removed
+
+
+def offsite_list(app) -> List[Dict[str, Any]]:
+    p = app.panel()
+    out = []
+    for o in s3_client(p).list(p.s3_prefix):
+        if "/" in o["key"][len(p.s3_prefix):]:
+            continue
+        o["name"] = o["key"][len(p.s3_prefix):]
+        o["encrypted"] = o["name"].endswith(".enc")
+        out.append(o)
+    return sorted(out, key=lambda o: o["name"], reverse=True)
+
+
+def offsite_download(app, name: str) -> str:
+    """Скачать копию из хранилища в каталог копий сервера: расшифровать и распаковать базу. Возвращает имя файла."""
+    import gzip
+    import shutil
+    p = app.panel()
+    name = Path(name).name
+    if not name.startswith("nginx-manager-"):
+        raise ValueError("Это не копия Nginx Manager")
+    dest = settings.backups_dir / name
+    s3_client(p).get_to_file(p.s3_prefix + name, dest)
+    dest.chmod(0o600)
+    if dest.name.endswith(".enc"):
+        if not p.s3_encrypt_password:
+            raise ValueError("Копия зашифрована — укажите пароль шифрования в настройках, затем скачайте снова")
+        try:
+            plain = _decrypt(dest, p.s3_encrypt_password)
+        finally:
+            dest.unlink(missing_ok=True)
+        dest = plain
+    if dest.name.endswith(".gz"):
+        out = dest.with_name(dest.name[:-3])
+        with gzip.open(dest, "rb") as fi, open(out, "wb") as fo:
+            shutil.copyfileobj(fi, fo, 1 << 20)
+        out.chmod(0o600)
+        dest.unlink(missing_ok=True)
+        dest = out
+    return dest.name
+
+
+def offsite_check(app) -> Dict[str, Any]:
+    """Проверка доступа: записать, прочитать список и удалить маленький объект."""
+    import secrets
+    p = app.panel()
+    cl = s3_client(p)
+    key = f"{p.s3_prefix}.nm-check-{secrets.token_hex(4)}"
+    steps = []
+    cl.put_bytes(key, b"nginx-manager check\n")
+    steps.append("запись — ок")
+    found = any(o["key"] == key for o in cl.list(p.s3_prefix))
+    steps.append("чтение списка — ок" if found else "чтение списка — объект не найден (хранилище с задержкой?)")
+    cl.delete(key)
+    steps.append("удаление — ок")
+    return {"ok": True, "steps": steps}
 
 
 def list_backups() -> List[Dict[str, Any]]:

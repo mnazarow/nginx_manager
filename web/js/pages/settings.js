@@ -22,10 +22,18 @@ export async function render(root, c) {
         toast(bad.length ? `Ошибки: ${bad.map(x => `${x.name || x.id}: ${x.error}`).join('; ')}` : `«${r.title}» отправлен (${r.results.length})`, bad.length ? 'bad' : 'good');
       } }, icon('bell'), 'Отправить сейчас'),
       h('span', { class: 'muted small' }, 'Сначала сохраните настройки, если меняли каналы.')));
+    if (tab === 'events') form.prepend(h('div', { class: 'alert mb' }, 'Каждое событие из журнала «События» выбранных источников и уровня приходит отдельным сообщением: сбой продления сертификата, ошибка применения конфигурации, перезапуск nginx сторожем, блокировка входа, вход администратора с нового адреса, сбой фоновой задачи. В отличие от правил оповещений здесь нет порогов — это сообщения о том, что уже произошло. Глобальная «тишина» на время работ глушит и их.'));
+    if (tab === 'events') form.appendChild(h('div', { class: 'row mt' },
+      h('button', { class: 'btn', onclick: async () => {
+        const r = await api('/events/notify-test', { method: 'POST' });
+        const bad = r.results.filter(x => !x.ok);
+        toast(bad.length ? `Ошибки: ${bad.map(x => `${x.name || x.id}: ${x.error}`).join('; ')}` : `Проверочное уведомление отправлено (${r.results.length})`, bad.length ? 'bad' : 'good');
+      } }, icon('bell'), 'Отправить проверочное'),
+      h('span', { class: 'muted small' }, 'Сначала сохраните настройки, если меняли каналы.')));
     if (tab === 'security') form.appendChild(h('div', { class: 'alert warn mt' }, 'Если вы потеряете доступ из-за списка IP — выполните на сервере: ', h('code', {}, 'nmctl allowlist clear'), '.'));
   };
   mount(root,
-    h('div', { class: 'page-head' }, h('div', {}, h('h1', {}, 'Настройки панели'), h('p', {}, 'Хранение статистики, сеть, безопасность доступа, сертификаты (ACME), мониторинг и резервное копирование.')),
+    h('div', { class: 'page-head' }, h('div', {}, h('h1', {}, 'Настройки панели'), h('p', {}, 'Хранение статистики, сеть, безопасность доступа, сертификаты (ACME), мониторинг, отчёты, уведомления о событиях и резервное копирование.')),
       h('button', { class: 'btn primary', onclick: async () => {
         try {
           const r = await api('/settings/panel', { method: 'PUT', body: obj }); errors = {}; draw();

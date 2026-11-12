@@ -37,18 +37,15 @@ export async function render(root) {
         { title: '', render: (s) => s.current ? badge('текущая', 'info') : h('button', { class: 'btn sm', onclick: async () => { await api(`/auth/sessions/${s.id}`, { method: 'DELETE' }); render(root); } }, 'Завершить') },
       ], sessions), { flush: true }),
       card('API-токены', h('div', {}, h('div', { class: 'small ink2', style: { padding: '0 0 10px' } }, 'Для автоматизации: заголовок ', h('code', {}, 'Authorization: Bearer nm_…'),
-        '. Права токена = права пользователя. Описание API: ', h('a', { href: '/api/docs-ui', target: '_blank' }, '/api/docs-ui'), '.'),
+        '. Права токена — выбранная роль, но не выше вашей текущей: для мониторинга и Prometheus достаточно «Наблюдателя». Описание API: ', h('a', { href: '/api/docs-ui', target: '_blank' }, '/api/docs-ui'), '.'),
       table([{ title: 'Название', render: (t) => t.name }, { title: 'Префикс', render: (t) => h('code', {}, t.prefix + '…') },
-        { title: 'Создан', render: (t) => fmtDate(t.created_at) }, { title: 'Использован', render: (t) => t.last_used ? fmtAgo(t.last_used) : 'никогда' },
+        { title: 'Права', render: (t) => t.role ? badge(ROLE_NAMES[t.role] || t.role, t.role === 'viewer' ? 'good' : t.role === 'admin' ? 'warn' : 'info') : h('span', { class: 'muted small' }, 'как у вас') },
+        { title: 'Создан', render: (t) => fmtDate(t.created_at) },
+        { title: 'Действует до', render: (t) => t.expires_at ? h('span', { class: t.expires_at < Date.now() / 1000 ? 'status-5' : '' }, fmtDate(t.expires_at, { year: true })) : h('span', { class: 'muted small' }, 'бессрочно') },
+        { title: 'Использован', render: (t) => t.last_used ? fmtAgo(t.last_used) : 'никогда' },
         { title: '', render: (t) => h('button', { class: 'btn sm danger', onclick: async () => { if (await confirmDlg(`Отозвать токен «${t.name}»?`, { danger: true, ok: 'Отозвать' })) { await api(`/auth/tokens/${t.id}`, { method: 'DELETE' }); render(root); } } }, icon('trash')) }],
       tokens, { empty: 'Токенов нет' }),
-      h('div', { class: 'mt' }, h('button', { class: 'btn', onclick: async () => {
-        const name = await promptDlg('Новый API-токен', 'Назначение', 'ci-deploy'); if (!name) return;
-        const r = await api('/auth/tokens', { method: 'POST', body: { name, days: 0 } });
-        modal({ title: 'Токен создан', body: h('div', { class: 'col' }, h('div', { class: 'alert warn' }, 'Скопируйте токен сейчас — повторно он показан не будет.'),
-          h('div', { class: 'row nowrap' }, h('input', { type: 'text', value: r.token, readOnly: true, class: 'code' }), copyBtn(r.token))) });
-        render(root);
-      } }, icon('plus'), 'Создать токен'))))));
+      h('div', { class: 'mt' }, h('button', { class: 'btn', onclick: () => tokenDialog(me, () => render(root)) }, icon('plus'), 'Создать токен'))))));
 }
 
 async function setup2fa(root) {
@@ -65,4 +62,33 @@ async function setup2fa(root) {
     m.close(); toast('2FA включена', 'good'); render(root);
   } }, 'Включить')] });
   setTimeout(() => code.focus(), 50);
+}
+
+const ROLE_NAMES = { viewer: 'Наблюдатель', operator: 'Оператор', admin: 'Администратор' };
+
+// Новый API-токен: назначение, права (не выше своих) и срок действия
+function tokenDialog(me, onDone) {
+  const order = ['viewer', 'operator', 'admin'];
+  const allowed = order.slice(0, order.indexOf(me.role) + 1);
+  const st = { name: '', role: 'viewer', days: 365 };
+  const body = h('div', { class: 'col' },
+    h('div', { class: 'field' }, h('label', {}, 'Назначение'), h('input', { type: 'text', placeholder: 'prometheus, ci-deploy…', oninput: (e) => { st.name = e.target.value; } })),
+    h('div', { class: 'field' }, h('label', {}, 'Права'), h('select', { onchange: (e) => { st.role = e.target.value; } },
+      allowed.map(r => h('option', { value: r, selected: r === st.role }, ROLE_NAMES[r] + (r === 'viewer' ? ' — только чтение (мониторинг, Prometheus)' : r === 'operator' ? ' — сайты, применение, блокировки' : ' — всё')))),
+      h('div', { class: 'help' }, 'Если позже вашу роль понизят, токен тоже потеряет лишние права.')),
+    h('div', { class: 'field' }, h('label', {}, 'Срок действия'), h('select', { onchange: (e) => { st.days = +e.target.value; } },
+      [[30, '30 дней'], [90, '90 дней'], [365, '1 год'], [0, 'Бессрочно']].map(([d, l]) => h('option', { value: d, selected: d === st.days }, l)))));
+  const btn = h('button', { class: 'btn primary' }, 'Создать');
+  const m = modal({ title: 'Новый API-токен', body, footer: [h('button', { class: 'btn', onclick: () => m.close() }, 'Отмена'), btn] });
+  btn.onclick = async () => {
+    if (!st.name.trim()) { toast('Укажите назначение токена', 'warn'); return; }
+    btn.disabled = true;
+    try {
+      const r = await api('/auth/tokens', { method: 'POST', body: { name: st.name.trim(), days: st.days, role: st.role } });
+      m.close();
+      modal({ title: 'Токен создан', body: h('div', { class: 'col' }, h('div', { class: 'alert warn' }, 'Скопируйте токен сейчас — повторно он показан не будет.'),
+        h('div', { class: 'row nowrap' }, h('input', { type: 'text', value: r.token, readOnly: true, class: 'code' }), copyBtn(r.token))) });
+      onDone();
+    } catch { btn.disabled = false; }
+  };
 }

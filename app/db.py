@@ -10,7 +10,7 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 
 SCHEMA: List[str] = [
     # ---- v1 ---------------------------------------------------------------
@@ -316,6 +316,10 @@ SCHEMA: List[str] = [
         updated_at REAL NOT NULL
     )
     """,
+    # ---- v5: роль API-токена (не выше роли пользователя; '' — как у пользователя) и срок -----
+    """
+    ALTER TABLE api_tokens ADD COLUMN role TEXT NOT NULL DEFAULT ''
+    """,
 ]
 
 
@@ -324,6 +328,7 @@ class Database:
         self.path = Path(path)
         self._local = threading.local()
         self.write_lock = threading.RLock()
+        self.on_event: Optional[Callable[..., None]] = None
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._migrate()
 
@@ -423,7 +428,12 @@ class Database:
     def event(self, level: str, source: str, message: str, details: Any = None) -> None:
         self.execute("INSERT INTO events(ts,level,source,message,details) VALUES(?,?,?,?,?)",
                      (time.time(), level, source, message,
-                      json.dumps(details, ensure_ascii=False) if details is not None else None))
+                      json.dumps(details, ensure_ascii=False, default=str) if details is not None else None))
+        if self.on_event is not None:  # рассылка уведомлений о событиях (services/events.py)
+            try:
+                self.on_event(level, source, message, details)
+            except Exception:
+                pass
 
     def backup_to(self, dest: Path) -> None:
         dest.parent.mkdir(parents=True, exist_ok=True)
