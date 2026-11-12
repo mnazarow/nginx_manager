@@ -20,7 +20,8 @@ PAGES = [
     ("backup", "#/backup", 1500), ("profile", "#/profile", 1500), ("docs", "#/docs", 2000),
     ("bans", "#/bans", 2500), ("settings-bans", "#/settings?tab=bans", 1500),
     ("settings-reports", "#/settings?tab=reports", 1500), ("insights-thresholds", "#/insights?tab=thresholds", 3000),
-    ("geo-tab", "#/bans?tab=countries", 3000),
+    ("geo-tab", "#/bans?tab=countries", 3000), ("analytics-sla", "#/analytics?view=sla", 3000),
+    ("analytics-heatmap", "#/analytics?view=heatmap", 3000),
 ]
 SCENES = {"geo-site", "sites-bulk"}  # снимки с действиями: --only geo-site,sites-bulk или --extras
 

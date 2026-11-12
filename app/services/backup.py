@@ -17,7 +17,7 @@ def export_config(app, include_users: bool = False, include_certs: bool = True) 
         "global": db.kv_get("global_settings", {}), "panel": db.kv_get("panel_settings", {}),
         "sites": [{"id": r["id"], "data": json.loads(r["data"])} for r in db.query("SELECT * FROM sites ORDER BY id")],
         "streams": [{"id": r["id"], "data": json.loads(r["data"])} for r in db.query("SELECT * FROM streams")],
-        "alert_rules": [json.loads(r["data"]) for r in db.query("SELECT * FROM alert_rules")],
+        "alert_rules": [{**json.loads(r["data"]), "_id": r["id"]} for r in db.query("SELECT * FROM alert_rules")],
         "alert_channels": [{"id": r["id"], "data": json.loads(r["data"])} for r in db.query("SELECT * FROM alert_channels")],
         "certificates": [],
     }
@@ -73,33 +73,57 @@ def import_config(app, data: Dict[str, Any], mode: str = "replace") -> Dict[str,
                 c.execute("UPDATE certificates SET cert_path=?, key_path=?, status='valid' WHERE id=?",
                           (str(d / "fullchain.pem"), str(kp), new_id))
             stats["certificates"] += 1
+        keep_ids = mode == "replace"  # при замене номера сохраняются (история статистики и ссылки на них)
+        site_map: Dict[str, str] = {}
         for sid, s in sites:
             if s.ssl.certificate_id in cert_map:
                 s.ssl.certificate_id = cert_map[s.ssl.certificate_id]
-            if mode == "replace" and sid:
+            body = json.dumps(s.model_dump(), ensure_ascii=False)
+            if keep_ids and sid:
                 c.execute("INSERT INTO sites(id,name,enabled,data,created_at,updated_at) VALUES(?,?,?,?,?,?)",
-                          (sid, s.name, int(s.enabled), json.dumps(s.model_dump(), ensure_ascii=False), now, now))
+                          (sid, s.name, int(s.enabled), body, now, now))
+                new_id = sid
             else:
-                c.execute("INSERT INTO sites(name,enabled,data,created_at,updated_at) VALUES(?,?,?,?,?)",
-                          (s.name, int(s.enabled), json.dumps(s.model_dump(), ensure_ascii=False), now, now))
+                new_id = c.execute("INSERT INTO sites(name,enabled,data,created_at,updated_at) VALUES(?,?,?,?,?)",
+                                   (s.name, int(s.enabled), body, now, now)).lastrowid
+            if sid:
+                site_map[str(sid)] = str(new_id)
             stats["sites"] += 1
-        for sid, s in streams:
-            c.execute("INSERT INTO streams(name,enabled,data,created_at,updated_at) VALUES(?,?,?,?,?)",
-                      (s.name, int(s.enabled), json.dumps(s.model_dump(), ensure_ascii=False), now, now))
+        for stid, s in streams:
+            body = json.dumps(s.model_dump(), ensure_ascii=False)
+            if keep_ids and stid:
+                c.execute("INSERT INTO streams(id,name,enabled,data,created_at,updated_at) VALUES(?,?,?,?,?,?)",
+                          (stid, s.name, int(s.enabled), body, now, now))
+            else:
+                c.execute("INSERT INTO streams(name,enabled,data,created_at,updated_at) VALUES(?,?,?,?,?)",
+                          (s.name, int(s.enabled), body, now, now))
             stats["streams"] += 1
         chan_map: Dict[int, int] = {}
         for ch in data.get("alert_channels", []):
             m = AlertChannel.model_validate(ch["data"])
-            cur = c.execute("INSERT INTO alert_channels(name,type,enabled,data,created_at,updated_at) "
-                            "VALUES(?,?,?,?,?,?)", (m.name, m.type, int(m.enabled),
-                                                    json.dumps(m.model_dump(), ensure_ascii=False), now, now))
-            chan_map[ch.get("id", 0)] = cur.lastrowid
+            body = json.dumps(m.model_dump(), ensure_ascii=False)
+            if keep_ids and ch.get("id"):
+                c.execute("INSERT INTO alert_channels(id,name,type,enabled,data,created_at,updated_at) "
+                          "VALUES(?,?,?,?,?,?,?)", (ch["id"], m.name, m.type, int(m.enabled), body, now, now))
+                chan_map[ch["id"]] = ch["id"]
+            else:
+                cur = c.execute("INSERT INTO alert_channels(name,type,enabled,data,created_at,updated_at) "
+                                "VALUES(?,?,?,?,?,?)", (m.name, m.type, int(m.enabled), body, now, now))
+                chan_map[ch.get("id", 0)] = cur.lastrowid
             stats["channels"] += 1
         for r in data.get("alert_rules", []):
+            r = dict(r)
+            rid = r.pop("_id", None)
             m = AlertRule.model_validate(r)
             m.channels = [chan_map.get(x, x) for x in m.channels]
-            c.execute("INSERT INTO alert_rules(name,enabled,data,created_at,updated_at) VALUES(?,?,?,?,?)",
-                      (m.name, int(m.enabled), json.dumps(m.model_dump(), ensure_ascii=False), now, now))
+            m.site = site_map.get(m.site, m.site)  # правило по сайту — на новый номер сайта (режим «добавить»)
+            body = json.dumps(m.model_dump(), ensure_ascii=False)
+            if keep_ids and rid:
+                c.execute("INSERT INTO alert_rules(id,name,enabled,data,created_at,updated_at) VALUES(?,?,?,?,?,?)",
+                          (rid, m.name, int(m.enabled), body, now, now))
+            else:
+                c.execute("INSERT INTO alert_rules(name,enabled,data,created_at,updated_at) VALUES(?,?,?,?,?)",
+                          (m.name, int(m.enabled), body, now, now))
             stats["rules"] += 1
         c.execute("INSERT INTO kv(key,value) VALUES('global_settings',?) ON CONFLICT(key) DO UPDATE "
                   "SET value=excluded.value", (json.dumps(glob.model_dump(), ensure_ascii=False),))
@@ -107,6 +131,7 @@ def import_config(app, data: Dict[str, Any], mode: str = "replace") -> Dict[str,
             pnl = PanelSettings.model_validate(data["panel"])
             if pnl.panel_certificate_id in cert_map:
                 pnl.panel_certificate_id = cert_map[pnl.panel_certificate_id]
+            pnl.report_channels = [chan_map.get(x, x) for x in pnl.report_channels]
             c.execute("INSERT INTO kv(key,value) VALUES('panel_settings',?) ON CONFLICT(key) DO UPDATE "
                       "SET value=excluded.value", (json.dumps(pnl.model_dump(), ensure_ascii=False),))
     if data.get("users"):

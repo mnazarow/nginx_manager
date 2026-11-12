@@ -581,12 +581,24 @@ class Aggregator:
                     if len(hb[kind]) > keep * 50:
                         hb[kind] = Counter(dict(hb[kind].most_common(keep * 10)))
                 hss.update(m.slow_sum)
-        # компактная копия для «топов за последний час»
+                if len(hss) > keep * 50:
+                    keys = {k for k, _ in ht["slow"].most_common(keep * 10)} if "slow" in ht else set()
+                    self.hour_slow_sum[site] = Counter({k: v for k, v in hss.items() if k in keys})
+        # компактная копия для «топов за последний час»: топы обрезаются, а байты и время медленных запросов
+        # остаются только для оставшихся ключей — иначе на загруженных сайтах (тысячи уникальных IP и адресов
+        # в минуту) 75 минут таких счётчиков занимают сотни мегабайт
         for m in mb.values():
             m.ips = set()
             for kind in m.tops:
                 if len(m.tops[kind]) > keep * 3:
                     m.tops[kind] = Counter(dict(m.tops[kind].most_common(keep * 3)))
+            for kind, cnt in m.top_bytes.items():
+                if len(cnt) > keep * 3:
+                    kept = m.tops.get(kind) or {}
+                    m.top_bytes[kind] = Counter({k: cnt[k] for k in kept if k in cnt})
+            if len(m.slow_sum) > keep * 3:
+                kept = m.tops.get("slow") or {}
+                m.slow_sum = Counter({k: m.slow_sum[k] for k in kept if k in m.slow_sum})
         self.recent.append((mts, mb))
 
     @staticmethod

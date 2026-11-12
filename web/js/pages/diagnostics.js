@@ -1,6 +1,6 @@
 // Автоматическая диагностика с рекомендациями и исправлениями в один клик.
 import { api } from '../api.js';
-import { h, mount, icon, badge, toast, modal, fmtAgo, kpi, loading, confirmDlg } from '../ui.js';
+import { h, mount, icon, badge, toast, modal, fmtAgo, fmtNum, kpi, loading, confirmDlg } from '../ui.js';
 import { can, refreshState } from '../app.js';
 
 const ICON = { ok: '✓', warn: '!', fail: '✕', info: 'i', skip: '–' };
@@ -28,7 +28,7 @@ export async function render(root) {
       kpi('Ошибки', String(s.fail || 0), { cls: s.fail ? 'bad' : '', foot: 'требуют действий' }),
       kpi('Предупреждения', String(s.warn || 0), { cls: s.warn ? 'warn' : '', foot: 'стоит проверить' }),
       kpi('В порядке', String(s.ok || 0), { foot: 'проверок пройдено' }),
-      kpi('Последний запуск', data.ts ? fmtAgo(data.ts) : '—', { foot: data.duration ? `за ${data.duration} с` : '' })));
+      kpi('Последний запуск', data.ts ? fmtAgo(data.ts) : '—', { foot: data.duration ? `за ${fmtNum(data.duration, 1)} с` + (data.total ? ` · проверок: ${data.total}` : '') : '' })));
     if (!data.results || !data.results.length) { mount(box, h('div', { class: 'card' }, h('div', { class: 'empty' }, 'Диагностика ещё не запускалась', h('div', { class: 'mt' }, h('button', { class: 'btn primary', onclick: run }, 'Запустить'))))); return; }
     const groups = {};
     for (const r of data.results) {
@@ -38,7 +38,9 @@ export async function render(root) {
     const order = (g) => { const st = groups[g].map(r => r.status); return st.includes('fail') ? 0 : st.includes('warn') ? 1 : 2; };
     mount(box, Object.keys(groups).length ? Object.keys(groups).sort((a, b) => order(a) - order(b)).map(g => {
       const items = groups[g];
-      const f = items.filter(x => x.status === 'fail').length, w = items.filter(x => x.status === 'warn').length;
+      // свёрнутая строка «Ещё N проверок» считается за N
+      const cnt = (st) => items.filter(x => x.status === st).reduce((a, x) => a + (x.folded || 1), 0);
+      const f = cnt('fail'), w = cnt('warn');
       return h('div', { class: 'card mb' }, h('div', { class: 'card-head' }, h('h3', {}, g), h('div', { class: 'row' }, f ? badge(`ошибок: ${f}`, 'bad') : null, w ? badge(`предупреждений: ${w}`, 'warn') : null, !f && !w ? badge('в порядке', 'good') : null)),
         h('div', { class: 'card-body flush', style: { marginTop: '10px' } }, items.map(item)));
     }) : h('div', { class: 'alert good' }, 'Проблем не обнаружено 🎉'));

@@ -120,10 +120,39 @@ function details(f, onChange) {
       } }, f.muted ? 'Показывать снова' : 'Скрыть этот тип') : null));
 }
 
+/** Одинаковые находки у многих сайтов (например, «нет резерва бэкенда» у 300 сайтов) — одной карточкой
+ *  со списком сайтов в «Данных». Порядок и уровни сохраняются; находки до `min` сайтов не сворачиваются. */
+export function foldSame(items, min = 4) {
+  const by = new Map();
+  for (const f of items) {
+    const k = `${f.id}|${f.level}`;
+    if (!by.has(k)) by.set(k, []);
+    by.get(k).push(f);
+  }
+  const out = [], done = new Set();
+  for (const f of items) {
+    const k = `${f.id}|${f.level}`;
+    const same = by.get(k);
+    if (same.length < min || f.site === '*') { out.push(f); continue; }
+    if (done.has(k)) continue;
+    done.add(k);
+    const names = same.map(x => x.site_name || x.site);
+    out.push({ ...f, site: '*', site_name: null, fid: `${f.id}-folded`, folded: same.length,
+      summary: `${same.length} ${plural(same.length, 'сайт', 'сайта', 'сайтов')}: ${names.slice(0, 3).join(', ')}${same.length > 3 ? ` и ещё ${same.length - 3}` : ''}`,
+      evidence: { columns: ['Сайт', 'Подробности'], rows: same.map(x => [x.site_name || x.site, x.summary]) } });
+  }
+  return out;
+}
+
+function plural(n, one, few, many) {
+  const a = Math.abs(n) % 100, b = a % 10;
+  return a > 10 && a < 20 ? many : b === 1 ? one : b >= 2 && b <= 4 ? few : many;
+}
+
 /** Короткая карточка «Анализ» для дашборда и аналитики. */
 export function insightsCard(res, { limit = 4, link = '#/insights', title = 'Анализ и подсказки', onChange } = {}) {
   const c = res.counts || {};
-  const items = (res.findings || []).filter(f => f.level !== 'info').slice(0, limit);
+  const items = foldSame((res.findings || []).filter(f => f.level !== 'info')).slice(0, limit);
   const info = (res.findings || []).filter(f => f.level === 'info').length;
   return h('div', { class: 'card insights-card' },
     h('div', { class: 'card-head' }, h('div', {}, h('h3', {}, title),

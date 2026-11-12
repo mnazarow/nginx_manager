@@ -6,13 +6,15 @@ import { timeChart, setData, chartCard, statusColors, seriesColor, destroyAll, b
 import { ctx, can } from '../app.js';
 import { banDialog } from './bans.js';
 import { hintKpi, insightsCard, loadCatalog } from '../advice.js';
+import { renderSla, renderHeatmap } from './analytics-extra.js';
 
 const RANGES = [['900', '15 мин'], ['3600', '1 час'], ['21600', '6 часов'], ['86400', '24 часа'], ['604800', '7 дней'], ['2592000', '30 дней'], ['7776000', '90 дней']];
 
 export async function render(root) {
   const charts = [];
   const sites = await api('/sites');
-  const st = { range: ctx.params.range || '3600', site: ctx.params.site || '*', from: null, to: null, topKind: 'uri' };
+  const st = { range: ctx.params.range || '3600', site: ctx.params.site || '*', from: null, to: null, topKind: 'uri',
+    view: ['overview', 'sla', 'heatmap'].includes(ctx.params.view) ? ctx.params.view : 'overview' };
   const body = h('div', {});
   const fromInp = h('input', { type: 'datetime-local', style: { width: '200px' } });
   const toInp = h('input', { type: 'datetime-local', style: { width: '200px' } });
@@ -22,14 +24,32 @@ export async function render(root) {
   } }, 'Показать'));
   const siteSel = h('select', { onchange: (e) => { st.site = e.target.value; load(); } }, h('option', { value: '*' }, 'Все сайты'),
     sites.map(s => h('option', { value: String(s.id), selected: String(s.id) === st.site }, s.name)));
+  const rangeBar = h('div', { class: 'toolbar' }, segmented([...RANGES, ['custom', 'Период…']], st.range, (v) => {
+    st.range = v; custom.classList.toggle('hidden', v !== 'custom'); if (v !== 'custom') { st.from = st.to = null; load(); }
+  }), custom, siteSel, h('button', { class: 'btn sm', onclick: () => load() }, icon('refresh'), 'Обновить'));
+  const viewBar = h('div', {});
+  const drawViews = () => mount(viewBar, tabs([{ id: 'overview', label: 'Обзор' }, { id: 'sla', label: 'Доступность (SLA)' },
+    { id: 'heatmap', label: 'Нагрузка по часам' }], st.view, (v) => {
+    st.view = v; ctx.params.view = v;
+    history.replaceState(null, '', '#/analytics' + (v === 'overview' ? '' : '?view=' + v));
+    drawViews(); load();
+  }));
+  drawViews();
   mount(root,
     h('div', { class: 'page-head' }, h('div', {}, h('h1', {}, 'Аналитика'), h('p', {}, 'История трафика, ошибок и производительности. До 48 часов — поминутная детализация, дальше — почасовая.'))),
-    h('div', { class: 'toolbar' }, segmented([...RANGES, ['custom', 'Период…']], st.range, (v) => {
-      st.range = v; custom.classList.toggle('hidden', v !== 'custom'); if (v !== 'custom') { st.from = st.to = null; load(); }
-    }), custom, siteSel, h('button', { class: 'btn sm', onclick: () => load() }, icon('refresh'), 'Обновить')),
-    body);
+    viewBar, rangeBar, body);
 
   async function load() {
+    if (st.view !== 'overview') {
+      destroyAll(charts);
+      // для тепловой карты нужен выбор сайта, период у неё свой; у SLA — свои окна 24 ч / 7 / 30 дней
+      rangeBar.classList.toggle('hidden', true);
+      const box = h('div', {});
+      mount(body, st.view === 'heatmap' ? h('div', { class: 'toolbar' }, h('span', { class: 'muted small' }, 'Сайт:'), siteSel) : null, box);
+      return st.view === 'sla' ? renderSla(box) : renderHeatmap(box, st.site);
+    }
+    rangeBar.classList.toggle('hidden', false);
+    if (siteSel.parentNode !== rangeBar) rangeBar.insertBefore(siteSel, rangeBar.lastChild);
     const to = st.to || Date.now() / 1000;
     const from = st.from || to - +st.range;
     const q = { from, to, site: st.site };

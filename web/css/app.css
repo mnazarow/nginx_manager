@@ -337,6 +337,7 @@ pre.code .errline { background: color-mix(in srgb, var(--critical) 22%, transpar
 .bulk-bar b { margin-right: 6px; }
 .bulk-bar select.sm { height: 26px; font-size: 12px; width: auto; }
 table.t tr.selected td { background: var(--accent-wash); }
+table.t tr.problem td { background: var(--critical-wash); }
 .toolbar input[type=search], .toolbar input[type=text] { width: 220px; }
 .toolbar select { width: auto; min-width: 140px; }
 .chart-box { position: relative; height: 240px; }
@@ -502,3 +503,30 @@ kbd { font: 600 10.5px var(--mono, ui-monospace, monospace); border: 1px solid v
 .pal-empty { padding: 24px; text-align: center; color: var(--muted); }
 .pal-foot { display: flex; gap: 16px; padding: 8px 14px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); flex-wrap: wrap; }
 @media (max-width: 900px) { .search-btn kbd, .search-label { display: none; } .search-btn { width: 32px; padding: 0; justify-content: center; } .pal-foot { display: none; } .pal-back { padding-top: 8px; } }
+
+/* ---- Аналитика: доступность (SLA) и тепловая карта ---- */
+.sla-strip { display: grid; grid-template-columns: repeat(30, 7px); gap: 2px; align-items: end; }
+.sla-day { display: inline-block; width: 7px; height: 20px; border-radius: 2px; background: var(--good); }
+.sla-day.warn { background: var(--warning); }
+.sla-day.bad { background: var(--critical); height: 20px; }
+.sla-day.none { background: var(--surface-2); outline: 1px solid var(--line); outline-offset: -1px; }
+.sla-day:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.sla-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; padding: 10px 14px; border-top: 1px solid var(--line); font-size: 12.5px; }
+.sla-legend > span { display: inline-flex; align-items: center; gap: 6px; }
+.sla-legend .sla-day { height: 10px; width: 10px; }
+.budget { display: flex; align-items: center; gap: 8px; min-width: 170px; }
+.budget-bar { flex: 0 0 80px; height: 6px; border-radius: 4px; background: var(--surface-2); overflow: hidden; }
+.budget-bar span { display: block; height: 100%; border-radius: 4px; background: var(--good); }
+.budget-bar span.warn { background: var(--warning); }
+.budget-bar span.bad { background: var(--critical); }
+table.t tr.total td { background: var(--surface-2); }
+.heatmap { display: grid; grid-template-columns: 28px repeat(24, minmax(14px, 1fr)); gap: 2px; align-items: center; }
+.hm-h { font-size: 11px; color: var(--muted); text-align: left; }
+.hm-d { font-size: 12px; color: var(--muted); }
+.hm-c { height: 26px; border-radius: 3px; }
+.hm-c.none, .hm-l i.none { background: var(--surface-2); outline: 1px solid var(--line); outline-offset: -1px; }
+.hm-c:hover, .hm-c:focus-visible { outline: 2px solid var(--ink); outline-offset: 0; }
+.hm-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin-top: 12px; }
+.hm-l { display: inline-flex; align-items: center; gap: 4px; }
+.hm-l i { width: 14px; height: 12px; border-radius: 2px; display: inline-block; }
+@media (max-width: 760px) { .heatmap { grid-template-columns: 22px repeat(24, minmax(9px, 1fr)); gap: 1px; } .hm-c { height: 18px; } }

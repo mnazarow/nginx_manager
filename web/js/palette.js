@@ -28,6 +28,8 @@ function staticItems() {
   A('Применить конфигурацию', 'check', () => applyDialog(), 'operator', 'apply reload');
   A('Запустить диагностику', 'stethoscope', () => { location.hash = '#/diagnostics'; }, 'viewer', 'проверка');
   A('Заблокировать IP-адрес', 'ban', () => import('./pages/bans.js').then(m => m.banDialog('')), 'operator', 'бан блокировка');
+  A('Доступность сайтов (SLA)', 'chart', () => { location.hash = '#/analytics?view=sla'; }, 'viewer', 'sla uptime аптайм бюджет ошибок');
+  A('Нагрузка по дням недели и часам', 'chart', () => { location.hash = '#/analytics?view=heatmap'; }, 'viewer', 'тепловая карта heatmap пик часы');
   A('Доступ по странам (GeoIP)', 'shield', () => { location.hash = '#/bans?tab=countries'; }, 'viewer', 'страны гео geoip geo блокировка страны');
   A('Тишина оповещений', 'bell', () => import('./pages/alerts.js').then(m => m.silenceDialog()), 'operator', 'mute плановые работы');
   A('Выпустить сертификат', 'cert', () => { location.hash = '#/certs'; }, 'operator', "let's encrypt ssl https");

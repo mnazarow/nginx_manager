@@ -290,8 +290,9 @@ export function highlightNginx(text, errLine = 0) {
     const ci = ln.indexOf('#');
     let code = ln, com = '';
     if (ci >= 0 && !/["'][^"']*#/.test(ln.slice(0, ci + 1))) { code = ln.slice(0, ci); com = ln.slice(ci); }
-    out = esc(code)
-      .replace(/(&quot;.*?&quot;)/g, '<span class="s">$1</span>')
+    // экранируем только то, что важно для текста (&, <, >, ") — без числовых сущностей, чтобы правило для чисел их не задело
+    out = code.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+      .replace(/(&quot;.*?&quot;|'[^']*')/g, '<span class="s">$1</span>')
       .replace(/(\$[a-zA-Z_0-9]+)/g, '<span class="v">$1</span>')
       .replace(/^(\s*)([a-z_0-9]+)(?=\s|;|$)/, '$1<span class="k">$2</span>')
       .replace(/\b(\d+(?:ms|s|m|h|d|k|K|M|g|G|r\/s|r\/m)?)\b(?=[;\s])/g, '<span class="n">$1</span>');

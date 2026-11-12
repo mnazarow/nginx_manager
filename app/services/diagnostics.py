@@ -31,6 +31,62 @@ def R(id: str, group: str, title: str, status: str, message: str = "", details: 
             "hint": hint, "fix": fix, "fix_label": fix_label, "fix_args": fix_args or {}}
 
 
+COMPACT_AFTER = 12  # однотипных строк одного состояния в группе, после которых остальные сворачиваются
+_ST_WORD = {OK: "в порядке", INFO: "к сведению", SKIP: "пропущено", WARN: "предупреждения", FAIL: "ошибки"}
+
+
+def compact(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Сотни однотипных строк (DNS доменов, серверы бэкендов) — в одну сводную строку с подробностями.
+
+    Проблемные строки (ошибки, предупреждения) остаются по отдельности первые COMPACT_AFTER — у них есть
+    подсказки и кнопки исправления; исправные сворачиваются целиком. Счётчики сводки не меняются."""
+    def family(r):
+        return (r["group"], re.split(r"[_:|]", r["id"], maxsplit=1)[0], r["status"])
+    counts: Dict[tuple, int] = {}
+    for r in results:
+        counts[family(r)] = counts.get(family(r), 0) + 1
+    out: List[Dict[str, Any]] = []
+    folded: Dict[tuple, Dict[str, Any]] = {}
+    seen: Dict[tuple, int] = {}
+    for r in results:
+        k = family(r)
+        if counts[k] <= COMPACT_AFTER:
+            out.append(r)
+            continue
+        seen[k] = seen.get(k, 0) + 1
+        keep = COMPACT_AFTER - 1 if r["status"] in (FAIL, WARN) else 0
+        if seen[k] <= keep:
+            out.append(r)
+            continue
+        row = folded.get(k)
+        if row is None:
+            rest = counts[k] - keep
+            row = R(f"{k[1]}_{r['status']}_more", r["group"],
+                    ("Ещё " if keep else "") + f"{rest} {plural(rest, 'проверка', 'проверки', 'проверок')}",
+                    r["status"], _ST_WORD.get(r["status"], ""), details=[],
+                    hint=r["hint"] if r["status"] in (FAIL, WARN) else "")
+            row["folded"] = rest
+            row["_msgs"] = set()
+            folded[k] = row
+            out.append(row)
+        row["details"].append(f"{r['title']} — {r['message']}")
+        row["_msgs"].add(r["message"])
+    for row in folded.values():
+        msgs = row.pop("_msgs")
+        if len(msgs) == 1:  # у всех одинаковое сообщение (например, «Домен не разрешается») — его и показываем
+            row["message"] = next(iter(msgs))
+        row["details"] = "\n".join(row["details"])
+    return out
+
+
+def plural(n: int, one: str, few: str, many: str) -> str:
+    n = abs(n) % 100
+    if 10 < n < 20:
+        return many
+    n %= 10
+    return one if n == 1 else few if 2 <= n <= 4 else many
+
+
 class Diagnostics:
     def __init__(self, app) -> None:
         self.app = app
@@ -59,8 +115,8 @@ class Diagnostics:
                 else:
                     results.extend(out)
             summary = {s: sum(1 for r in results if r["status"] == s) for s in (OK, WARN, FAIL, INFO, SKIP)}
-            self.last = {"ts": time.time(), "duration": round(time.time() - t0, 2), "results": results,
-                         "summary": summary}
+            self.last = {"ts": time.time(), "duration": round(time.time() - t0, 2), "results": compact(results),
+                         "summary": summary, "total": len(results)}
             self.app.db.kv_set("diagnostics_last", {"ts": self.last["ts"], "summary": summary})
             return self.last
         finally:
@@ -352,7 +408,7 @@ class Diagnostics:
         def resolve(d):
             try:
                 return sorted({ai[4][0] for ai in socket.getaddrinfo(d, None)})
-            except socket.gaierror:
+            except (socket.gaierror, UnicodeError, OSError):
                 return None
         domains = []
         for sid, s in state.sites:
@@ -362,8 +418,29 @@ class Diagnostics:
                         domains.append((s.name, d))
         if state.panel.panel_domain:
             domains.append(("Панель", state.panel.panel_domain))
-        resolved = await asyncio.gather(*(asyncio.to_thread(resolve, d) for _, d in domains[:200]))
+        limit = 2000
+        if len(domains) > limit:
+            res.append(R("dns_limit", g, "Проверка DNS", INFO, f"Проверены первые {limit} доменов из {len(domains)}"))
+            domains = domains[:limit]
+        sem = asyncio.Semaphore(32)
+
+        async def lookup(d: str):
+            async with sem:
+                return await asyncio.to_thread(resolve, d)
+        tasks = [asyncio.ensure_future(lookup(d)) for _, d in domains]
+        if tasks:
+            await asyncio.wait(tasks, timeout=40)  # общий бюджет проверки DNS, чтобы не упереться в лимит в 60 с
+        late = [d for (_, d), t in zip(domains, tasks) if not t.done()]
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+        if late:
+            res.append(R("dns_timeout", g, "Проверка DNS", WARN, f"Не успели проверить {len(late)} доменов за 40 с",
+                         details="\n".join(late[:500]), hint="DNS-сервер отвечает медленно. Проверьте /etc/resolv.conf."))
+        resolved = [t.result() if t.done() and not t.cancelled() else False for t in tasks]
         for (name, d), addrs in zip(domains, resolved):
+            if addrs is False:
+                continue
             if addrs is None:
                 res.append(R(f"dns_{d}", g, d, FAIL, "Домен не разрешается (NXDOMAIN)", details={"site": name},
                              hint="Создайте A-запись (и AAAA для IPv6) у регистратора/DNS-провайдера, указывающую "

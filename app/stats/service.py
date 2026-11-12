@@ -5,7 +5,7 @@ import asyncio
 import json
 import logging
 import time
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
 from ..config import settings
 from ..db import Database
@@ -252,6 +252,54 @@ class StatsService:
         else:
             res["uniq"], res["uniq_exact"] = fallback, False
         return res
+
+    def sla(self, days: int = 30, slo: float = 99.9, now: Optional[float] = None) -> Dict[str, Any]:
+        """Доступность сайтов: доля ответов без 5xx по дням (местное время сервера) и за 24 ч / 7 / 30 дней,
+        бюджет ошибок для цели slo (%). Источник — почасовая статистика (текущий час обновляется ежеминутно)."""
+        now = now or time.time()
+        lt = time.localtime(now)
+        today = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
+        day_starts = [time.mktime(time.localtime(today - 86400 * i + 3600 * 3)[:3] + (0, 0, 0, 0, 0, -1))
+                      for i in range(days - 1, -1, -1)]
+        start = min(day_starts[0], now - 86400 * 30)
+        rows = self.db.query("SELECT ts, site, req, s5 FROM stats_hour WHERE ts>=? AND ts<?", (int(start) // 3600 * 3600,
+                                                                                               int(now) + 3600))
+        per: Dict[str, Dict[str, Any]] = {}
+        for r in rows:
+            p = per.setdefault(r["site"], {"days": [[0, 0] for _ in day_starts], "w": {1: [0, 0], 7: [0, 0], 30: [0, 0]}})
+            ts = r["ts"]
+            for i in range(len(day_starts) - 1, -1, -1):
+                if ts >= day_starts[i]:
+                    p["days"][i][0] += r["req"]
+                    p["days"][i][1] += r["s5"]
+                    break
+            for w in (1, 7, 30):
+                if ts >= now - 86400 * w - 3600:
+                    p["w"][w][0] += r["req"]
+                    p["w"][w][1] += r["s5"]
+
+        def avail(req: int, s5: int) -> Optional[float]:
+            return round((req - s5) / req * 100, 4) if req else None
+        out = []
+        for site, p in per.items():
+            req30, s530 = p["w"][30]
+            allowed = req30 * (1 - slo / 100)
+            daily = [{"ts": day_starts[i], "req": d[0], "s5": d[1], "avail": avail(*d)} for i, d in enumerate(p["days"])]
+            worst = min((d for d in daily if d["avail"] is not None), key=lambda d: d["avail"], default=None)
+            out.append({"site": site, "a1": avail(*p["w"][1]), "a7": avail(*p["w"][7]), "a30": avail(req30, s530),
+                        "req30": req30, "s5_30": s530, "allowed_30": round(allowed),
+                        "budget_left": round(max(0.0, 1 - s530 / allowed) * 100, 1) if allowed else None,
+                        "days": daily, "worst": worst,
+                        "breached_days": sum(1 for d in daily if d["avail"] is not None and d["avail"] < slo)})
+        return {"slo": slo, "days": [int(d) for d in day_starts], "sites": out}
+
+    def heatmap(self, weeks: int, site: str = "*", now: Optional[float] = None) -> List[List[float]]:
+        """Почасовые значения за последние недели: [ts, запросов, 5xx, сумма времени ответа] — сетку
+        «день недели × час» строит браузер в своём часовом поясе."""
+        now = now or time.time()
+        start = int(now - weeks * 7 * 86400) // 3600 * 3600
+        return [[r["ts"], r["req"], r["s5"], round(r["rt_sum"], 3)] for r in self.db.query(
+            "SELECT ts, req, s5, rt_sum FROM stats_hour WHERE site=? AND ts>=? ORDER BY ts", (site, start))]
 
     def unique_ips(self, start: float, end: float, site: str, fallback: int):
         """Точное число уникальных IP по журналу запросов (если он хранится за этот период)."""

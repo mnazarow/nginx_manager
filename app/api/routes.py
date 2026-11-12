@@ -809,6 +809,27 @@ async def stats_sites(request: Request, frm: Optional[float] = Query(None, alias
     return await asyncio.to_thread(nm(request).stats.compare_sites, s, e)
 
 
+@router.get("/stats/sla")
+async def stats_sla(request: Request, days: int = 30, slo: float = 99.9, user=Depends(viewer)):
+    """Доступность сайтов (доля ответов без 5xx) по дням и бюджет ошибок для цели slo."""
+    from ..services.metrics import site_names
+    app = nm(request)
+    days = min(max(days, 7), 90)
+    slo = min(max(slo, 90.0), 99.999)
+    res = await asyncio.to_thread(app.stats.sla, days, slo)
+    names = site_names(app)
+    names["*"] = "Все сайты"
+    res["sites"] = [dict(x, name=names.get(x["site"], x["site"])) for x in res["sites"]
+                    if x["site"] == "*" or x["site"] in names and x["site"] not in ("-", "panel")]
+    res["sites"].sort(key=lambda x: (x["site"] != "*", x["a30"] if x["a30"] is not None else 101, x["name"]))
+    return res
+
+
+@router.get("/stats/heatmap")
+async def stats_heatmap(request: Request, weeks: int = 4, site: str = "*", user=Depends(viewer)):
+    return await asyncio.to_thread(nm(request).stats.heatmap, min(max(weeks, 1), 26), site)
+
+
 @router.get("/stats/system")
 async def stats_system(request: Request, frm: Optional[float] = Query(None, alias="from"),
                        to: Optional[float] = None, user=Depends(viewer)):

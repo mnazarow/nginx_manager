@@ -2,7 +2,7 @@
 import { api } from '../api.js';
 import { h, mount, icon, badge, kpi, tabs, segmented, loading, empty, fmtNum, fmtMs, fmtPct, fmtInt, debounce, toast, table, fmtDate, popover } from '../ui.js';
 import { ctx, can } from '../app.js';
-import { loadCatalog, findingView, levelOf, metricHint, LEVEL_CLASS, LEVEL_TEXT } from '../advice.js';
+import { loadCatalog, findingView, levelOf, metricHint, LEVEL_CLASS, LEVEL_TEXT, foldSame } from '../advice.js';
 import { openHelp } from '../help.js';
 
 const RANGES = [['900', '15 мин'], ['3600', '1 час'], ['21600', '6 часов'], ['86400', '24 часа'], ['604800', '7 дней']];
@@ -63,7 +63,7 @@ export async function render(root) {
     list.forEach(f => (groups[f.group] ||= { title: f.group_title, items: [] }).items.push(f));
     mount(box, h('div', { class: 'mb' }, levels),
       list.length ? Object.values(groups).map(g => h('div', { class: 'mb' }, h('h3', { class: 'group-title' }, g.title),
-        h('div', { class: 'card flush-list' }, g.items.map(f => findingView(f, { onChange: () => { loadCatalog(true).then(load); } })))))
+        h('div', { class: 'card flush-list' }, foldSame(g.items).map(f => findingView(f, { onChange: () => { loadCatalog(true).then(load); } })))))
         : empty(res.findings.length ? 'Нет находок этого уровня' : 'Проблем не найдено',
           `За выбранный период проверено ${res.checked} сценариев. Анализ повторяется автоматически каждые 30 секунд.`, null, 'check'));
   }

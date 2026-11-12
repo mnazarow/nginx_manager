@@ -4,6 +4,7 @@
 """
 import os
 import shutil
+import time
 from pathlib import Path
 
 import pytest
@@ -490,3 +491,43 @@ def test_summary_excludes_blocked_from_clean_4xx():
     assert r["blocked"] == {"ban": 0, "geo": 40, "codes": {"403": 30, "451": 10}}
     assert round(r["err4_pct_clean"], 1) == round(10 / 60 * 100, 1)
     assert r["err4_pct"] == 50
+
+
+def test_diagnostics_compact_folds_repetitive_rows():
+    from app.services.diagnostics import COMPACT_AFTER, R, compact
+    rows = [R(f"dns_d{i}.test", "DNS", f"d{i}.test", "fail", "Домен не разрешается", hint="A-запись") for i in range(40)]
+    rows += [R(f"be_{i}", "Бэкенды", f"b{i}", "ok", f"доступен, {i} мс") for i in range(30)]
+    rows += [R("nginx_installed", "Nginx", "Nginx установлен", "ok", "1.24")]
+    out = compact(rows)
+    fails = [r for r in out if r["group"] == "DNS"]
+    assert len(fails) == COMPACT_AFTER and fails[-1]["id"] == "dns_fail_more"
+    assert fails[-1]["folded"] == 40 - (COMPACT_AFTER - 1) and fails[-1]["message"] == "Домен не разрешается"
+    oks = [r for r in out if r["group"] == "Бэкенды"]
+    assert len(oks) == 1 and oks[0]["folded"] == 30 and "b29 — доступен, 29 мс" in oks[0]["details"]
+    assert any(r["id"] == "nginx_installed" for r in out)
+    small = [R(f"dns_x{i}", "DNS", "x", "ok", "ok") for i in range(5)]
+    assert compact(small) == small
+
+
+def test_recent_minutes_are_compacted():
+    """В памяти за последний час держатся только топы: байты и время — лишь для оставшихся ключей."""
+    from app.db import Database
+    from app.stats.collector import Aggregator, Minute
+    from app.stats.parsing import GeoIP
+    ps = PanelSettings(top_keep=10)
+    agg = Aggregator(Database(TMP / "agg.db"), lambda: ps, GeoIP())
+    m = Minute()
+    for i in range(500):
+        m.tops["ip"][f"10.0.{i // 250}.{i % 250}"] += 1 + i
+        m.top_bytes["ip"][f"10.0.{i // 250}.{i % 250}"] += 100
+        m.tops["slow"][f"/p{i}"] += 1
+        m.slow_sum[f"/p{i}"] += 2.0
+    mts = int(time.time()) // 60 * 60 - 120
+    agg._finalize_minute(mts, {"1": m})
+    _, mb = agg.recent[-1]
+    kept = mb["1"]
+    assert len(kept.tops["ip"]) == 30 and set(kept.top_bytes["ip"]) <= set(kept.tops["ip"])
+    assert len(kept.slow_sum) <= 30
+    top = agg.recent_tops(10, "1", "ip", 5)
+    assert top and top[0]["bytes"] == 100
+    agg.db.close()

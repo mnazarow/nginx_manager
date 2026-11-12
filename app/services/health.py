@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import ssl
 import time
 from collections import deque
@@ -169,6 +170,12 @@ class HealthChecker:
                 elif t.state == "disabled":
                     t.state = "unknown"
                 new[key] = t
+        # новые цели проверяем не все в одну секунду: первая проверка — в случайный момент первых 5 секунд,
+        # дальше каждая цель живёт со своим сдвигом (без залпов по общему бэкенду и пиков нагрузки на панель)
+        now = time.time()
+        for key, t in new.items():
+            if key not in self.targets and not t.last_check:
+                t.last_check = now - t.check.interval + random.uniform(0, min(5.0, t.check.interval))
         self.targets = new
 
     async def check(self, t: Target) -> None:

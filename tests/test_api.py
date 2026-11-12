@@ -175,6 +175,60 @@ def test_backup_export(admin):
     assert data["format"] == "nginx-manager-export" and {"sites", "global"} <= set(data)
 
 
+def test_backup_roundtrip(admin):
+    """Экспорт → удаление всего → импорт: сайты (с паролями Basic Auth и правилами по странам), потоки,
+    правила и каналы оповещений и глобальные настройки возвращаются как были."""
+    site = dict(SITE, name="Резерв", domains=["backup.example.com"],
+                security={"basic_auth": True, "basic_auth_users": [{"username": "boss", "password": "Secret-1"}],
+                          "geo_mode": "deny", "geo_countries": ["CN"]})
+    sid = admin.post("/api/sites", json=site, headers=H).json()["id"]
+    stid = admin.post("/api/streams", json={"name": "PG", "listen_port": 15432, "backends": [{"port": 5432}]},
+                      headers=H).json()["id"]
+    rule = admin.post("/api/alerts/rules", json={"name": "5xx", "metric": "error_5xx_rate", "threshold": 7,
+                                                 "site": str(sid)}, headers=H)
+    assert rule.status_code == 200, rule.text
+    ch = admin.post("/api/alerts/channels", json={"name": "hook", "type": "webhook", "url": "https://hooks.example/x"},
+                    headers=H)
+    assert ch.status_code == 200, ch.text
+    g = admin.get("/api/settings/global").json()
+    g["worker_connections"] = 4321
+    assert admin.put("/api/settings/global", json=g, headers=H).status_code == 200
+    before_sites = {s["name"]: admin.get(f"/api/sites/{s['id']}").json()["data"] for s in admin.get("/api/sites").json()}
+    before_diff = {d["file"] for d in admin.get("/api/config/pending").json()["diff"]}
+    data = admin.get("/api/backup/export").json()
+    assert any(s["data"]["name"] == "Резерв" for s in data["sites"])
+    # всё удаляем и меняем глобальные настройки
+    for s in admin.get("/api/sites").json():
+        admin.delete(f"/api/sites/{s['id']}", headers=H)
+    admin.delete(f"/api/streams/{stid}", headers=H)
+    g["worker_connections"] = 1024
+    admin.put("/api/settings/global", json=g, headers=H)
+    assert admin.get("/api/sites").json() == []
+    r = admin.post("/api/backup/import", json=data, headers=H)
+    assert r.status_code == 200, r.text
+    after_sites = {s["name"]: admin.get(f"/api/sites/{s['id']}").json()["data"] for s in admin.get("/api/sites").json()}
+    assert after_sites == before_sites
+    assert [s["name"] for s in admin.get("/api/streams").json()] == ["PG"]
+    assert any(x["data"]["name"] == "5xx" for x in admin.get("/api/alerts/rules").json())
+    assert any(x["data"]["name"] == "hook" for x in admin.get("/api/alerts/channels").json())
+    assert admin.get("/api/settings/global").json()["worker_connections"] == 4321
+    diff = admin.get("/api/config/pending").json()["diff"]
+    assert {d["file"] for d in diff} == before_diff
+    htp = next(d for d in diff if d["file"].endswith(".htpasswd"))
+    assert "boss:<хеш скрыт" in htp["diff"]  # хеш пароля пережил экспорт и импорт
+    bad = admin.post("/api/backup/import", json={"format": "other"}, headers=H)
+    assert bad.status_code in (400, 422)
+    # режим «добавить»: новые номера, правило оповещения переезжает на новый номер сайта
+    r = admin.post("/api/backup/import", json=data, params={"mode": "merge"}, headers=H)
+    assert r.status_code == 200, r.text
+    copies = sorted(s["id"] for s in admin.get("/api/sites").json() if s["name"] == "Резерв")
+    assert len(copies) == 2
+    rules = [x["data"] for x in admin.get("/api/alerts/rules").json() if x["data"]["name"] == "5xx"]
+    assert sorted(x["site"] for x in rules) == sorted(str(i) for i in copies)
+    for s in admin.get("/api/sites").json():
+        admin.delete(f"/api/sites/{s['id']}", headers=H)
+
+
 def test_websocket_tick(admin):
     with admin.websocket_connect("/api/ws") as ws:
         msg = ws.receive_json()
@@ -283,3 +337,21 @@ def test_geo_status_and_site_rules(admin):
     schema = admin.get("/api/schema").json()
     assert "RU" in schema["countries"] and len(schema["country_groups"]["eu"]) == 27
     assert admin.delete(f"/api/sites/{sid}", headers=H).status_code == 200
+
+
+def test_sla_and_heatmap(admin, client):
+    db = client.app.state.nm.db
+    now = int(time.time()) // 3600 * 3600
+    rows = [(now - 3600 * i, "*", 1000, 0, 0, 0, 990, 0, 0, 10 if i < 24 else 0, 50.0, 1.0, 0.0, 0, 0, "{}")
+            for i in range(1, 24 * 10)]
+    db.executemany("INSERT OR REPLACE INTO stats_hour(ts,site,req,bout,bin,s1,s2,s3,s4,s5,rt_sum,rt_max,urt_sum,urt_n,"
+                   "uniq,data) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+    r = admin.get("/api/stats/sla", params={"days": 30, "slo": 99.9}).json()
+    assert len(r["days"]) == 30 and r["slo"] == 99.9
+    total = next(x for x in r["sites"] if x["site"] == "*")
+    assert total["name"] == "Все сайты"
+    assert abs(total["a1"] - 99.0) < 0.05          # последние сутки: 1% ошибок
+    assert total["a30"] > total["a1"] and 0 < total["budget_left"] < 10 and total["breached_days"] >= 1
+    hm = admin.get("/api/stats/heatmap", params={"weeks": 1}).json()
+    assert len(hm) >= 24 * 6 and hm[0][1] == 1000
+    db.execute("DELETE FROM stats_hour WHERE site='*'")
