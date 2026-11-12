@@ -1,5 +1,6 @@
 // Сервер: ресурсы ОС, процессы nginx, управление nginx, информация о сборке.
 import { api, live } from '../api.js';
+import { hintKpi } from '../advice.js';
 import { h, mount, icon, badge, card, segmented, fmtNum, fmtBps, fmtBytes, fmtPct, fmtDur, toast, confirmDlg, modal, loading, kpi } from '../ui.js';
 import { timeChart, setData, chartCard, seriesColor, destroyAll } from '../charts.js';
 import { can, refreshState } from '../app.js';
@@ -69,11 +70,22 @@ export async function render(root) {
             h('td', { class: 'num' }, fmtBytes(t.size)), h('td', { class: 'num' }, fmtBytes(t.lag_bytes)), h('td', { class: 'num' }, fmtNum(t.lines))))))))));
   }
   await Promise.all([load(), loadInfo()]);
+  // карточки создаются один раз и обновляются каждую секунду (подсказка «?» не закрывается при обновлении)
+  const K = { cpu: kpi('CPU', '—'), mem: kpi('Память', '—'), disk: kpi('Диск /', '—'), net: kpi('Сеть ↓', '—'),
+    rss: kpi('Nginx RSS', '—'), ncpu: kpi('Nginx CPU', '—') };
+  mount(kp, Object.values(K));
   const off = live.on('tick', (m) => {
     const s = m.system; if (!s || !s.ts) return;
-    mount(kp, kpi('CPU', fmtPct(s.cpu, 0), { foot: `${s.cpus} ядер, load ${fmtNum(s.load1, 2)}` }), kpi('Память', fmtPct(s.mem, 0), { foot: `${fmtBytes(s.mem_used)} / ${fmtBytes(s.mem_total)}` }),
-      kpi('Диск /', fmtPct(s.disk, 0), { foot: `свободно ${fmtBytes(s.disk_free)}` }), kpi('Сеть ↓', fmtBps(s.net_rx), { foot: `↑ ${fmtBps(s.net_tx)}` }),
-      kpi('Nginx RSS', fmtBytes(s.nginx_rss), { foot: `${s.nginx_workers} воркеров, ${s.nginx_fds} дескрипторов` }), kpi('Nginx CPU', fmtPct(s.nginx_cpu), { foot: 'сумма по процессам' }));
+    K.cpu.set(fmtPct(s.cpu, 0), '', `${s.cpus} ядер, load ${fmtNum(s.load1, 2)}`);
+    hintKpi(K.cpu, 'cpu', s.cpu, { text: fmtPct(s.cpu, 0) });
+    K.mem.set(fmtPct(s.mem, 0), '', `${fmtBytes(s.mem_used)} / ${fmtBytes(s.mem_total)}`);
+    hintKpi(K.mem, 'mem', s.mem, { text: fmtPct(s.mem, 0) });
+    K.disk.set(fmtPct(s.disk, 0), '', `свободно ${fmtBytes(s.disk_free)}`);
+    hintKpi(K.disk, 'disk', Math.max(s.disk || 0, s.disk_log || 0), { text: fmtPct(s.disk, 0) });
+    K.net.set(fmtBps(s.net_rx), '', `↑ ${fmtBps(s.net_tx)}`);
+    hintKpi(K.net, 'bandwidth', s.net_tx, { text: fmtBps(s.net_tx) });
+    K.rss.set(fmtBytes(s.nginx_rss), '', `${s.nginx_workers} воркеров, ${s.nginx_fds} дескрипторов`);
+    K.ncpu.set(fmtPct(s.nginx_cpu), '', 'сумма по процессам');
   });
   return () => { off(); destroyAll(charts); };
 }

@@ -52,7 +52,7 @@ def seed(c: Client):
         return
     cert = c.call("POST", "/certs", {"type": "selfsigned", "name": "shop.example.com",
                                      "domains": ["shop.example.com", "www.shop.example.com"]})
-    cert2 = c.call("POST", "/certs", {"type": "selfsigned", "name": "panel.example.com", "domains": ["panel.example.com"]})
+    c.call("POST", "/certs", {"type": "selfsigned", "name": "panel.example.com", "domains": ["panel.example.com"]})
     g = c.call("GET", "/settings/global")
     g.update(real_ip_enabled=True, real_ip_from=["127.0.0.1"])
     c.call("PUT", "/settings/global", g)

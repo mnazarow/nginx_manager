@@ -1,6 +1,7 @@
 // Состояние бэкендов: активные проверки, задержка, доступность, история.
 import { api } from '../api.js';
 import { h, mount, icon, badge, stateBadge, fmtMs, fmtAgo, fmtPct, fmtDur, toast, card, kpi, table } from '../ui.js';
+import { hintKpi } from '../advice.js';
 
 export async function render(root) {
   const box = h('div', {});
@@ -16,11 +17,18 @@ export async function render(root) {
     const t = r.targets;
     const active = t.filter(x => x.state !== 'disabled');
     const lat = active.filter(x => x.state === 'up').map(x => x.latency_ms);
-    mount(kp,
-      kpi('Доступны', String(active.filter(x => x.state === 'up').length), { foot: `из ${active.length} проверяемых` }),
-      kpi('Недоступны', String(active.filter(x => x.state === 'down').length), { cls: active.some(x => x.state === 'down') ? 'bad' : '', foot: 'по активной проверке' }),
-      kpi('Средняя задержка', lat.length ? fmtMs(lat.reduce((a, b) => a + b, 0) / lat.length) : '—', { foot: 'время ответа на проверку' }),
-      kpi('Пассивные ошибки', String(Object.values(r.passive).reduce((a, b) => a + b, 0)), { foot: 'из журнала nginx с запуска панели' }));
+    const downN = active.filter(x => x.state === 'down').length;
+    const avgLat = lat.length ? lat.reduce((a, b) => a + b, 0) / lat.length : null;
+    const ups = active.filter(x => x.uptime_pct != null).map(x => x.uptime_pct);
+    const minUp = ups.length ? Math.min(...ups) : null;
+    const K = [kpi('Доступны', String(active.filter(x => x.state === 'up').length), { foot: `из ${active.length} проверяемых` }),
+      kpi('Недоступны', String(downN), { foot: 'по активной проверке' }),
+      kpi('Средняя задержка', avgLat != null ? fmtMs(avgLat) : '—', { foot: 'время ответа на проверку' }),
+      kpi('Худшая доступность', minUp != null ? fmtPct(minUp, 2) : '—', { foot: `пассивных ошибок: ${Object.values(r.passive).reduce((a, b) => a + b, 0)}` })];
+    mount(kp, K);
+    hintKpi(K[1], 'backends_down', downN, { text: String(downN) });
+    hintKpi(K[2], 'backend_latency', avgLat, { text: avgLat != null ? fmtMs(avgLat) : '—' });
+    hintKpi(K[3], 'uptime', minUp, { text: minUp != null ? fmtPct(minUp, 2) : '—' });
     const groups = {};
     t.forEach(x => (groups[x.owner] ||= { name: x.owner_name, kind: x.owner.split(':')[0], items: [] }).items.push(x));
     mount(box, Object.keys(groups).length ? Object.entries(groups).map(([owner, g]) => h('div', { class: 'card mb' },

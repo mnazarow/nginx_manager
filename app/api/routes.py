@@ -820,6 +820,36 @@ async def collector(request: Request, user=Depends(viewer)):
 
 
 # =============================================================================
+#  Встроенный анализ и подсказки
+# =============================================================================
+@router.get("/insights")
+async def insights(request: Request, frm: Optional[float] = Query(None, alias="from"),
+                   to: Optional[float] = None, site: str = "*", user=Depends(viewer)):
+    start, end = rng(frm, to, 900)
+    return await asyncio.to_thread(nm(request).insights.evaluate, start, end, site or "*")
+
+
+@router.get("/insights/catalog")
+async def insights_catalog(request: Request, user=Depends(viewer)):
+    return nm(request).insights.catalog()
+
+
+@router.post("/insights/mute")
+async def insights_mute(request: Request, id: str = Body(..., embed=True), mute: bool = Body(True, embed=True),
+                        user=Depends(operator)):
+    from ..services.insights import SCENARIOS
+    app = nm(request)
+    if id not in SCENARIOS:
+        raise HTTPException(404, "Неизвестный сценарий")
+    p = app.panel()
+    muted = [x for x in p.insights_muted if x != id] + ([id] if mute else [])
+    app.save_panel(p.model_copy(update={"insights_muted": muted}))
+    app.insights._cache.clear()
+    audit(request, user, "insight_muted" if mute else "insight_unmuted", id)
+    return {"ok": True, "muted": muted}
+
+
+# =============================================================================
 #  Блокировки IP
 # =============================================================================
 class BanBody(BaseModel):

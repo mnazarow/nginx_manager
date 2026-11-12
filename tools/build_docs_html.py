@@ -86,7 +86,7 @@ def main() -> None:
                                extension_configs={"toc": {"slugify": slugify_unicode, "toc_depth": "1-3"}})
         out = md.convert(p.read_text(encoding="utf-8"))
         # уникальные якоря в пределах одного файла: chNN-<якорь>
-        out = re.sub(r'id="([^"]+)"', lambda m: f'id="ch{num}-{m.group(1)}"', out)
+        out = re.sub(r'id="([^"]+)"', lambda m, num=num: f'id="ch{num}-{m.group(1)}"', out)
 
         def link(m, num=num):
             href = m.group(1)

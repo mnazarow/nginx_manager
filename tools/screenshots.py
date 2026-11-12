@@ -135,6 +135,18 @@ async def extras(page, a):
     await page.wait_for_timeout(2500)
     await page.screenshot(path=f"{a.out}/docs-search.png")
     print("help: ok")
+    # встроенный анализ: раскрытая находка и подсказка показателя
+    await page.goto(f"{a.url}/#/insights")
+    await page.wait_for_timeout(3500)
+    await page.click(".finding-head")
+    await page.wait_for_timeout(800)
+    await page.screenshot(path=f"{a.out}/insights.png")
+    await page.goto(f"{a.url}/#/")
+    await page.wait_for_timeout(6000)
+    await page.click(".kpi:nth-child(4) .kpi-hint")
+    await page.wait_for_timeout(800)
+    await page.screenshot(path=f"{a.out}/insights-hint.png")
+    print("insights: ok")
     await mobile(page.context.browser, a)
 
 

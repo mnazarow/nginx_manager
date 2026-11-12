@@ -209,9 +209,64 @@ def alert_metrics():
         "error_log_rate": "записей уровня error/crit/alert/emerg в журнале nginx за окно, пересчитано в минуту",
         "rate_limited": "срабатываний limit_req/limit_conn в журнале ошибок за окно, в минуту",
         "autobans": "число автоматических блокировок IP за окно (раздел «Блокировки»)",
+        "insights_crit": "число находок уровня «проблема» во встроенном анализе за последние 15 минут "
+                         "(обновляется раз в минуту)",
     }
     for k, (label, unit) in M.ALERT_METRICS.items():
         out.append(f"| `{k}` | {label} | {unit or '—'} | {how.get(k, '')} |")
+    return "\n".join(out)
+
+
+def insight_metrics():
+    from app.services.insights import METRICS
+    out = ["| Показатель | Что показывает | Норма / внимание / проблема | Что делать |", "|---|---|---|---|"]
+    for k, m in METRICS.items():
+        unit = f" {m['unit']}" if m.get("unit") else ""
+        if m.get("warn_ratio"):
+            thr = (f"< {int(m['warn_ratio'] * 100)}% ёмкости / ≥ {int(m['warn_ratio'] * 100)}% / "
+                   f"≥ {int(m['crit_ratio'] * 100)}%")
+        elif m.get("dir") == "above":
+            thr = f"< {m['warn']:g}{unit} / ≥ {m['warn']:g}{unit} / ≥ {m['crit']:g}{unit}"
+        elif m.get("dir") == "below":
+            thr = f"> {m['warn']:g}{unit} / ≤ {m['warn']:g}{unit} / ≤ {m['crit']:g}{unit}"
+        else:
+            thr = "без порогов — важна динамика"
+        if m.get("min_req"):
+            thr += f" (оценивается от {m['min_req']} запросов)"
+        out.append(f"| **{m['label']}** (`{k}`) | {m['desc']} {m['how']} | {thr}. {m['norm']} | {m['advice']} |"
+                   .replace("\n", " "))
+    return "\n".join(out)
+
+
+def insight_scenarios():
+    from app.services.insights import GROUPS, S
+    out = []
+    for gid, title in GROUPS:
+        items = [s for s in S if s.group == gid]
+        if not items:
+            continue
+        out.append(f"\n## {title}\n")
+        if gid == "errorlog":
+            out.append("Каждая категория журнала ошибок nginx — отдельный сценарий. Уровень находки: «критическая» "
+                       "категория — проблема (с 1 записи), «ошибка» и «предупреждение» — внимание (с 5 и 10 записей), "
+                       "«информация» — к сведению (с 50 записей).\n")
+            out.append("| Сценарий | Условие | Что означает и что делать |")
+            out.append("|---|---|---|")
+            for s in items:
+                out.append(f"| **{s.title}** (`{s.id}`) | {s.when} | {s.what} |")
+            continue
+        for s in items:
+            out.append(f'\n<a id="sc-{s.id}"></a>\n\n### {s.title}\n')
+            out.append(f"*Идентификатор:* `{s.id}`. *Когда срабатывает:* {s.when}.\n")
+            out.append(f"{s.what}\n")
+            if s.causes:
+                out.append("**Вероятные причины:**\n")
+                out.extend(f"- {c}" for c in s.causes)
+                out.append("")
+            if s.actions:
+                out.append("**Что сделать:**\n")
+                out.extend(f"{i}. {a}" for i, a in enumerate(s.actions, 1))
+                out.append("")
     return "\n".join(out)
 
 
@@ -227,6 +282,8 @@ BLOCKS = {
     "alert_channel": lambda: plain(M.AlertChannel, 3, "alert_channel"),
     "errors": error_categories,
     "alert_metrics": alert_metrics,
+    "insight_metrics": insight_metrics,
+    "insight_scenarios": insight_scenarios,
 }
 
 

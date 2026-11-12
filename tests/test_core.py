@@ -293,3 +293,38 @@ def test_docs_links_resolve():
             if m.group(1) not in names:
                 bad.append(f"{p.name} → {m.group(1)}")
     assert not bad, bad
+
+
+def _slug(text):
+    import re as _re
+    return _re.sub(r"\s", "-", _re.sub(r"[^\w\s-]", "", text.strip().lower()))
+
+
+def test_insights_catalog_integrity():
+    """Каждый сценарий и показатель описан полностью, а ссылки на документацию ведут на существующие разделы."""
+    import re as _re
+    from app.services.insights import METRICS, SCENARIOS, assess
+    docs = {p.name: p.read_text(encoding="utf-8") for p in (ROOT / "docs").glob("*.md")}
+
+    def sections(page):
+        out = set()
+        for line in docs[page].splitlines():
+            m = _re.match(r"^#{1,6}\s+(.*)$", line)
+            if m:
+                out.add(_slug(_re.sub(r"[`*]", "", m.group(1))))
+        return out | set(_re.findall(r'id="([^"]+)"', docs[page]))
+    for sid, sc in SCENARIOS.items():
+        assert sc.title and sc.when and sc.what, sid
+        if sc.group != "errorlog":
+            assert sc.causes and sc.actions, sid
+        page, sec = sc.doc
+        assert page in docs, (sid, page)
+        assert not sec or sec in sections(page), (sid, page, sec)
+    for mid, m in METRICS.items():
+        assert m["desc"] and m["how"] and m["norm"] and m["advice"], mid
+        page, sec = m["doc"]
+        assert sec in sections(page), (mid, sec)
+    assert assess("err5", 6, requests=100) == "crit" and assess("err5", 2, requests=100) == "warn"
+    assert assess("err5", 50, requests=5) == "ok"          # мало данных
+    assert assess("hit_ratio", 10, requests=500) == "warn" and assess("hit_ratio", 80, requests=500) == "ok"
+    assert assess("connections", 950, extra={"capacity": 1000}) == "crit"

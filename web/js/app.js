@@ -6,7 +6,7 @@ import { openPageHelp } from './help.js';
 
 const NAV = [
   ['Мониторинг', [
-    ['/', 'Дашборд', 'dash'], ['/analytics', 'Аналитика', 'chart'], ['/requests', 'Журнал запросов', 'list'],
+    ['/', 'Дашборд', 'dash'], ['/insights', 'Анализ и подсказки', 'bulb'], ['/analytics', 'Аналитика', 'chart'], ['/requests', 'Журнал запросов', 'list'],
     ['/errors', 'Журнал ошибок', 'alert'], ['/backends', 'Бэкенды', 'server'], ['/system', 'Сервер', 'cpu']]],
   ['Конфигурация', [
     ['/sites', 'Сайты', 'sites'], ['/streams', 'TCP/UDP-потоки', 'stream'], ['/certs', 'Сертификаты', 'cert'],
@@ -25,7 +25,7 @@ const PAGES = {
   '/system': 'system', '/sites': 'sites', '/streams': 'streams', '/certs': 'certs', '/global': 'global',
   '/versions': 'versions', '/diagnostics': 'diagnostics', '/alerts': 'alerts', '/events': 'events', '/users': 'users',
   '/audit': 'audit', '/settings': 'settings', '/backup': 'backup', '/docs': 'docs', '/profile': 'profile',
-  '/bans': 'bans',
+  '/bans': 'bans', '/insights': 'insights',
 };
 
 export const ctx = { state: null, schema: null, user: null, cleanup: null, route: '', params: {} };
@@ -79,7 +79,8 @@ function layout() {
       nav.appendChild(h('a', { href: '#' + path, 'data-path': path }, icon(ic), label,
         path === '/diagnostics' ? h('span', { class: 'nav-badge-diag' }) : null,
         path === '/alerts' ? h('span', { class: 'nav-badge-alerts' }) : null,
-        path === '/backends' ? h('span', { class: 'nav-badge-backends' }) : null));
+        path === '/backends' ? h('span', { class: 'nav-badge-backends' }) : null,
+        path === '/insights' ? h('span', { class: 'nav-badge-insights' }) : null));
     }
   }
   topEls = {
@@ -138,6 +139,8 @@ export function drawTop() {
   document.querySelectorAll('.nav-badge-diag').forEach(el => mount(el, d.fail ? badge(d.fail, 'bad') : d.warn ? badge(d.warn, 'warn') : null));
   document.querySelectorAll('.nav-badge-alerts').forEach(el => mount(el, s.alerts_firing ? badge(s.alerts_firing, 'bad') : null));
   document.querySelectorAll('.nav-badge-backends').forEach(el => mount(el, s.backends_down ? badge(s.backends_down, 'bad') : null));
+  const ins = s.insights || {};
+  document.querySelectorAll('.nav-badge-insights').forEach(el => mount(el, ins.crit ? badge(ins.crit, 'bad') : ins.warn ? badge(ins.warn, 'warn') : null));
   document.querySelectorAll('.nav a').forEach(a => { a.classList.toggle('active', a.dataset.path === ctx.route); a.querySelector('.badge')?.classList.add('badge'); });
 }
 

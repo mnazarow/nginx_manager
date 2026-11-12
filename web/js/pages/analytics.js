@@ -5,6 +5,7 @@ import { h, mount, kpi, card, fmtNum, fmtBps, fmtMs, fmtPct, fmtInt, fmtBytes, f
 import { timeChart, setData, chartCard, statusColors, seriesColor, destroyAll, barChart, segBar } from '../charts.js';
 import { ctx, can } from '../app.js';
 import { banDialog } from './bans.js';
+import { hintKpi, insightsCard, loadCatalog } from '../advice.js';
 
 const RANGES = [['900', '15 мин'], ['3600', '1 час'], ['21600', '6 часов'], ['86400', '24 часа'], ['604800', '7 дней'], ['2592000', '30 дней'], ['7776000', '90 дней']];
 
@@ -41,14 +42,24 @@ export async function render(root) {
     const xFmt = span > 2 * 86400 ? (t) => new Date(t * 1000).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' }) + (span < 10 * 86400 ? ' ' + new Date(t * 1000).getHours() + 'ч' : '')
       : (t) => new Date(t * 1000).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
     const sc = statusColors();
+    const cacheN = Object.values(sum.cache || {}).reduce((a, b) => a + b, 0);
+    const botsPct = sum.requests ? sum.bots / sum.requests * 100 : 0;
     const kp = [
       kpi('Запросов', fmtCompact(sum.requests), { foot: `${fmtNum(sum.rps, 2)} в секунду` }),
       kpi('Передано', fmtBytes(sum.bytes_out), { foot: `принято ${fmtBytes(sum.bytes_in)}` }),
-      kpi('Ошибки 5xx', fmtPct(sum.err5_pct, 2), { foot: `4xx: ${fmtPct(sum.err4_pct)}`, cls: sum.err5_pct > 5 ? 'bad' : sum.err5_pct > 1 ? 'warn' : '' }),
-      kpi('Время ответа p95', fmtMs(sum.p95), { foot: `p50 ${fmtMs(sum.p50)} · p99 ${fmtMs(sum.p99)}` }),
+      kpi('Ошибки 5xx', fmtPct(sum.err5_pct, 2), { foot: `4xx: ${fmtPct(sum.err4_pct)}` }),
+      kpi('Время ответа p95', fmtMs(sum.p95), { foot: `p50 ${fmtMs(sum.p50)} · p99 ${fmtMs(sum.p99)} · бэкенд ${fmtMs(sum.urt_avg)}` }),
       kpi('Уникальных IP', fmtCompact(sum.uniq), { foot: sum.uniq_exact ? 'точно, по журналу запросов' : 'оценка (сумма почасовых)', tip: 'Точный подсчёт возможен, пока период покрыт журналом запросов' }),
-      kpi('Кэш (HIT)', fmtPct(sum.hit_ratio), { foot: `боты: ${fmtPct(sum.requests ? sum.bots / sum.requests * 100 : 0)} запросов` }),
+      kpi('Кэш (HIT)', cacheN ? fmtPct(sum.hit_ratio) : '—', { foot: `боты: ${fmtPct(botsPct)} запросов` }),
     ];
+    hintKpi(kp[0], 'rps', sum.rps, { text: `${fmtNum(sum.rps, 2)} rps` });
+    hintKpi(kp[1], 'bandwidth', span ? sum.bytes_out * 8 / span : 0, { text: fmtBps(span ? sum.bytes_out * 8 / span : 0) });
+    hintKpi(kp[2], 'err5', sum.err5_pct, { req: sum.requests, text: fmtPct(sum.err5_pct, 2) });
+    hintKpi(kp[3], 'p95', sum.p95, { req: sum.requests, text: fmtMs(sum.p95) });
+    hintKpi(kp[5], 'hit_ratio', cacheN ? sum.hit_ratio : null, { req: cacheN, text: cacheN ? fmtPct(sum.hit_ratio) : 'кэш не используется' });
+    const insBox = h('div', {});
+    loadCatalog().then(() => api('/insights', { query: q, silent: true })).then(res => mount(insBox, h('div', { class: 'mt' },
+      insightsCard(res, { limit: 5, title: 'Анализ за период', link: `#/insights?site=${encodeURIComponent(st.site)}` })))).catch(() => {});
     const cReq = chartCard('Запросы по классам ответов', { sub: `шаг ${ts.step >= 3600 ? ts.step / 3600 + ' ч' : ts.step / 60 + ' мин'}, запросов за шаг` });
     const cBw = chartCard('Трафик', { sub: 'средняя скорость, бит/с' });
     const cLat = chartCard('Время ответа', { sub: 'перцентили и среднее время бэкенда' });
@@ -95,6 +106,7 @@ export async function render(root) {
     const errs = Object.entries(sum.errors || {});
     mount(body,
       h('div', { class: 'grid g6' }, kp),
+      insBox,
       h('div', { class: 'grid g2 mt' }, cReq.el, cBw.el, cLat.el, cUniq.el, cErr.el, cNg.el),
       h('div', { class: 'grid g3 mt' }, codesBox, card('Распределение времени ответа', h('div', { class: 'chart-box short' }, hist)),
         card('Ошибки nginx за период', errs.length ? h('div', {}, errs.slice(0, 8).map(([k, v]) => h('div', { style: { padding: '6px 0', borderBottom: '1px solid var(--line)' } },

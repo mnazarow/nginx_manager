@@ -29,6 +29,7 @@ export function mount(el, ...children) { clear(el); append(el, children); return
 
 // ---------- Иконки (линейные, 24×24) ----------
 const P = {
+  bulb: 'M9 18h6M10 22h4M12 2a7 7 0 00-4 12.7V17h8v-2.3A7 7 0 0012 2z',
   ban: 'M12 2a10 10 0 100 20 10 10 0 000-20zM4.9 4.9l14.2 14.2',
   dash: 'M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z',
   sites: 'M12 2a10 10 0 100 20 10 10 0 000-20zM2 12h20M12 2a15 15 0 014 10 15 15 0 01-4 10 15 15 0 01-4-10 15 15 0 014-10z',
@@ -154,6 +155,32 @@ export function modal({ title, body, footer, size = '', onClose }) {
   document.addEventListener('keydown', esc);
   document.body.appendChild(back);
   return { close, el: m };
+}
+
+/** Всплывающая подсказка у элемента: закрывается щелчком вне неё, Esc или повторным щелчком. */
+let openPop = null;
+export function popover(anchor, content) {
+  if (openPop) { const same = openPop.anchor === anchor; openPop.close(); if (same) return null; }
+  const el = h('div', { class: 'popover', role: 'dialog' }, content);
+  document.body.appendChild(el);
+  const place = () => {
+    const r = anchor.getBoundingClientRect();
+    const w = Math.min(420, window.innerWidth - 16);
+    el.style.width = w + 'px';
+    let left = Math.min(Math.max(8, r.left + r.width / 2 - w / 2), window.innerWidth - w - 8);
+    let top = r.bottom + 8;
+    if (top + el.offsetHeight > window.innerHeight - 8 && r.top - el.offsetHeight - 8 > 8) top = r.top - el.offsetHeight - 8;
+    el.style.left = left + 'px'; el.style.top = Math.max(8, top) + 'px';
+  };
+  place();
+  const onDoc = (e) => { if (!el.contains(e.target) && e.target !== anchor) close(); };
+  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  const close = () => { el.remove(); document.removeEventListener('mousedown', onDoc); document.removeEventListener('keydown', onKey);
+    window.removeEventListener('scroll', close, true); window.removeEventListener('resize', close); openPop = null; };
+  setTimeout(() => { document.addEventListener('mousedown', onDoc); document.addEventListener('keydown', onKey);
+    window.addEventListener('scroll', close, true); window.addEventListener('resize', close); }, 0);
+  openPop = { anchor, close };
+  return openPop;
 }
 
 export function confirmDlg(text, { title = 'Подтверждение', ok = 'Да', danger = false } = {}) {

@@ -3,6 +3,7 @@ import { api, live } from '../api.js';
 import { h, mount, kpi, card, fmtNum, fmtBps, fmtMs, fmtPct, fmtInt, fmtBytes, fmtDur, fmtAgo, sparkline, icon, badge, table,
   stateBadge, hbars, fmtCompact } from '../ui.js';
 import { timeChart, setData, chartCard, statusColors, seriesColor, destroyAll, segBar } from '../charts.js';
+import { hintKpi, insightsCard, loadCatalog } from '../advice.js';
 
 const WINDOW = 300;
 
@@ -34,11 +35,13 @@ export async function render(root) {
   const certBox = h('div', {});
   const evBox = h('div', {});
   const sumBox = h('div', {});
+  const insBox = h('div', {});
 
   mount(root,
     h('div', { class: 'page-head' }, h('div', {}, h('h1', {}, 'Обзор'), h('p', {}, 'Работа nginx и всех сайтов в реальном времени. Данные обновляются каждую секунду.')),
       h('div', { class: 'row' }, h('a', { class: 'btn', href: '#/analytics' }, icon('chart'), 'Аналитика'), h('a', { class: 'btn', href: '#/requests' }, icon('list'), 'Живой журнал'))),
     h('div', { class: 'grid g6' }, Object.values(k)),
+    insBox,
     h('div', { class: 'grid g2 mt' }, cReq.el, cConn.el, cBw.el, cLat.el),
     h('div', { class: 'grid g3 mt' },
       h('div', { class: 'span2' }, card('Сайты', sitesBox, { flush: true, sub: 'нагрузка за последние 10 с', actions: h('a', { class: 'btn sm', href: '#/sites' }, 'Все сайты') })),
@@ -93,12 +96,17 @@ export async function render(root) {
     draw();
     const w10 = m.w10, w60 = m.w60;
     k.rps.set(fmtNum(w10.rps, 1), '', m.stub.ok ? `всего по nginx: ${fmtNum(m.stub.rps, 1)}/с` : 'stub_status недоступен');
+    hintKpi(k.rps, 'rps', w10.rps, { text: fmtNum(w10.rps, 1) + ' rps' });
     k.bw.set(fmtBps(w10.bps_out).split(' ')[0], fmtBps(w10.bps_out).split(' ')[1], `входящий ${fmtBps(w10.bps_in)}`);
+    hintKpi(k.bw, 'bandwidth', w10.bps_out, { text: fmtBps(w10.bps_out) });
     k.conn.set(m.stub.ok ? fmtInt(m.stub.active) : '—', '', m.stub.ok ? `чтение ${m.stub.reading} · запись ${m.stub.writing} · ожид. ${m.stub.waiting}` : '');
+    hintKpi(k.conn, 'connections', m.stub.ok ? m.stub.active : null, { text: m.stub.ok ? fmtInt(m.stub.active) : '—' });
     k.err.set(fmtNum(w60.err5_pct, 2), '%', `${fmtInt(w60.s5)} из ${fmtInt(w60.req)} за минуту · 4xx ${fmtPct(w60.err4_pct)}`,
       w60.err5_pct >= 5 && w60.req >= 20 ? 'bad' : w60.err5_pct >= 1 ? 'warn' : '');
+    hintKpi(k.err, 'err5', w60.err5_pct, { req: w60.req, text: fmtPct(w60.err5_pct, 2) });
     const p95 = fmtMs(w60.p95).split(' ');
-    k.lat.set(p95[0], p95[1] || '', `среднее ${fmtMs(w60.rt_avg)} · бэкенд ${fmtMs(w60.urt_avg)}`, w60.p95 > 2000 ? 'warn' : '');
+    k.lat.set(p95[0], p95[1] || '', `среднее ${fmtMs(w60.rt_avg)} · бэкенд ${fmtMs(w60.urt_avg)}`);
+    hintKpi(k.lat, 'p95', w60.p95, { req: w60.req, text: fmtMs(w60.p95) });
     // сайты
     for (const [sid, v] of Object.entries(m.sites || {})) { spark[sid] ||= []; push(spark[sid], v.rps, 60); }
     for (const s of ov.sites) { const v = (m.sites || {})[String(s.id)]; if (!v) { spark[s.id] ||= []; push(spark[s.id], 0, 60); } else Object.assign(s, { rps: v.rps, bps: v.bps, err5_pct: v.err5_pct, rt_avg: v.rt_avg }); }
@@ -134,6 +142,7 @@ export async function render(root) {
   const up = ov.health.filter(t => t.state === 'up').length, down = ov.health.filter(t => t.state === 'down').length;
   k.be.set(`${up}`, ` / ${ov.health.filter(t => t.state !== 'disabled').length}`, down ? h('span', { class: 'status-5' }, `недоступно: ${down}`) : 'все доступны');
   k.be.title = 'Доступно / всего проверяемых серверов';
+  hintKpi(k.be, 'backends_down', down, { text: `недоступно: ${down}` });
   const certs = ov.certs.slice().sort((a, b) => (a.days_left ?? 1e9) - (b.days_left ?? 1e9)).slice(0, 5);
   mount(certBox, certs.length ? certs.map(c => h('div', { class: 'row between', style: { padding: '5px 0' } },
     h('span', { class: 'ellipsis', style: { maxWidth: '60%' } }, c.name),
@@ -160,5 +169,16 @@ export async function render(root) {
   const snap = ov.snapshot; snap.now.ts = -1; onTick(snap);
 
   const off = live.on('tick', onTick);
-  return () => { off(); destroyAll(charts); };
+  // встроенный анализ последних 15 минут (обновляется раз в 30 секунд)
+  let insTimer = null;
+  const loadIns = async () => {
+    try {
+      const to = Date.now() / 1000;
+      const res = await api('/insights', { query: { from: to - 900, to }, silent: true });
+      mount(insBox, h('div', { class: 'mt' }, insightsCard(res, { limit: 4, onChange: loadIns })));
+    } catch { /* анализ необязателен для дашборда */ }
+    insTimer = setTimeout(loadIns, 30000);
+  };
+  loadCatalog().then(loadIns);
+  return () => { off(); clearTimeout(insTimer); destroyAll(charts); };
 }

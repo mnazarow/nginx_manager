@@ -427,3 +427,43 @@ img.zoomed { max-width: 100%; height: auto; display: block; margin: 0 auto; bord
   .docs { font-size: 14px; } .docs h1 { font-size: 22px; }
   .help-drawer { width: 100vw; }
 }
+
+/* ---------- Анализ и подсказки ---------- */
+.kpi .label { display: flex; align-items: center; gap: 6px; }
+.kpi-hint { margin-left: auto; width: 18px; height: 18px; border-radius: 50%; border: 1px solid var(--line-2); background: none; color: var(--muted);
+  font: 700 11px var(--font); cursor: pointer; display: inline-grid; place-items: center; padding: 0; flex: none; }
+.kpi-hint:hover, .kpi-hint:focus-visible { border-color: var(--accent); color: var(--accent-ink); background: var(--accent-wash); outline: none; }
+.kpi.warn { box-shadow: inset 3px 0 0 var(--warning); } .kpi.bad { box-shadow: inset 3px 0 0 var(--critical); }
+.popover { position: fixed; z-index: 120; background: var(--surface); border: 1px solid var(--line-2); border-radius: 10px; box-shadow: var(--shadow-lg);
+  padding: 14px 16px; font-size: 13px; line-height: 1.5; max-height: min(70vh, 560px); overflow: auto; animation: help-in .12s ease-out; }
+.metric-hint p { margin: 8px 0; } .metric-hint details { margin: 6px 0 10px; } .metric-hint summary { cursor: pointer; color: var(--accent-ink); }
+.mh-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; } .mh-head b { font-size: 14px; }
+.mh-val { font-variant-numeric: tabular-nums; color: var(--ink-2); margin-left: auto; }
+.mh-thr { display: flex; gap: 12px; flex-wrap: wrap; font-size: 12px; color: var(--ink-2); margin: 6px 0; }
+.mh-thr .dot { display: inline-block; margin-right: 5px; vertical-align: middle; }
+.finding { border-bottom: 1px solid var(--line); }
+.finding:last-child { border-bottom: 0; }
+.finding-head { display: flex; align-items: center; gap: 12px; padding: 11px 16px; cursor: pointer; }
+.finding-head:hover { background: var(--surface-2); }
+.finding-ic { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; flex: none; }
+.finding-ic svg { width: 16px; height: 16px; }
+.finding-ic.lv-crit { background: var(--critical-wash); color: var(--critical-ink); }
+.finding-ic.lv-warn { background: var(--warning-wash); color: var(--warning-ink); }
+.finding-ic.lv-info { background: var(--accent-wash); color: var(--accent-ink); }
+.finding-title { font-weight: 600; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.finding-sum { font-size: 12.5px; color: var(--ink-2); margin-top: 2px; overflow-wrap: anywhere; }
+.finding-meta { text-align: right; flex: none; }
+.finding-chev { color: var(--muted); font-size: 20px; transition: transform .15s; flex: none; }
+.finding.open .finding-chev { transform: rotate(90deg); }
+.finding-body { display: none; padding: 4px 16px 16px 58px; font-size: 13.5px; }
+.finding.open .finding-body { display: block; }
+.finding-body h4 { margin: 4px 0 6px; font-size: 13px; text-transform: none; letter-spacing: 0; color: var(--ink); }
+.finding-body ul, .finding-body ol { margin: 0; padding-left: 20px; } .finding-body li { margin: 3px 0; }
+.finding-body p { margin: 0; }
+.scenario { padding: 12px 0; border-bottom: 1px solid var(--line); }
+.scenario h4 { margin: 0 0 4px; font-size: 14px; text-transform: none; letter-spacing: 0; color: var(--ink); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.scenario .when { font-size: 12.5px; color: var(--muted); margin-bottom: 6px; }
+@media (max-width: 900px) { .finding-body { padding-left: 16px; } .finding-meta .muted { display: none; } }
+.group-title { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 18px 0 8px; font-weight: 600; }
+.card.flush-list { overflow: hidden; }
+.insights-card .card-body.flush { padding: 0; }

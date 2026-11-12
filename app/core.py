@@ -17,6 +17,7 @@ from .nginx.generator import State
 from .nginx.manager import ApplyError, NginxManager
 from .services.alerts import DEFAULT_RULES, AlertEngine
 from .services.bans import BanService
+from .services.insights import Analyzer
 from .services.certs import CertificateService
 from .services.diagnostics import Diagnostics
 from .services.health import HealthChecker, Target
@@ -51,6 +52,7 @@ class App:
         self.alerts = AlertEngine(self.db, self.metric, self.broadcast)
         self.diag = Diagnostics(self)
         self.bans = BanService(self)
+        self.insights = Analyzer(self)
         self.stats.agg.detector = self.bans.detector
         self.clients: Set[WSClient] = set()
         self.tasks: List[asyncio.Task] = []
@@ -225,6 +227,10 @@ class App:
                 return None, ""
             c = min(certs, key=lambda x: x["days_left"])
             return round(c["days_left"], 1), f"Сертификат «{c['name']}» ({', '.join(c['domains'][:3])})"
+        if m == "insights_crit":
+            return float(self.insights.last["counts"].get("crit", 0)), "\n".join(
+                f"{f['site_name']}: {f['title']} — {f['summary']}" for f in self.insights.last["findings"]
+                if f["level"] == "crit")[:1500]
         if m == "autobans":
             n = self.db.scalar("SELECT COUNT(*) FROM events WHERE source='bans' AND ts>=? AND message LIKE "
                                "'Автоблокировка%'", (time.time() - rule.window,))
@@ -369,6 +375,12 @@ class App:
             now = time.time()
             p = self.panel()
             try:
+                # встроенный анализ за последние 15 минут — для значка в меню и метрики оповещений
+                res = await asyncio.to_thread(self.insights.evaluate, now - 900, now, "*")
+                self.insights.last = {"counts": res["counts"], "findings": res["findings"][:50], "ts": now}
+            except Exception:
+                log.exception("анализ метрик")
+            try:
                 if now - last_diag > p.diagnostics_interval:
                     last_diag = now
                     await self.diag.run_all()
@@ -396,4 +408,5 @@ class App:
                 "nginx": self.nginx.status(), "pending": pend, "diagnostics": diag, "alerts_firing": len(firing),
                 "uptime": time.time() - self.started, "caps": {"stream": self.nginx.caps().stream_available,
                                                                "http3": self.nginx.caps().http3},
-                "backends_down": sum(1 for t in self.health.targets.values() if t.state == "down")}
+                "backends_down": sum(1 for t in self.health.targets.values() if t.state == "down"),
+                "insights": self.insights.last["counts"]}
