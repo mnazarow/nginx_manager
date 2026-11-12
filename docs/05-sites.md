@@ -69,7 +69,7 @@
 | Таймаут чтения, буферизация, WebSocket | Сайт / локация | Пустое значение у локации — как у сайта. |
 
 <!-- GEN:site -->
-<!-- Сгенерировано tools/gen_reference.py из app/models.py -->
+<!-- Сгенерировано tools/gen_reference.py — не редактируйте вручную -->
 
 ### Вкладка «Основное»
 
@@ -2470,7 +2470,7 @@ Content-Security-Policy — откуда браузеру разрешено з�
 
 Вставляются в HTTPS-блок server (или HTTP, если HTTPS выключен)
 
-Для возможностей, которых нет в форме. Конфигурация всегда проверяется nginx -t перед применением — ошибка не сломает работающий nginx.
+Для возможностей, которых нет в форме. Конфигурация всегда проверяется nginx -t перед применением — ошибка не сломает работающий nginx. Оператор не может добавить сюда директивы, которые читают или создают файлы от имени root или выполняют код: include (кроме mime.types, *_params, fastcgi.conf и snippets/), журналы вне /var/log/nginx, *_temp_path, *_cache_path, Lua, Perl, njs — это может только администратор.
 
 
 <a id="f-site-custom_location"></a>
@@ -2481,7 +2481,7 @@ Content-Security-Policy — откуда браузеру разрешено з�
 |---|---|---|---|---|
 | фрагмент конфигурации nginx | пусто | — | — | нет |
 
-Директивы, вставляемые в основную location / (после всех сгенерированных). Используются для возможностей, которых нет в форме (sub_filter, mirror, auth_request…).
+Директивы, вставляемые в основную location / (после всех сгенерированных). Используются для возможностей, которых нет в форме (sub_filter, mirror, auth_request…). Оператор не может добавить сюда директивы, которые читают или создают файлы от имени root или выполняют код: include (кроме mime.types, *_params, fastcgi.conf и snippets/), журналы вне /var/log/nginx, *_temp_path, *_cache_path, Lua, Perl, njs — это может только администратор.
 
 **Пример:** `sub_filter 'http://' 'https://';`
 
@@ -2494,7 +2494,7 @@ Content-Security-Policy — откуда браузеру разрешено з�
 |---|---|---|---|---|
 | фрагмент конфигурации nginx | пусто | — | — | да |
 
-Директивы уровня http, которые нужны этому сайту: map, geo, limit_req_zone, split_clients. Имена переменных и зон должны быть уникальны среди всех сайтов.
+Директивы уровня http, которые нужны этому сайту: map, geo, limit_req_zone, split_clients. Имена переменных и зон должны быть уникальны среди всех сайтов. Оператор не может добавить сюда директивы, которые читают или создают файлы от имени root или выполняют код: include (кроме mime.types, *_params, fastcgi.conf и snippets/), журналы вне /var/log/nginx, *_temp_path, *_cache_path, Lua, Perl, njs — это может только администратор.
 
 **Пример:** `map $http_accept_language $lang { default en; ~ru ru; }`
 
@@ -2506,7 +2506,7 @@ Content-Security-Policy — откуда браузеру разрешено з�
 сервер, WebSocket, админка по IP, ограничение логина, статика с диска, robots.txt, запрет `*.php`.
 
 <!-- GEN:location -->
-<!-- Сгенерировано tools/gen_reference.py из app/models.py -->
+<!-- Сгенерировано tools/gen_reference.py — не редактируйте вручную -->
 
 <a id="f-location-enabled"></a>
 
@@ -3018,7 +3018,7 @@ Content-Type фиксированного ответа.
 
 Вставляются внутрь location как есть. Проверяются через nginx -t.
 
-Произвольные директивы внутри location.
+Произвольные директивы внутри location. Оператор не может добавить сюда директивы, которые читают или создают файлы от имени root или выполняют код: include (кроме mime.types, *_params, fastcgi.conf и snippets/), журналы вне /var/log/nginx, *_temp_path, *_cache_path, Lua, Perl, njs — это может только администратор.
 
 **Пример:** `proxy_cache_bypass $http_pragma;`
 
@@ -3027,7 +3027,7 @@ Content-Type фиксированного ответа.
 ## Параметры сервера бэкенда
 
 <!-- GEN:backend -->
-<!-- Сгенерировано tools/gen_reference.py из app/models.py -->
+<!-- Сгенерировано tools/gen_reference.py — не редактируйте вручную -->
 
 <a id="f-backend-address"></a>
 

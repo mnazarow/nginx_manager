@@ -111,6 +111,11 @@ def find(nodes: List[Node], name: str) -> List[Node]:
     return [n for n in nodes if n["name"] == name]
 
 
+def first_a(nodes: List[Node], name: str) -> Optional[Node]:
+    """Первая директива с аргументами (директивы без аргументов — ошибка в исходной конфигурации, их пропускаем)."""
+    return next((n for n in nodes if n["name"] == name and n["args"]), None)
+
+
 def first(nodes: List[Node], name: str) -> Optional[Node]:
     r = find(nodes, name)
     return r[0] if r else None
@@ -210,8 +215,8 @@ def import_config(dump: str, conf_path: str) -> Dict[str, Any]:
         notes = []
         custom = []
         if g["https"]:
-            cert = first(b, "ssl_certificate")
-            key = first(b, "ssl_certificate_key")
+            cert = first_a(b, "ssl_certificate")
+            key = first_a(b, "ssl_certificate_key")
             if cert and key:
                 pair = (cert["args"][0], key["args"][0])
                 certs[pair] = g["name"]
@@ -226,10 +231,10 @@ def import_config(dump: str, conf_path: str) -> Dict[str, Any]:
                         site["https_port"] = p
                     elif "ssl" not in ln["args"] and p != 80 and not ln["args"][0].endswith("443"):
                         site["http_port"] = p
-        cmb = first(b, "client_max_body_size")
+        cmb = first_a(b, "client_max_body_size")
         if cmb:
             site["performance"] = {"client_max_body_size": cmb["args"][0]}
-        ret = first(b, "return")
+        ret = first_a(b, "return")
         if ret and len(ret["args"]) >= 2 and ret["args"][0] in ("301", "302", "307", "308"):
             site["type"] = "redirect"
             url = ret["args"][1]
@@ -244,20 +249,20 @@ def import_config(dump: str, conf_path: str) -> Dict[str, Any]:
             if not match or path.startswith("@") or "/.well-known/acme-challenge" in path:
                 continue
             lb = loc["block"] or []
-            pp = first(lb, "proxy_pass")
-            r = first(lb, "return")
-            root = first(lb, "root") or first(lb, "alias")
+            pp = first_a(lb, "proxy_pass")
+            r = first_a(lb, "return")
+            root = first_a(lb, "root") or first_a(lb, "alias")
             if path == "/" and match == "prefix" and pp:
                 t = proxy_target(pp["args"][0], upstreams)
                 if t:
                     site["backends"] = t["backends"]
                     site["backend_scheme"] = t["scheme"]
                     site["balancing"] = t["balancing"]
-                    rt = first(lb, "proxy_read_timeout")
+                    rt = first_a(lb, "proxy_read_timeout")
                     site.setdefault("proxy", {})
                     if rt:
                         site["proxy"]["read_timeout"] = rt["args"][0]
-                    ct = first(lb, "proxy_connect_timeout")
+                    ct = first_a(lb, "proxy_connect_timeout")
                     if ct:
                         site["proxy"]["connect_timeout"] = ct["args"][0]
                     if not first(lb, "proxy_set_header") or not any(
@@ -269,7 +274,7 @@ def import_config(dump: str, conf_path: str) -> Dict[str, Any]:
             if path == "/" and match == "prefix" and root and not pp and site["type"] == "proxy":
                 site["type"] = "static"
                 site["static"] = {"root": root["args"][0]}
-                tf = first(lb, "try_files")
+                tf = first_a(lb, "try_files")
                 if tf and "/index.html" in tf["args"]:
                     site["static"]["spa"] = True
                 continue

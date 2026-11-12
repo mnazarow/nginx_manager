@@ -49,7 +49,7 @@ fs.file-max = 2000000
 ## Справочник параметров
 
 <!-- GEN:global -->
-<!-- Сгенерировано tools/gen_reference.py из app/models.py -->
+<!-- Сгенерировано tools/gen_reference.py — не редактируйте вручную -->
 
 ### Процессы
 

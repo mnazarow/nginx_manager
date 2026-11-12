@@ -13,6 +13,7 @@ from typing import Any, Callable, Deque, Dict, List, Optional
 from ..db import Database
 from ..models import HealthCheck, Site, Stream
 from ..nginx.generator import HEALTH_UA
+from ..utils import spawn
 
 log = logging.getLogger("nm.health")
 
@@ -121,6 +122,10 @@ async def probe_tcp(t: Target) -> None:
     t.last_status = 0
     t.last_error = ""
     w.close()
+    try:
+        await asyncio.wait_for(w.wait_closed(), 1)
+    except Exception:
+        pass
 
 
 class HealthChecker:
@@ -128,7 +133,7 @@ class HealthChecker:
         self.db = db
         self.on_change = on_change
         self.targets: Dict[str, Target] = {}
-        self.sem = asyncio.Semaphore(64)
+        self.sem: Optional[asyncio.Semaphore] = None  # создаётся в цикле событий (Python 3.9)
         self.task: Optional[asyncio.Task] = None
         self.minute: Dict[str, List[float]] = {}
         self.minute_ts = int(time.time()) // 60 * 60
@@ -179,6 +184,8 @@ class HealthChecker:
         self.targets = new
 
     async def check(self, t: Target) -> None:
+        if self.sem is None:
+            self.sem = asyncio.Semaphore(64)
         async with self.sem:
             t.last_check = time.time()
             ok = True
@@ -232,16 +239,19 @@ class HealthChecker:
                    if t.state != "disabled" and now - t.last_check >= t.check.interval]
             for t in due:
                 t.last_check = now
-                asyncio.create_task(self.check(t))
+                spawn(self.check(t))
             cur = int(now) // 60 * 60
             if cur > self.minute_ts:
                 rows, self.minute = self.minute, {}
                 mts, self.minute_ts = self.minute_ts, cur
                 if rows:
-                    await asyncio.to_thread(self.db.executemany,
-                                            "INSERT OR REPLACE INTO health_minute(ts,target,checks,fails,lat_sum) "
-                                            "VALUES(?,?,?,?,?)",
-                                            [(mts, k, v[0], v[1], v[2]) for k, v in rows.items()])
+                    try:  # сбой записи истории (база занята, диск) не должен останавливать сами проверки
+                        await asyncio.to_thread(self.db.executemany,
+                                                "INSERT OR REPLACE INTO health_minute(ts,target,checks,fails,lat_sum) "
+                                                "VALUES(?,?,?,?,?)",
+                                                [(mts, k, v[0], v[1], v[2]) for k, v in rows.items()])
+                    except Exception:
+                        log.exception("запись истории проверок")
             await asyncio.sleep(1)
 
     def start(self) -> None:

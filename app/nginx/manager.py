@@ -39,9 +39,17 @@ class ApplyError(Exception):
 
 
 class NginxManager:
+    @property
+    def lock(self) -> asyncio.Lock:
+        """Блокировка применения. Создаётся при первом использовании — внутри работающего цикла событий
+        (в Python 3.9 примитив asyncio привязывается к циклу при создании)."""
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        return self._lock
+
     def __init__(self, db: Database) -> None:
         self.db = db
-        self.lock = asyncio.Lock()
+        self._lock: Optional[asyncio.Lock] = None
         self._caps: Optional[NginxCaps] = None
         self._caps_ts = 0.0
         self._last_test: Tuple[float, bool, str] = (0.0, True, "")
@@ -691,6 +699,9 @@ def explain_nginx_error(msg: str) -> str:
         (r"key values mismatch", "Закрытый ключ не соответствует сертификату."),
         (r"bind\(\) to .* failed \(98", "Порт уже занят другой программой (Apache, другой nginx...). "
                                         "См. «Диагностика → Порты»."),
+        (r"bind\(\) to \S*?:(\d+) failed \(13", "Нет прав занять порт {0}: на RHEL/Rocky это SELinux — порт "
+                                                 "нужно пометить как http_port_t (Диагностика → SELinux предложит "
+                                                 "исправление), а порты ниже 1024 требуют запуска nginx от root."),
         (r"host not found in upstream \"([^\"]+)\"", "Не удаётся разрешить имя бэкенда «{0}» через DNS. "
                                                      "Используйте IP или проверьте /etc/hosts и DNS."),
         (r"duplicate location \"([^\"]+)\"", "Локация «{0}» описана дважды (возможно, в своих директивах)."),

@@ -290,6 +290,49 @@ def test_docs_links_resolve():
     assert not bad, bad
 
 
+def test_docs_generated_blocks_up_to_date():
+    """Справочники в документации (поля, метрики, сценарии, API) совпадают с кодом: python3 tools/gen_reference.py."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("gen_reference", ROOT / "tools" / "gen_reference.py")
+    gen = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gen)
+    stale = [p.name for p in sorted((ROOT / "docs").glob("*.md"))
+             if gen.refresh(p.read_text(encoding="utf-8")) != p.read_text(encoding="utf-8")]
+    assert not stale, f"устарели справочники в {stale}: запустите python3 tools/gen_reference.py"
+    routes = gen.api_routes()
+    assert routes and all(doc for *_, doc in routes), [r[2] for r in routes if not r[4]]
+    assert all(r[0] != "Прочее" for r in routes), [r[2] for r in routes if r[0] == "Прочее"]
+    api_doc = (ROOT / "docs" / "14-cli-api.md").read_text(encoding="utf-8")
+    assert all(f"`{path}`" in api_doc for _, _, path, _, _ in routes)
+
+
+def test_docs_anchors_and_images_resolve():
+    """Ссылки вида глава.md#раздел ведут на существующий заголовок, а картинки — на существующие файлы."""
+    import re as _re
+    docs = {p.name: p.read_text(encoding="utf-8") for p in (ROOT / "docs").glob("*.md")}
+
+    def sections(text):
+        out = set(_re.findall(r'id="([^"]+)"', text))
+        in_code = False
+        for line in text.splitlines():
+            if line.startswith("```"):
+                in_code = not in_code
+            m = None if in_code else _re.match(r"^#{1,6}\s+(.*)$", line)
+            if m:
+                out.add(_slug(_re.sub(r"[`*]|\]\([^)]*\)", "", m.group(1)).replace("[", "")))
+        return out
+    secs = {name: sections(t) for name, t in docs.items()}
+    bad = []
+    for name, text in docs.items():
+        for m in _re.finditer(r"\]\(([\w.-]+\.md)?#([^)\s]+)\)", text):
+            page = m.group(1) or name
+            if page in secs and m.group(2) not in secs[page]:
+                bad.append(f"{name} → {page}#{m.group(2)}")
+        for m in _re.finditer(r"!\[[^\]]*\]\(([^)\s]+)\)", text):
+            if not (ROOT / "docs" / m.group(1)).exists():
+                bad.append(f"{name}: нет картинки {m.group(1)}")
+    assert not bad, bad[:20]
+
 def _slug(text):
     import re as _re
     return _re.sub(r"\s", "-", _re.sub(r"[^\w\s-]", "", text.strip().lower()))
@@ -531,3 +574,33 @@ def test_recent_minutes_are_compacted():
     top = agg.recent_tops(10, "1", "ip", 5)
     assert top and top[0]["bytes"] == 100
     agg.db.close()
+
+
+def test_selinux_port_labels():
+    from app.services.diagnostics import selinux_port_problems, selinux_port_types
+    out = """SELinux Port Type              Proto    Port Number
+
+http_cache_port_t              tcp      8080, 8118, 8123, 10001-10010
+http_port_t                    tcp      80, 81, 443, 488, 8008, 8009, 8443, 9000
+http_port_t                    udp      443
+postgresql_port_t              tcp      5432, 9898
+"""
+    t = selinux_port_types(out)
+    assert t[("tcp", 80)] == "http_port_t" and t[("tcp", 10005)] == "http_cache_port_t" and t[("udp", 443)] == "http_port_t"
+    probs = selinux_port_problems([("tcp", 80, "a"), ("tcp", 8080, "b"), ("tcp", 5432, "pg"), ("tcp", 15432, "x"),
+                                   ("udp", 53, "dns")], t)
+    assert [(p["port"], p["type"]) for p in probs] == [(5432, "postgresql_port_t"), (15432, None), (53, None)]
+
+
+def test_report_number_formatting():
+    from app.services.reports import _bytes, _delta, _num, due, period_bounds
+    assert _num(12345) == "12,3 тыс." and _num(2_000_000) == "2 млн" and _num(999) == "999"
+    assert _bytes(1536) == "1,5 КБ" and _bytes(0) == "0 Б"
+    assert _delta(110, 100) == " (+10% к прошлому периоду)" and _delta(5, 0) == ""
+    s, e = period_bounds("week", 1_700_000_000)
+    assert e - s == 7 * 86400 or abs(e - s - 7 * 86400) == 3600  # переход на летнее время
+    from app.models import PanelSettings
+    p = PanelSettings(report_enabled=True, report_channels=[1], report_hour=9, report_period="day")
+    import datetime as dt
+    at9 = dt.datetime(2026, 3, 2, 9, 30).timestamp()
+    assert due(p, at9) == "day:2026-03-02" and due(p, at9 + 3600) is None

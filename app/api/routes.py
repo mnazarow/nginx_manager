@@ -11,7 +11,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Res
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from pydantic import BaseModel
 
-from ..auth import COOKIE, ROLE_LABELS, admin, operator, viewer
+from ..auth import COOKIE, ROLE_LABELS, ROLES, admin, operator, viewer
 from ..config import DOCS_DIR, VERSION, settings
 from ..models import (CLOUDFLARE_IPS, AlertChannel, AlertRule, CertificateRequest, GlobalSettings, PanelSettings,
                       Site, Stream)
@@ -52,6 +52,7 @@ class LoginBody(BaseModel):
 
 @router.post("/auth/login")
 async def login(body: LoginBody, request: Request, response: Response):
+    """Вход: {username, password, otp?, remember}. Ставит cookie сессии; при включённой 2FA без кода отвечает {totp_required: true}."""
     app = nm(request)
     ip = app.auth.client_ip(request)
     if not app.auth.ip_allowed(ip):
@@ -81,6 +82,7 @@ async def login(body: LoginBody, request: Request, response: Response):
 
 @router.post("/auth/logout")
 async def logout(request: Request, response: Response):
+    """Выход: завершает текущую сессию."""
     tok = request.cookies.get(COOKIE)
     if tok:
         nm(request).auth.destroy_session(tok)
@@ -90,6 +92,7 @@ async def logout(request: Request, response: Response):
 
 @router.get("/auth/me")
 async def me(user=Depends(viewer)):
+    """Текущий пользователь: имя, роль, 2FA, нужно ли сменить пароль."""
     return {k: user[k] for k in ("id", "username", "role", "totp_enabled", "must_change_password")} | \
         {"role_label": ROLE_LABELS[user["role"]]}
 
@@ -101,6 +104,7 @@ class PasswordBody(BaseModel):
 
 @router.post("/auth/password")
 async def change_password(body: PasswordBody, request: Request, user=Depends(viewer)):
+    """Сменить свой пароль: {current, new}. Все сессии пользователя завершаются."""
     if not verify_password(body.current, user["password_hash"]):
         raise HTTPException(400, "Текущий пароль неверен")
     try:
@@ -113,6 +117,7 @@ async def change_password(body: PasswordBody, request: Request, user=Depends(vie
 
 @router.post("/auth/totp/setup")
 async def totp_setup(user=Depends(viewer)):
+    """Начать настройку 2FA: новый секрет и otpauth-ссылка для QR-кода."""
     sec = totp_secret()
     uri = f"otpauth://totp/NginxManager:{user['username']}?secret={sec}&issuer=NginxManager"
     return {"secret": sec, "uri": uri}
@@ -120,6 +125,7 @@ async def totp_setup(user=Depends(viewer)):
 
 @router.post("/auth/totp/enable")
 async def totp_enable(request: Request, secret: str = Body(...), code: str = Body(...), user=Depends(viewer)):
+    """Включить 2FA: {secret, code} — код из приложения подтверждает секрет."""
     if not totp_verify(secret, code):
         raise HTTPException(400, "Неверный код. Проверьте время на телефоне и сервере")
     nm(request).db.execute("UPDATE users SET totp_secret=?, totp_enabled=1 WHERE id=?", (secret, user["id"]))
@@ -129,6 +135,7 @@ async def totp_enable(request: Request, secret: str = Body(...), code: str = Bod
 
 @router.post("/auth/totp/disable")
 async def totp_disable(request: Request, password: str = Body(..., embed=True), user=Depends(viewer)):
+    """Отключить 2FA: {password}."""
     if not verify_password(password, user["password_hash"]):
         raise HTTPException(400, "Неверный пароль")
     nm(request).db.execute("UPDATE users SET totp_secret='', totp_enabled=0 WHERE id=?", (user["id"],))
@@ -138,6 +145,7 @@ async def totp_disable(request: Request, password: str = Body(..., embed=True), 
 
 @router.get("/auth/sessions")
 async def sessions(request: Request, user=Depends(viewer)):
+    """Активные сессии текущего пользователя (браузеры, IP, время)."""
     rows = nm(request).db.query("SELECT id, created_at, last_seen, expires_at, ip, user_agent FROM sessions "
                                 "WHERE user_id=? ORDER BY last_seen DESC", (user["id"],))
     cur = user.get("sid")
@@ -149,18 +157,27 @@ async def sessions(request: Request, user=Depends(viewer)):
 
 @router.delete("/auth/sessions/{sid}")
 async def kill_session(sid: str, request: Request, user=Depends(viewer)):
+    """Завершить свою сессию по идентификатору."""
     nm(request).db.execute("DELETE FROM sessions WHERE user_id=? AND id LIKE ?", (user["id"], sid + "%"))
     return {"ok": True}
 
 
 @router.get("/auth/tokens")
 async def tokens(request: Request, user=Depends(viewer)):
+    """API-токены текущего пользователя."""
     return nm(request).db.query("SELECT id, name, prefix, created_at, expires_at, last_used FROM api_tokens "
                                 "WHERE user_id=? ORDER BY id", (user["id"],))
 
 
 @router.post("/auth/tokens")
 async def create_token(request: Request, name: str = Body(...), days: int = Body(0), user=Depends(viewer)):
+    """Создать API-токен: {name, days} (0 — бессрочно). Токен показывается один раз; права — как у пользователя."""
+    # иначе токен стал бы обходом политики входа: временный пароль или обязательная 2FA администратора
+    if user.get("must_change_password"):
+        raise HTTPException(403, "Сначала смените временный пароль")
+    if user["role"] == "admin" and not user.get("totp_enabled") and nm(request).panel().require_2fa_admin:
+        raise HTTPException(403, "Политика панели требует двухфакторную аутентификацию для администраторов — "
+                                 "включите её, затем создайте токен")
     tok = nm(request).auth.create_token(user["id"], name, days)
     audit(request, user, "token_created", name)
     return {"token": tok}
@@ -168,6 +185,7 @@ async def create_token(request: Request, name: str = Body(...), days: int = Body
 
 @router.delete("/auth/tokens/{tid}")
 async def delete_token(tid: int, request: Request, user=Depends(viewer)):
+    """Удалить свой API-токен."""
     nm(request).db.execute("DELETE FROM api_tokens WHERE id=? AND user_id=?", (tid, user["id"]))
     audit(request, user, "token_deleted", str(tid))
     return {"ok": True}
@@ -178,11 +196,13 @@ async def delete_token(tid: int, request: Request, user=Depends(viewer)):
 # =============================================================================
 @router.get("/state")
 async def state(request: Request, user=Depends(viewer)):
+    """Сводное состояние для верхней панели: nginx, неприменённые изменения, оповещения, анализ, тишина."""
     return await asyncio.to_thread(nm(request).state_summary, user)
 
 
 @router.get("/schema")
 async def schema(user=Depends(viewer)):
+    """Схема форм: поля моделей с подписями, подсказками, значениями по умолчанию; списки стран и диапазоны Cloudflare."""
     from ..services.geoblock import COUNTRY_CODES, EU
     s = full_schema()
     s["cloudflare_ips"] = CLOUDFLARE_IPS
@@ -193,6 +213,7 @@ async def schema(user=Depends(viewer)):
 
 @router.get("/overview")
 async def overview(request: Request, user=Depends(viewer)):
+    """Данные дашборда: сайты, бэкенды, сертификаты, последние события."""
     app = nm(request)
     sites = await list_sites(request, user)
     certs = app.certs.list()
@@ -229,6 +250,7 @@ def _site_row(app, r: Dict[str, Any], live: Dict[str, Any], health: Dict[str, Li
 
 @router.get("/sites")
 async def list_sites(request: Request, user=Depends(viewer)):
+    """Список сайтов с доменами, состоянием бэкендов и нагрузкой за последние секунды."""
     app = nm(request)
     live = app.stats.agg.per_site_now(10)
     health: Dict[str, List] = {}
@@ -240,6 +262,7 @@ async def list_sites(request: Request, user=Depends(viewer)):
 
 @router.get("/sites/{sid}")
 async def get_site(sid: int, request: Request, user=Depends(viewer)):
+    """Настройки сайта. Пароли и хеши Basic Auth не возвращаются."""
     r = nm(request).db.one("SELECT * FROM sites WHERE id=?", (sid,))
     if not r:
         raise HTTPException(404, "Сайт не найден")
@@ -255,14 +278,38 @@ def app_nginx_masked(files: Dict[str, str]) -> Dict[str, str]:
     return NginxManager.masked(files)
 
 
-def _prepare_site(app, data: Dict[str, Any], sid: Optional[int] = None) -> Site:
+def _raw_texts(d: Dict[str, Any]) -> List[str]:
+    """Тексты «Своих директив» сайта (на уровне http, server, location / и в каждой локации)."""
+    return [d.get("custom_http") or "", d.get("custom_server") or "", d.get("custom_location") or ""] + \
+        [(loc or {}).get("custom") or "" for loc in d.get("locations") or [] if isinstance(loc, dict)]
+
+
+def _guard_raw(user: Optional[Dict[str, Any]], site: Site, old: Optional[Dict[str, Any]]) -> None:
+    """Опасные директивы в «Своих директивах» добавляет только администратор (см. validators.RISKY_DIRECTIVES).
+    Уже существующие (добавленные администратором) не мешают оператору менять остальные поля сайта."""
+    from ..validators import risky_raw_directives
+    if not user or user["role"] == "admin":
+        return
+    had = {x for t in _raw_texts(old or {}) for x in risky_raw_directives(t)}
+    new = sorted({x for t in _raw_texts(site.model_dump()) for x in risky_raw_directives(t)} - had)
+    if new:
+        raise HTTPException(403, "Только администратор может добавить в «Свои директивы»: " + "; ".join(new[:5])
+                            + ". Такие директивы читают или создают файлы от имени root (include, журналы вне "
+                              "/var/log/nginx, временные каталоги) или выполняют код (Lua, Perl, njs).")
+
+
+def _prepare_site(app, data: Dict[str, Any], sid: Optional[int] = None,
+                  user: Optional[Dict[str, Any]] = None) -> Site:
     old_users = {}
+    old: Optional[Dict[str, Any]] = None
     if sid:
         r = app.db.one("SELECT data FROM sites WHERE id=?", (sid,))
         if r:
-            for u in json.loads(r["data"]).get("security", {}).get("basic_auth_users", []):
+            old = json.loads(r["data"])
+            for u in old.get("security", {}).get("basic_auth_users", []):
                 old_users[u["username"]] = u.get("password_hash", "")
     site = Site.model_validate(data)
+    _guard_raw(user, site, old)
     for u in site.security.basic_auth_users:
         if u.password:
             if len(u.password) < 4:
@@ -288,8 +335,9 @@ async def _maybe_apply(app, user, apply: bool, comment: str) -> Optional[Dict[st
 @router.post("/sites")
 async def create_site(request: Request, body: Dict[str, Any] = Body(...), apply: bool = Query(False),
                       user=Depends(operator)):
+    """Создать сайт (тело — модель Site). ?apply=1 — применить конфигурацию сразу."""
     app = nm(request)
-    site = _prepare_site(app, body)
+    site = _prepare_site(app, body, user=user)
     now = time.time()
     sid = app.db.execute("INSERT INTO sites(name,enabled,data,created_at,updated_at) VALUES(?,?,?,?,?)",
                          (site.name, int(site.enabled), json.dumps(site.model_dump(), ensure_ascii=False), now, now))
@@ -301,10 +349,11 @@ async def create_site(request: Request, body: Dict[str, Any] = Body(...), apply:
 @router.put("/sites/{sid}")
 async def update_site(sid: int, request: Request, body: Dict[str, Any] = Body(...), apply: bool = Query(False),
                       user=Depends(operator)):
+    """Изменить сайт. Пустой пароль пользователя Basic Auth — оставить прежний. ?apply=1 — применить сразу."""
     app = nm(request)
     if not app.db.one("SELECT 1 FROM sites WHERE id=?", (sid,)):
         raise HTTPException(404, "Сайт не найден")
-    site = _prepare_site(app, body, sid)
+    site = _prepare_site(app, body, sid, user)
     app.db.execute("UPDATE sites SET name=?, enabled=?, data=?, updated_at=? WHERE id=?",
                    (site.name, int(site.enabled), json.dumps(site.model_dump(), ensure_ascii=False), time.time(), sid))
     audit(request, user, "site_updated", site.name, {"id": sid})
@@ -314,6 +363,7 @@ async def update_site(sid: int, request: Request, body: Dict[str, Any] = Body(..
 
 @router.post("/sites/{sid}/toggle")
 async def toggle_site(sid: int, request: Request, apply: bool = Query(False), user=Depends(operator)):
+    """Включить или выключить сайт. ?apply=1 — применить сразу."""
     app = nm(request)
     r = app.db.one("SELECT * FROM sites WHERE id=?", (sid,))
     if not r:
@@ -329,6 +379,7 @@ async def toggle_site(sid: int, request: Request, apply: bool = Query(False), us
 
 @router.post("/sites/{sid}/maintenance")
 async def site_maintenance(sid: int, request: Request, enabled: bool = Body(..., embed=True), user=Depends(operator)):
+    """Режим обслуживания: {enabled}. Применяется сразу."""
     app = nm(request)
     r = app.db.one("SELECT * FROM sites WHERE id=?", (sid,))
     if not r:
@@ -356,7 +407,7 @@ BULK_ACTIONS = {"enable": "включены", "disable": "выключены", "
 
 @router.post("/sites/bulk")
 async def sites_bulk(body: BulkBody, request: Request, user=Depends(operator)):
-    """Одно действие над несколькими сайтами. Обслуживание применяется сразу, остальное — по флагу apply."""
+    """Одно действие над несколькими сайтами: {ids, action, tag?, apply}. action = enable | disable | maintenance_on | maintenance_off | tag_add | tag_remove | delete. Обслуживание применяется сразу, остальное — по флагу apply."""
     app = nm(request)
     if body.action not in BULK_ACTIONS:
         raise HTTPException(400, "Неизвестное действие")
@@ -392,7 +443,9 @@ async def sites_bulk(body: BulkBody, request: Request, user=Depends(operator)):
         app.db.execute("UPDATE sites SET enabled=?, data=?, updated_at=? WHERE id=?",
                        (int(site.enabled), json.dumps(d, ensure_ascii=False), now, r["id"]))
         changed.append(r["name"])
-    audit(request, user, "sites_bulk", body.action, {"ids": ids, "sites": changed, "tag": tag or None})
+    # в аудит — не более 50 имён: запись о действии над сотнями сайтов не должна раздувать журнал
+    audit(request, user, "sites_bulk", body.action, {"requested": len(ids), "changed": len(changed),
+                                                     "sites": changed[:50], "tag": tag or None})
     if changed:
         app.touch()
     need_apply = bool(changed) and (body.apply or body.action.startswith("maintenance_"))
@@ -404,6 +457,7 @@ async def sites_bulk(body: BulkBody, request: Request, user=Depends(operator)):
 
 @router.post("/sites/{sid}/clone")
 async def clone_site(sid: int, request: Request, user=Depends(operator)):
+    """Копия сайта (выключенная, с пометкой «копия»)."""
     app = nm(request)
     r = app.db.one("SELECT * FROM sites WHERE id=?", (sid,))
     if not r:
@@ -420,6 +474,7 @@ async def clone_site(sid: int, request: Request, user=Depends(operator)):
 
 @router.delete("/sites/{sid}")
 async def delete_site(sid: int, request: Request, apply: bool = Query(False), user=Depends(operator)):
+    """Удалить сайт. ?apply=1 — применить сразу."""
     app = nm(request)
     r = app.db.one("SELECT name FROM sites WHERE id=?", (sid,))
     if not r:
@@ -445,8 +500,12 @@ def _render_with(app, site: Optional[Site] = None, sid: Optional[int] = None,
 @router.post("/sites/preview")
 async def preview_site(request: Request, body: Dict[str, Any] = Body(...), sid: int = Query(0),
                        test: bool = Query(False), user=Depends(viewer)):
+    """Конфигурация nginx для черновика сайта без сохранения. ?sid — для существующего, ?test=1 — проверить nginx -t (оператор и администратор)."""
     app = nm(request)
-    site = _prepare_site(app, body, sid or None)
+    if test and ROLES.get(user["role"], 0) < ROLES["operator"]:
+        # nginx -t читает конфигурацию от root: проверка черновика — право того, кто может менять сайты
+        raise HTTPException(403, "Проверка черновика через nginx -t доступна оператору и администратору")
+    site = _prepare_site(app, body, sid or None, user)
     st, sid, _ = _render_with(app, site, sid)
     site.enabled = True
     st.sites = [(i, s) for i, s in st.sites if i != sid] + [(sid, site)]
@@ -476,6 +535,7 @@ def _test_state(app, st: State) -> Dict[str, Any]:
 
 @router.get("/sites/{sid}/config")
 async def site_config(sid: int, request: Request, user=Depends(viewer)):
+    """Действующая сгенерированная конфигурация сайта."""
     app = nm(request)
     files, warnings = await asyncio.to_thread(app.nginx.render, app.nginx.load_state())
     for k, v in files.items():
@@ -489,6 +549,7 @@ async def site_config(sid: int, request: Request, user=Depends(viewer)):
 # =============================================================================
 @router.get("/streams")
 async def list_streams(request: Request, user=Depends(viewer)):
+    """Список TCP/UDP-потоков."""
     app = nm(request)
     health: Dict[str, List] = {}
     for t in app.health.targets.values():
@@ -504,6 +565,7 @@ async def list_streams(request: Request, user=Depends(viewer)):
 
 @router.get("/streams/{sid}")
 async def get_stream(sid: int, request: Request, user=Depends(viewer)):
+    """Настройки потока."""
     r = nm(request).db.one("SELECT * FROM streams WHERE id=?", (sid,))
     if not r:
         raise HTTPException(404, "Поток не найден")
@@ -526,6 +588,7 @@ def _check_stream_port(app, s: Stream, sid: Optional[int]) -> None:
 @router.post("/streams")
 async def create_stream(request: Request, body: Dict[str, Any] = Body(...), apply: bool = Query(False),
                         user=Depends(operator)):
+    """Создать поток (тело — модель Stream). ?apply=1 — применить сразу."""
     app = nm(request)
     s = Stream.model_validate(body)
     _check_stream_port(app, s, None)
@@ -539,6 +602,7 @@ async def create_stream(request: Request, body: Dict[str, Any] = Body(...), appl
 @router.put("/streams/{sid}")
 async def update_stream(sid: int, request: Request, body: Dict[str, Any] = Body(...), apply: bool = Query(False),
                         user=Depends(operator)):
+    """Изменить поток. ?apply=1 — применить сразу."""
     app = nm(request)
     s = Stream.model_validate(body)
     _check_stream_port(app, s, sid)
@@ -550,6 +614,7 @@ async def update_stream(sid: int, request: Request, body: Dict[str, Any] = Body(
 
 @router.delete("/streams/{sid}")
 async def delete_stream(sid: int, request: Request, apply: bool = Query(False), user=Depends(operator)):
+    """Удалить поток. ?apply=1 — применить сразу."""
     app = nm(request)
     r = app.db.one("SELECT name FROM streams WHERE id=?", (sid,))
     app.db.execute("DELETE FROM streams WHERE id=?", (sid,))
@@ -560,6 +625,7 @@ async def delete_stream(sid: int, request: Request, apply: bool = Query(False), 
 @router.post("/streams/preview")
 async def preview_stream(request: Request, body: Dict[str, Any] = Body(...), sid: int = Query(0),
                          user=Depends(viewer)):
+    """Конфигурация nginx для черновика потока без сохранения."""
     app = nm(request)
     s = Stream.model_validate(body)
     s.enabled = True
@@ -573,6 +639,7 @@ async def preview_stream(request: Request, body: Dict[str, Any] = Body(...), sid
 # =============================================================================
 @router.get("/config/pending")
 async def pending(request: Request, user=Depends(viewer)):
+    """Неприменённые изменения: сравнение с последней применённой версией (хеши паролей скрыты)."""
     app = nm(request)
     try:
         diff = await asyncio.to_thread(app.nginx.pending_diff)
@@ -583,6 +650,7 @@ async def pending(request: Request, user=Depends(viewer)):
 
 @router.post("/config/apply")
 async def apply_config(request: Request, comment: str = Body("", embed=True), user=Depends(operator)):
+    """Применить конфигурацию: проверка nginx -t → переключение → reload; при ошибке — откат. {comment}."""
     app = nm(request)
     res = await app.apply(user["username"], comment)
     audit(request, user, "config_applied", f"v{res['version']}", {"comment": comment})
@@ -591,6 +659,7 @@ async def apply_config(request: Request, comment: str = Body("", embed=True), us
 
 @router.post("/config/test")
 async def test_config(request: Request, user=Depends(viewer)):
+    """Проверить текущую конфигурацию из базы через nginx -t, ничего не применяя."""
     app = nm(request)
     st = app.nginx.load_state()
     return await asyncio.to_thread(_test_state, app, st)
@@ -598,6 +667,7 @@ async def test_config(request: Request, user=Depends(viewer)):
 
 @router.get("/config/versions")
 async def versions(request: Request, limit: int = 100, user=Depends(viewer)):
+    """История версий конфигурации. ?limit."""
     rows = nm(request).db.query("SELECT id, ts, username, comment, source, status, checksum, "
                                 "length(files) size FROM config_versions ORDER BY id DESC LIMIT ?", (limit,))
     applied = nm(request).db.kv_get("applied_version")
@@ -608,6 +678,7 @@ async def versions(request: Request, limit: int = 100, user=Depends(viewer)):
 
 @router.get("/config/versions/{vid}")
 async def version(vid: int, request: Request, user=Depends(viewer)):
+    """Файлы версии конфигурации (хеши паролей скрыты) и список сайтов и потоков в ней."""
     r = nm(request).db.one("SELECT * FROM config_versions WHERE id=?", (vid,))
     if not r:
         raise HTTPException(404, "Версия не найдена")
@@ -622,6 +693,7 @@ async def version(vid: int, request: Request, user=Depends(viewer)):
 
 @router.get("/config/versions/{vid}/diff")
 async def version_diff(vid: int, request: Request, against: str = "prev", user=Depends(viewer)):
+    """Отличия версии от предыдущей применённой; ?against=current — от действующей."""
     app = nm(request)
     r = app.db.one("SELECT files FROM config_versions WHERE id=?", (vid,))
     if not r:
@@ -638,6 +710,7 @@ async def version_diff(vid: int, request: Request, against: str = "prev", user=D
 
 @router.post("/config/versions/{vid}/rollback")
 async def rollback(vid: int, request: Request, user=Depends(operator)):
+    """Откат к версии: настройки сайтов и потоков восстанавливаются из неё и применяются."""
     app = nm(request)
     r = app.db.one("SELECT state FROM config_versions WHERE id=?", (vid,))
     if not r:
@@ -653,23 +726,27 @@ async def rollback(vid: int, request: Request, user=Depends(operator)):
 
 @router.get("/config/files")
 async def config_files(request: Request, user=Depends(viewer)):
+    """Файлы действующей конфигурации (хеши паролей скрыты)."""
     last = nm(request).nginx.last_applied()
     return app_nginx_masked(json.loads(last["files"])) if last else {}
 
 
 @router.get("/config/dump", response_class=PlainTextResponse)
 async def config_dump(request: Request, user=Depends(admin)):
+    """Полный вывод nginx -T (только администратор)."""
     return await asyncio.to_thread(nm(request).nginx.dump_config)
 
 
 @router.get("/settings/global")
 async def get_global(request: Request, user=Depends(viewer)):
+    """Глобальные настройки nginx."""
     return nm(request).global_settings().model_dump()
 
 
 @router.put("/settings/global")
 async def put_global(request: Request, body: Dict[str, Any] = Body(...), apply: bool = Query(False),
                      user=Depends(admin)):
+    """Изменить глобальные настройки nginx. ?apply=1 — применить сразу."""
     app = nm(request)
     g = GlobalSettings.model_validate(body)
     app.db.kv_set("global_settings", g.model_dump())
@@ -679,15 +756,20 @@ async def put_global(request: Request, body: Dict[str, Any] = Body(...), apply: 
 
 @router.get("/settings/panel")
 async def get_panel(request: Request, user=Depends(viewer)):
+    """Настройки панели (секреты каналов не возвращаются)."""
     return nm(request).panel().model_dump()
 
 
 @router.put("/settings/panel")
 async def put_panel(request: Request, body: Dict[str, Any] = Body(...), user=Depends(admin)):
+    """Изменить настройки панели (только администратор)."""
     app = nm(request)
     old = app.panel()
     p = PanelSettings.model_validate(body)
     ip = user.get("ip", "")
+    if p.require_2fa_admin and not old.require_2fa_admin and not user.get("totp_enabled"):
+        raise HTTPException(400, "Сначала включите двухфакторную аутентификацию для себя (раздел «Мой профиль») — "
+                                 "иначе политика сразу ограничит ваши права")
     app.save_panel(p)
     if p.panel_allow and not app.auth.ip_allowed(ip):
         app.save_panel(old)
@@ -701,6 +783,7 @@ async def put_panel(request: Request, body: Dict[str, Any] = Body(...), user=Dep
 
 @router.get("/nginx/info")
 async def nginx_info(request: Request, user=Depends(viewer)):
+    """Сведения о nginx: версия, модули, параметры сборки, поддержка HTTP/2, HTTP/3, stream."""
     app = nm(request)
     info = await asyncio.to_thread(app.nginx.info)
     info["status"] = app.nginx.status()
@@ -709,6 +792,7 @@ async def nginx_info(request: Request, user=Depends(viewer)):
 
 @router.post("/nginx/{action}")
 async def nginx_action(action: str, request: Request, user=Depends(operator)):
+    """Управление nginx: reload, restart, start, stop, reopen (переоткрыть журналы)."""
     app = nm(request)
     fn = {"start": app.nginx.start, "stop": app.nginx.stop, "restart": app.nginx.restart,
           "reload": app.nginx.reload_or_start, "reopen": app.nginx.reopen_logs}.get(action)
@@ -728,6 +812,7 @@ async def nginx_action(action: str, request: Request, user=Depends(operator)):
 # =============================================================================
 @router.get("/certs")
 async def certs(request: Request, user=Depends(viewer)):
+    """Сертификаты: домены, срок действия, статус, где используются, ход выпуска."""
     app = nm(request)
     return {"items": app.certs.list(), "certbot": bool(app.certs.certbot()),
             "email": app.panel().letsencrypt_email, "webroot": str(settings.acme_webroot)}
@@ -735,6 +820,7 @@ async def certs(request: Request, user=Depends(viewer)):
 
 @router.post("/certs")
 async def create_cert(request: Request, body: Dict[str, Any] = Body(...), user=Depends(operator)):
+    """Новый сертификат: Let's Encrypt, загрузка PEM, самоподписанный или файлы на сервере (модель CertificateRequest)."""
     app = nm(request)
     req = CertificateRequest.model_validate(body)
     if req.type == "letsencrypt":
@@ -748,6 +834,7 @@ async def create_cert(request: Request, body: Dict[str, Any] = Body(...), user=D
 
 @router.post("/certs/{cid}/renew")
 async def renew_cert(cid: int, request: Request, user=Depends(operator)):
+    """Продлить или перевыпустить сертификат Let's Encrypt."""
     app = nm(request)
     await app.certs.renew(cid, after=app.after_cert_issued)
     audit(request, user, "cert_renew", str(cid))
@@ -756,6 +843,7 @@ async def renew_cert(cid: int, request: Request, user=Depends(operator)):
 
 @router.delete("/certs/{cid}")
 async def delete_cert(cid: int, request: Request, user=Depends(operator)):
+    """Удалить сертификат (нельзя, пока он используется сайтом или панелью)."""
     app = nm(request)
     await asyncio.to_thread(app.certs.delete, cid)
     audit(request, user, "cert_deleted", str(cid))
@@ -764,6 +852,7 @@ async def delete_cert(cid: int, request: Request, user=Depends(operator)):
 
 @router.post("/certs/selftest")
 async def cert_selftest(request: Request, domain: str = Body(..., embed=True), user=Depends(operator)):
+    """Проверка домена перед выпуском Let's Encrypt: DNS, доступность /.well-known/acme-challenge по HTTP. {domain}."""
     from ..validators import domain as vd
     return await asyncio.to_thread(nm(request).certs.http01_selftest, vd(domain))
 
@@ -773,17 +862,20 @@ async def cert_selftest(request: Request, domain: str = Body(..., embed=True), u
 # =============================================================================
 @router.get("/stats/realtime")
 async def stats_realtime(request: Request, seconds: int = 300, site: str = "*", user=Depends(viewer)):
+    """Посекундные ряды за последние минуты: запросы по классам, трафик, перцентили. ?seconds, ?site."""
     return nm(request).stats.agg.realtime(min(600, max(10, seconds)), site)
 
 
 @router.get("/stats/snapshot")
 async def stats_snapshot(request: Request, user=Depends(viewer)):
+    """Текущие показатели: окна 1/10/60 секунд, соединения nginx, система, сайты."""
     return nm(request).stats.snapshot()
 
 
 @router.get("/stats/timeseries")
 async def stats_ts(request: Request, frm: Optional[float] = Query(None, alias="from"), to: Optional[float] = None,
                    site: str = "*", points: int = 240, user=Depends(viewer)):
+    """Временные ряды за период (поминутно до 48 часов, дальше почасово). ?from, ?to, ?site, ?points."""
     s, e = rng(frm, to)
     return await asyncio.to_thread(nm(request).stats.timeseries, s, e, site, min(1000, points))
 
@@ -791,6 +883,7 @@ async def stats_ts(request: Request, frm: Optional[float] = Query(None, alias="f
 @router.get("/stats/summary")
 async def stats_summary(request: Request, frm: Optional[float] = Query(None, alias="from"), to: Optional[float] = None,
                         site: str = "*", user=Depends(viewer)):
+    """Сводка за период: запросы, коды, перцентили, кэш, боты, блокировки, ошибки nginx. ?from, ?to, ?site."""
     s, e = rng(frm, to)
     return await asyncio.to_thread(nm(request).stats.summary, s, e, site)
 
@@ -798,6 +891,7 @@ async def stats_summary(request: Request, frm: Optional[float] = Query(None, ali
 @router.get("/stats/top")
 async def stats_top(request: Request, kind: str, frm: Optional[float] = Query(None, alias="from"),
                     to: Optional[float] = None, site: str = "*", limit: int = 30, user=Depends(viewer)):
+    """Топ за период: ?kind = uri, ip, ua, referer, browser, os, device, country, upstream, e4xx, e5xx, slow, host."""
     s, e = rng(frm, to)
     return await asyncio.to_thread(nm(request).stats.tops, s, e, site, kind, min(500, limit))
 
@@ -805,13 +899,14 @@ async def stats_top(request: Request, kind: str, frm: Optional[float] = Query(No
 @router.get("/stats/sites")
 async def stats_sites(request: Request, frm: Optional[float] = Query(None, alias="from"), to: Optional[float] = None,
                       user=Depends(viewer)):
+    """Сравнение сайтов за период: доля трафика, ошибки, время ответа."""
     s, e = rng(frm, to)
     return await asyncio.to_thread(nm(request).stats.compare_sites, s, e)
 
 
 @router.get("/stats/sla")
 async def stats_sla(request: Request, days: int = 30, slo: float = 99.9, user=Depends(viewer)):
-    """Доступность сайтов (доля ответов без 5xx) по дням и бюджет ошибок для цели slo."""
+    """Доступность сайтов (доля ответов без 5xx) по дням и бюджет ошибок. ?days (по умолчанию 30), ?slo (цель, %, по умолчанию 99.9)."""
     from ..services.metrics import site_names
     app = nm(request)
     days = min(max(days, 7), 90)
@@ -827,12 +922,14 @@ async def stats_sla(request: Request, days: int = 30, slo: float = 99.9, user=De
 
 @router.get("/stats/heatmap")
 async def stats_heatmap(request: Request, weeks: int = 4, site: str = "*", user=Depends(viewer)):
+    """Почасовые значения за последние недели для тепловой карты. ?weeks, ?site."""
     return await asyncio.to_thread(nm(request).stats.heatmap, min(max(weeks, 1), 26), site)
 
 
 @router.get("/stats/system")
 async def stats_system(request: Request, frm: Optional[float] = Query(None, alias="from"),
                        to: Optional[float] = None, user=Depends(viewer)):
+    """Ресурсы сервера и процессов nginx за период."""
     s, e = rng(frm, to, 600)
     return await asyncio.to_thread(nm(request).stats.system_series, s, e)
 
@@ -840,29 +937,34 @@ async def stats_system(request: Request, frm: Optional[float] = Query(None, alia
 @router.get("/stats/streams")
 async def stats_streams(request: Request, frm: Optional[float] = Query(None, alias="from"),
                         to: Optional[float] = None, user=Depends(viewer)):
+    """Статистика TCP/UDP-потоков за период."""
     s, e = rng(frm, to)
     return await asyncio.to_thread(nm(request).stats.stream_series, s, e)
 
 
 @router.get("/requests")
 async def requests_search(request: Request, limit: int = 100, offset: int = 0, user=Depends(viewer)):
+    """Поиск по журналу запросов: ?site, status (код или 5xx), ip, method, uri, host, ua, upstream, country, rid, min_rt (мс), start, end (unix-время), sort = rt | bytes, limit, offset."""
     f = dict(request.query_params)
     return await asyncio.to_thread(nm(request).stats.search_requests, f, min(1000, limit), offset)
 
 
 @router.get("/requests/live")
-async def requests_live(request: Request, limit: int = 200, user=Depends(viewer)):
-    return nm(request).stats.agg.live_since(0, limit)
+async def requests_live(request: Request, seq: int = 0, limit: int = 200, user=Depends(viewer)):
+    """Последние запросы из памяти; ?seq — только новее этого номера (живой журнал без WebSocket)."""
+    return nm(request).stats.agg.live_since(seq, min(1000, limit))
 
 
 @router.get("/errors")
 async def errors_search(request: Request, limit: int = 100, offset: int = 0, user=Depends(viewer)):
+    """Поиск по журналу ошибок nginx: ?level, category, site, q, start, end, limit, offset; счётчики по категориям."""
     f = dict(request.query_params)
     return await asyncio.to_thread(nm(request).stats.search_errors, f, min(1000, limit), offset)
 
 
 @router.get("/errors/raw", response_class=PlainTextResponse)
 async def errors_raw(request: Request, lines: int = 200, user=Depends(viewer)):
+    """Последние строки журнала ошибок nginx как есть."""
     return "\n".join(nm(request).nginx.recent_error_log(min(5000, lines)))
 
 
@@ -871,35 +973,41 @@ async def errors_raw(request: Request, lines: int = 200, user=Depends(viewer)):
 # =============================================================================
 @router.get("/health")
 async def health(request: Request, user=Depends(viewer)):
+    """Активные проверки бэкендов: состояние, задержка, доступность, история; пассивные ошибки из журнала nginx."""
     app = nm(request)
     return {"targets": app.health.list(), "passive": dict(app.stats.agg.passive_upstream.most_common(50))}
 
 
 @router.post("/health/check")
 async def health_check(request: Request, key: Optional[str] = Body(None, embed=True), user=Depends(viewer)):
+    """Проверить бэкенды сейчас: {key} — один сервер или группа, null — все."""
     return await nm(request).health.check_now(key)
 
 
 @router.get("/health/history")
 async def health_history(request: Request, key: str, frm: Optional[float] = Query(None, alias="from"),
                          to: Optional[float] = None, user=Depends(viewer)):
+    """Поминутная история проверок сервера. ?key, ?from, ?to."""
     s, e = rng(frm, to, 86400)
     return await asyncio.to_thread(nm(request).health.history, key, s, e)
 
 
 @router.get("/diagnostics")
 async def diagnostics(request: Request, user=Depends(viewer)):
+    """Результаты последней диагностики."""
     return nm(request).diag.last
 
 
 @router.post("/diagnostics/run")
 async def diagnostics_run(request: Request, user=Depends(viewer)):
+    """Запустить диагностику сейчас."""
     return await nm(request).diag.run_all()
 
 
 @router.post("/diagnostics/fix")
 async def diagnostics_fix(request: Request, action: str = Body(...), args: Dict[str, Any] = Body({}),
                           user=Depends(operator)):
+    """Выполнить исправление из диагностики: {action, args}."""
     app = nm(request)
     res = await app.diag.fix(action, args, user["username"])
     audit(request, user, "diag_fix", action, {"args": args, "ok": res.get("ok")})
@@ -908,6 +1016,7 @@ async def diagnostics_fix(request: Request, action: str = Body(...), args: Dict[
 
 @router.get("/diagnostics/collector")
 async def collector(request: Request, user=Depends(viewer)):
+    """Состояние сборщика статистики: журналы, отставание, ошибки разбора."""
     return nm(request).stats.collector_info()
 
 
@@ -917,12 +1026,14 @@ async def collector(request: Request, user=Depends(viewer)):
 @router.get("/insights")
 async def insights(request: Request, frm: Optional[float] = Query(None, alias="from"),
                    to: Optional[float] = None, site: str = "*", user=Depends(viewer)):
+    """Встроенный анализ за период: найденные проблемы с причинами и шагами. ?from, ?to, ?site."""
     start, end = rng(frm, to, 900)
     return await asyncio.to_thread(nm(request).insights.evaluate, start, end, site or "*")
 
 
 @router.get("/insights/catalog")
 async def insights_catalog(request: Request, user=Depends(viewer)):
+    """Справочник анализа: все показатели с порогами и все сценарии."""
     return nm(request).insights.catalog()
 
 
@@ -964,6 +1075,7 @@ async def insights_thresholds(body: ThresholdsBody, request: Request, user=Depen
 @router.post("/insights/mute")
 async def insights_mute(request: Request, id: str = Body(..., embed=True), mute: bool = Body(True, embed=True),
                         user=Depends(operator)):
+    """Скрыть или вернуть тип подсказок: {id, mute}."""
     from ..services.insights import SCENARIOS
     app = nm(request)
     if id not in SCENARIOS:
@@ -981,6 +1093,7 @@ async def insights_mute(request: Request, id: str = Body(..., embed=True), mute:
 # =============================================================================
 @router.get("/reports/preview")
 async def report_preview(request: Request, period: str = "day", user=Depends(viewer)):
+    """Текст регулярного отчёта за ?period = day | week (без отправки)."""
     from ..services import reports
     if period not in ("day", "week"):
         raise HTTPException(400, "period: day | week")
@@ -990,6 +1103,7 @@ async def report_preview(request: Request, period: str = "day", user=Depends(vie
 @router.post("/reports/send")
 async def report_send(request: Request, period: str = Body("day", embed=True),
                       channels: Optional[List[int]] = Body(None, embed=True), user=Depends(operator)):
+    """Отправить отчёт сейчас: {period, channels}."""
     from ..services import reports
     app = nm(request)
     if period not in ("day", "week"):
@@ -1015,6 +1129,7 @@ class BanBody(BaseModel):
 
 @router.get("/bans")
 async def bans_list(request: Request, user=Depends(viewer)):
+    """Блокировки IP, подозрительные адреса, нарушители, статистика и настройки автоблокировки."""
     app = nm(request)
     p = app.panel()
     items = app.bans.active()
@@ -1028,6 +1143,7 @@ async def bans_list(request: Request, user=Depends(viewer)):
 
 @router.post("/bans")
 async def bans_add(body: BanBody, request: Request, user=Depends(operator)):
+    """Заблокировать адреса и подсети: {nets, minutes (null — бессрочно), reason, force}."""
     from ..services.bans import in_any, normalize_net
     app = nm(request)
     if body.minutes is not None and not (1 <= body.minutes <= 525600 * 5):
@@ -1067,6 +1183,7 @@ async def bans_add(body: BanBody, request: Request, user=Depends(operator)):
 
 @router.delete("/bans/{ban_id}")
 async def bans_remove(ban_id: int, request: Request, user=Depends(operator)):
+    """Снять блокировку."""
     app = nm(request)
     row = app.bans.remove(ban_id)
     if not row:
@@ -1117,6 +1234,7 @@ async def geo_status(request: Request, user=Depends(viewer)):
 
 @router.post("/geo/rebuild")
 async def geo_rebuild(request: Request, user=Depends(operator)):
+    """Пересобрать сети стран из базы GeoIP и перечитать nginx."""
     app = nm(request)
     app.stats.reload_geoip()
     await app.refresh_geo(force=True)
@@ -1126,6 +1244,7 @@ async def geo_rebuild(request: Request, user=Depends(operator)):
 
 @router.post("/bans/clear")
 async def bans_clear(request: Request, source: str = Body("auto", embed=True), user=Depends(admin)):
+    """Снять блокировки: {source: auto | manual | all} (только администратор)."""
     app = nm(request)
     if source not in ("auto", "manual", "all"):
         raise HTTPException(400, "source: auto | manual | all")
@@ -1141,6 +1260,7 @@ async def bans_clear(request: Request, source: str = Body("auto", embed=True), u
 
 @router.get("/events")
 async def events(request: Request, limit: int = 200, level: str = "", source: str = "", user=Depends(viewer)):
+    """Журнал событий панели. ?level, ?source, ?limit."""
     where, params = [], []
     if level:
         where.append("level=?")
@@ -1154,6 +1274,7 @@ async def events(request: Request, limit: int = 200, level: str = "", source: st
 
 @router.get("/audit")
 async def audit_log(request: Request, limit: int = 300, q: str = "", user=Depends(admin)):
+    """Аудит действий пользователей (только администратор). ?q — поиск по пользователю, действию и объекту; ?limit."""
     if q:
         return nm(request).db.query("SELECT * FROM audit_log WHERE username LIKE ? OR action LIKE ? OR target LIKE ? "
                                     "ORDER BY id DESC LIMIT ?", (f"%{q}%",) * 3 + (limit,))
@@ -1173,6 +1294,7 @@ def _mask_channel(d: Dict[str, Any]) -> Dict[str, Any]:
 
 @router.get("/alerts/rules")
 async def alert_rules(request: Request, user=Depends(viewer)):
+    """Правила оповещений с текущим состоянием и значением метрики."""
     app = nm(request)
     st = app.alerts.status()
     return [{"id": r["id"], "data": json.loads(r["data"]), "status": st.get(r["id"], {})}
@@ -1181,6 +1303,7 @@ async def alert_rules(request: Request, user=Depends(viewer)):
 
 @router.post("/alerts/rules")
 async def create_rule(request: Request, body: Dict[str, Any] = Body(...), user=Depends(operator)):
+    """Создать правило оповещения (модель AlertRule)."""
     r = AlertRule.model_validate(body)
     now = time.time()
     rid = nm(request).db.execute("INSERT INTO alert_rules(name,enabled,data,created_at,updated_at) VALUES(?,?,?,?,?)",
@@ -1191,6 +1314,7 @@ async def create_rule(request: Request, body: Dict[str, Any] = Body(...), user=D
 
 @router.put("/alerts/rules/{rid}")
 async def update_rule(rid: int, request: Request, body: Dict[str, Any] = Body(...), user=Depends(operator)):
+    """Изменить правило оповещения."""
     r = AlertRule.model_validate(body)
     nm(request).db.execute("UPDATE alert_rules SET name=?, enabled=?, data=?, updated_at=? WHERE id=?",
                            (r.name, int(r.enabled), json.dumps(r.model_dump(), ensure_ascii=False), time.time(), rid))
@@ -1200,6 +1324,7 @@ async def update_rule(rid: int, request: Request, body: Dict[str, Any] = Body(..
 
 @router.delete("/alerts/rules/{rid}")
 async def delete_rule(rid: int, request: Request, user=Depends(operator)):
+    """Удалить правило оповещения."""
     nm(request).db.execute("DELETE FROM alert_rules WHERE id=?", (rid,))
     audit(request, user, "alert_rule_deleted", str(rid))
     return {"ok": True}
@@ -1207,6 +1332,7 @@ async def delete_rule(rid: int, request: Request, user=Depends(operator)):
 
 @router.get("/alerts/channels")
 async def alert_channels(request: Request, user=Depends(viewer)):
+    """Каналы уведомлений (секреты не возвращаются)."""
     return [{"id": r["id"], "data": _mask_channel(json.loads(r["data"]))}
             for r in nm(request).db.query("SELECT * FROM alert_channels ORDER BY id")]
 
@@ -1224,6 +1350,7 @@ def _channel_from(app, body: Dict[str, Any], cid: Optional[int]) -> AlertChannel
 
 @router.post("/alerts/channels")
 async def create_channel(request: Request, body: Dict[str, Any] = Body(...), user=Depends(admin)):
+    """Создать канал: Telegram, Slack, Discord, e-mail, webhook (модель AlertChannel; только администратор)."""
     ch = _channel_from(nm(request), body, None)
     now = time.time()
     cid = nm(request).db.execute("INSERT INTO alert_channels(name,type,enabled,data,created_at,updated_at) "
@@ -1235,6 +1362,7 @@ async def create_channel(request: Request, body: Dict[str, Any] = Body(...), use
 
 @router.put("/alerts/channels/{cid}")
 async def update_channel(cid: int, request: Request, body: Dict[str, Any] = Body(...), user=Depends(admin)):
+    """Изменить канал. Пустой секрет — оставить прежний."""
     ch = _channel_from(nm(request), body, cid)
     nm(request).db.execute("UPDATE alert_channels SET name=?, type=?, enabled=?, data=?, updated_at=? WHERE id=?",
                            (ch.name, ch.type, int(ch.enabled), json.dumps(ch.model_dump(), ensure_ascii=False),
@@ -1245,6 +1373,7 @@ async def update_channel(cid: int, request: Request, body: Dict[str, Any] = Body
 
 @router.delete("/alerts/channels/{cid}")
 async def delete_channel(cid: int, request: Request, user=Depends(admin)):
+    """Удалить канал."""
     nm(request).db.execute("DELETE FROM alert_channels WHERE id=?", (cid,))
     audit(request, user, "alert_channel_deleted", str(cid))
     return {"ok": True}
@@ -1253,6 +1382,7 @@ async def delete_channel(cid: int, request: Request, user=Depends(admin)):
 @router.post("/alerts/channels/test")
 async def test_channel(request: Request, body: Dict[str, Any] = Body(...), cid: int = Query(0),
                        user=Depends(operator)):
+    """Отправить тестовое сообщение: {id} сохранённого канала или {data} черновика."""
     from ..services.alerts import send
     ch = _channel_from(nm(request), body, cid or None)
     try:
@@ -1271,6 +1401,7 @@ class SilenceBody(BaseModel):
 
 @router.get("/alerts/silences")
 async def silences_list(request: Request, user=Depends(viewer)):
+    """Периоды тишины оповещений: действующие, запланированные и завершённые."""
     now = time.time()
     rows = nm(request).db.query("SELECT * FROM silences WHERE ends_at>? ORDER BY starts_at", (now - 7 * 86400,))
     for r in rows:
@@ -1281,6 +1412,7 @@ async def silences_list(request: Request, user=Depends(viewer)):
 
 @router.post("/alerts/silences")
 async def silences_add(body: SilenceBody, request: Request, user=Depends(operator)):
+    """Тишина на время работ: {minutes, starts_at?, rule_ids?, reason}."""
     if not 5 <= body.minutes <= 30 * 24 * 60:
         raise HTTPException(400, "Длительность тишины: от 5 минут до 30 суток")
     now = time.time()
@@ -1307,6 +1439,7 @@ async def silences_add(body: SilenceBody, request: Request, user=Depends(operato
 
 @router.delete("/alerts/silences/{sid}")
 async def silences_end(sid: int, request: Request, user=Depends(operator)):
+    """Завершить или отменить период тишины."""
     app = nm(request)
     row = app.db.one("SELECT * FROM silences WHERE id=?", (sid,))
     if not row:
@@ -1324,6 +1457,7 @@ async def silences_end(sid: int, request: Request, user=Depends(operator)):
 
 @router.get("/alerts/events")
 async def alert_events(request: Request, limit: int = 200, user=Depends(viewer)):
+    """История срабатываний и восстановлений правил."""
     return nm(request).db.query("SELECT * FROM alert_events ORDER BY id DESC LIMIT ?", (limit,))
 
 
@@ -1332,6 +1466,7 @@ async def alert_events(request: Request, limit: int = 200, user=Depends(viewer))
 # =============================================================================
 @router.get("/users")
 async def users(request: Request, user=Depends(admin)):
+    """Пользователи панели (только администратор)."""
     rows = nm(request).auth.users()
     for r in rows:
         r["role_label"] = ROLE_LABELS.get(r["role"], r["role"])
@@ -1341,6 +1476,7 @@ async def users(request: Request, user=Depends(admin)):
 @router.post("/users")
 async def create_user(request: Request, username: str = Body(...), password: str = Body(...),
                       role: str = Body("viewer"), user=Depends(admin)):
+    """Создать пользователя: {username, password, role}. При первом входе он должен сменить пароль."""
     uid = nm(request).auth.create_user(username, password, role, must_change=True)
     audit(request, user, "user_created", username, {"role": role})
     return {"id": uid}
@@ -1349,6 +1485,7 @@ async def create_user(request: Request, username: str = Body(...), password: str
 @router.put("/users/{uid}")
 async def update_user(uid: int, request: Request, role: Optional[str] = Body(None), disabled: Optional[bool] = Body(None),
                       password: Optional[str] = Body(None), user=Depends(admin)):
+    """Изменить пользователя: {role?, disabled?, password?}. Последнего администратора лишить прав нельзя."""
     app = nm(request)
     u = app.db.one("SELECT * FROM users WHERE id=?", (uid,))
     if not u:
@@ -1374,6 +1511,7 @@ async def update_user(uid: int, request: Request, role: Optional[str] = Body(Non
 
 @router.post("/users/{uid}/reset-2fa")
 async def reset_2fa(uid: int, request: Request, user=Depends(admin)):
+    """Сбросить 2FA пользователя (потерян телефон)."""
     nm(request).db.execute("UPDATE users SET totp_enabled=0, totp_secret='' WHERE id=?", (uid,))
     audit(request, user, "user_2fa_reset", str(uid))
     return {"ok": True}
@@ -1381,6 +1519,7 @@ async def reset_2fa(uid: int, request: Request, user=Depends(admin)):
 
 @router.delete("/users/{uid}")
 async def delete_user(uid: int, request: Request, user=Depends(admin)):
+    """Удалить пользователя."""
     app = nm(request)
     if uid == user["id"]:
         raise HTTPException(400, "Нельзя удалить самого себя")
@@ -1399,6 +1538,7 @@ async def delete_user(uid: int, request: Request, user=Depends(admin)):
 # =============================================================================
 @router.get("/backup/export")
 async def backup_export(request: Request, users: bool = False, certs: bool = True, user=Depends(admin)):
+    """Экспорт настроек в JSON: сайты, потоки, настройки, оповещения, сертификаты; ?users=1 — с пользователями."""
     from ..services.backup import export_config
     data = await asyncio.to_thread(export_config, nm(request), users, certs)
     audit(request, user, "config_exported")
@@ -1409,6 +1549,7 @@ async def backup_export(request: Request, users: bool = False, certs: bool = Tru
 @router.post("/backup/import")
 async def backup_import(request: Request, data: Dict[str, Any] = Body(...), mode: str = Query("replace"),
                         user=Depends(admin)):
+    """Импорт настроек из JSON. ?mode = replace (с прежними номерами) | merge (новые номера, ссылки переносятся)."""
     from ..services.backup import db_backup, import_config
     app = nm(request)
     await asyncio.to_thread(db_backup, app, "before-import")
@@ -1419,12 +1560,14 @@ async def backup_import(request: Request, data: Dict[str, Any] = Body(...), mode
 
 @router.get("/backup/list")
 async def backup_list(user=Depends(admin)):
+    """Резервные копии базы и кода на сервере."""
     from ..services.backup import list_backups
     return list_backups()
 
 
 @router.post("/backup/create")
 async def backup_create(request: Request, user=Depends(admin)):
+    """Создать резервную копию базы сейчас."""
     from ..services.backup import db_backup
     p = await asyncio.to_thread(db_backup, nm(request), "manual")
     audit(request, user, "backup_created", p.name)
@@ -1433,6 +1576,7 @@ async def backup_create(request: Request, user=Depends(admin)):
 
 @router.get("/backup/download/{name}")
 async def backup_download(name: str, user=Depends(admin)):
+    """Скачать резервную копию."""
     p = settings.backups_dir / Path(name).name
     if not p.exists() or not p.name.startswith("nginx-manager-"):
         raise HTTPException(404, "Файл не найден")
@@ -1441,6 +1585,7 @@ async def backup_download(name: str, user=Depends(admin)):
 
 @router.delete("/backup/{name}")
 async def backup_delete(name: str, request: Request, user=Depends(admin)):
+    """Удалить резервную копию."""
     p = settings.backups_dir / Path(name).name
     if p.exists() and p.name.startswith("nginx-manager-"):
         p.unlink()
@@ -1450,6 +1595,7 @@ async def backup_delete(name: str, request: Request, user=Depends(admin)):
 
 @router.post("/import/nginx/preview")
 async def import_preview(request: Request, path: str = Body("", embed=True), user=Depends(admin)):
+    """Разобрать существующую конфигурацию nginx (nginx -T) и показать, какие сайты будут созданы. {path}."""
     from ..nginx.importer import import_config
     from ..utils import run
     app = nm(request)
@@ -1475,6 +1621,7 @@ async def import_preview(request: Request, path: str = Body("", embed=True), use
 @router.post("/import/nginx/commit")
 async def import_commit(request: Request, sites: List[Dict[str, Any]] = Body(...),
                         certificates: List[Dict[str, Any]] = Body([]), user=Depends(admin)):
+    """Создать сайты (выключенными) и сертификаты из результата разбора: {sites, certificates}."""
     app = nm(request)
     cert_ids: Dict[str, int] = {}
     for c in certificates:
@@ -1511,6 +1658,7 @@ async def import_commit(request: Request, sites: List[Dict[str, Any]] = Body(...
 # =============================================================================
 @router.get("/docs")
 async def docs_list(user=Depends(viewer)):
+    """Список глав документации."""
     out = []
     for p in sorted(DOCS_DIR.glob("*.md")):
         title = p.stem
@@ -1524,6 +1672,7 @@ async def docs_list(user=Depends(viewer)):
 
 @router.get("/docs/{name}", response_class=PlainTextResponse)
 async def docs_get(name: str, user=Depends(viewer)):
+    """Текст главы документации (Markdown)."""
     p = DOCS_DIR / Path(name).name
     if not p.exists() or p.suffix != ".md":
         raise HTTPException(404, "Документ не найден")
@@ -1532,12 +1681,27 @@ async def docs_get(name: str, user=Depends(viewer)):
 
 @router.get("/version")
 async def version_info():
+    """Версия панели (доступно без входа)."""
     return {"version": VERSION, "name": "Nginx Manager"}
 
 
 # =============================================================================
 #  WebSocket
 # =============================================================================
+def _live_filter(f: Any) -> Dict[str, Any]:
+    """Фильтр живого журнала от браузера: только известные поля и типы (иначе сравнение упадёт в общем цикле)."""
+    if not isinstance(f, dict):
+        return {}
+    out: Dict[str, Any] = {k: str(f[k])[:300] for k in ("site", "status", "ip", "q")
+                           if isinstance(f.get(k), (str, int)) and str(f[k]) != ""}
+    try:
+        out["min_rt"] = max(0.0, float(f.get("min_rt") or 0))
+    except (TypeError, ValueError):
+        pass
+    out["hide_bots"] = bool(f.get("hide_bots"))
+    return out
+
+
 @router.websocket("/ws")
 async def ws(websocket: WebSocket):
     from ..core import WSClient
@@ -1546,7 +1710,8 @@ async def ws(websocket: WebSocket):
     user = app.auth.user_by_session(tok) if tok else None
     origin = websocket.headers.get("origin", "")
     host = websocket.headers.get("host", "")
-    if not user or (origin and host and origin.split("://", 1)[-1] != host):
+    if not user or (origin and host and origin.split("://", 1)[-1] != host) \
+            or not app.auth.ip_allowed(app.auth.client_ip(websocket)):
         await websocket.close(code=4401)
         return
     await websocket.accept()
@@ -1554,11 +1719,16 @@ async def ws(websocket: WebSocket):
     app.clients.add(client)
     try:
         while True:
-            msg = json.loads(await websocket.receive_text())
+            try:
+                msg = json.loads(await websocket.receive_text())
+            except ValueError:
+                continue  # не JSON — пропускаем сообщение, соединение остаётся
+            if not isinstance(msg, dict):
+                continue
             t = msg.get("type")
             if t == "live":
                 client.live = bool(msg.get("on"))
-                client.live_filter = msg.get("filter") or {}
+                client.live_filter = _live_filter(msg.get("filter"))
                 if client.live:
                     client.live_seq = max(0, app.stats.agg.live_seq - 100)
             elif t == "errors":
@@ -1567,7 +1737,7 @@ async def ws(websocket: WebSocket):
                     client.err_seq = max(0, app.stats.agg.err_seq - 50)
             elif t == "ping":
                 await websocket.send_text('{"type":"pong"}')
-    except (WebSocketDisconnect, RuntimeError, ValueError):
+    except (WebSocketDisconnect, RuntimeError):
         pass
     finally:
         app.clients.discard(client)

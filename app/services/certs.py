@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional
 from ..config import settings
 from ..db import Database
 from ..models import CertificateRequest
-from ..utils import atomic_write, run, which
+from ..utils import atomic_write, run, spawn, which
 
 log = logging.getLogger("nm.certs")
 
@@ -283,7 +283,7 @@ class CertificateService:
             (name, "letsencrypt", json.dumps(req.domains), "pending",
              json.dumps({"key_type": req.key_type, "staging": req.staging or panel.letsencrypt_staging,
                          "email": email, "cert_name": f"nm-{secrets.token_hex(3)}"}), now, now))
-        asyncio.get_running_loop().create_task(self._run_certbot(cid, after))
+        spawn(self._run_certbot(cid, after), name=f"certbot-{cid}")
         return cid
 
     async def _run_certbot(self, cid: int, after=None, renew: bool = False) -> None:
@@ -356,7 +356,7 @@ class CertificateService:
         if not r:
             raise ValueError("Сертификат не найден")
         if r["type"] == "letsencrypt":
-            asyncio.get_running_loop().create_task(self._run_certbot(cid, after, renew=True))
+            spawn(self._run_certbot(cid, after, renew=True), name=f"certbot-renew-{cid}")
         elif r["type"] == "selfsigned":
             req = CertificateRequest(type="selfsigned", domains=json.loads(r["domains"]),
                                      key_type=json.loads(r["data"]).get("key_type", "ecdsa"))

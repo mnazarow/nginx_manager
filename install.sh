@@ -134,6 +134,7 @@ gpgcheck=1
 enabled=$([ "$branch" = stable ] && echo 1 || echo 0)
 gpgkey=https://nginx.org/keys/nginx_signing.key
 module_hotfixes=true
+skip_if_unavailable=1
 
 [nginx-mainline]
 name=nginx mainline repo
@@ -142,6 +143,7 @@ gpgcheck=1
 enabled=$([ "$branch" = mainline ] && echo 1 || echo 0)
 gpgkey=https://nginx.org/keys/nginx_signing.key
 module_hotfixes=true
+skip_if_unavailable=1
 REPO
       ;;
     *) return 1 ;;
@@ -163,8 +165,13 @@ case "$PKG" in
     pkg_install certbot || warn "certbot не установлен — выпуск Let's Encrypt будет недоступен"
     ;;
   dnf|yum)
-    if [ "$OS_ID" != fedora ]; then
-      pkg_installed epel-release || pkg_install epel-release || warn "EPEL недоступен (certbot может не установиться)"
+    if [ "$OS_ID" != fedora ] && ! pkg_installed epel-release && ! pkg_installed "oracle-epel-release-el$OS_MAJOR"; then
+      # EPEL (certbot): в Rocky/Alma — пакет epel-release, в Oracle Linux — oracle-epel-release-elN,
+      # в RHEL пакета в репозиториях нет — ставим из Fedora Project
+      case "$OS_ID" in
+        ol) pkg_install "oracle-epel-release-el$OS_MAJOR" ;;
+        *) pkg_install epel-release || pkg_install "https://dl.fedoraproject.org/pub/epel/epel-release-latest-$OS_MAJOR.noarch.rpm" ;;
+      esac || warn "EPEL недоступен (certbot может не установиться)"
     fi
     if [ "$NGINX_REPO" != distro ]; then
       if add_nginx_org_repo "$NGINX_REPO"; then ok "подключён репозиторий nginx.org ($NGINX_REPO)"
@@ -220,6 +227,12 @@ else
   retry 2 run "$PIP" install $PIP_OPTS --upgrade pip wheel || warn "не удалось обновить pip"
 fi
 retry 3 run "$PIP" install $PIP_OPTS -r "$INSTALL_DIR/requirements.txt" || fail "не удалось установить Python-зависимости (см. $LOG_FILE). Для офлайн-установки используйте --wheels"
+# база GeoIP уже есть (переустановка, перенос) — без пакета maxminddb перестали бы работать статистика по странам
+# и доступ к сайтам по странам, поэтому ставим его сами
+if [ "$WITH_GEOIP" = 0 ] && ls "$DATA_DIR"/geoip/*.mmdb >/dev/null 2>&1; then
+  info "найдена база GeoIP в $DATA_DIR/geoip — будет установлен пакет maxminddb"
+  WITH_GEOIP=1
+fi
 if [ "$WITH_GEOIP" = 1 ]; then
   run "$PIP" install $PIP_OPTS -r "$INSTALL_DIR/requirements-optional.txt" && ok "maxminddb установлен" || warn "maxminddb не установлен"
 fi

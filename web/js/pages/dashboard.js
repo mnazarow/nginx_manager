@@ -1,7 +1,6 @@
 // Дашборд реального времени.
 import { api, live } from '../api.js';
-import { h, mount, kpi, card, fmtNum, fmtBps, fmtMs, fmtPct, fmtInt, fmtBytes, fmtDur, fmtAgo, sparkline, icon, badge, table,
-  stateBadge, hbars, fmtCompact } from '../ui.js';
+import { h, mount, kpi, card, fmtNum, fmtBps, fmtMs, fmtPct, fmtInt, fmtBytes, fmtAgo, sparkline, icon, badge, table, stateBadge, hbars, fmtCompact } from '../ui.js';
 import { timeChart, setData, chartCard, statusColors, seriesColor, destroyAll, segBar } from '../charts.js';
 import { hintKpi, insightsCard, loadCatalog } from '../advice.js';
 
@@ -76,7 +75,6 @@ export async function render(root) {
   };
   draw();
 
-  const siteNames = Object.fromEntries(ov.sites.map(s => [String(s.id), s.name]));
   const spark = {};
   const push = (arr, v, max = WINDOW) => { arr.push(v); if (arr.length > max) arr.shift(); };
 
@@ -140,7 +138,9 @@ export async function render(root) {
 
   // ---- Статичные блоки ----
   const up = ov.health.filter(t => t.state === 'up').length, down = ov.health.filter(t => t.state === 'down').length;
-  k.be.set(`${up}`, ` / ${ov.health.filter(t => t.state !== 'disabled').length}`, down ? h('span', { class: 'status-5' }, `недоступно: ${down}`) : 'все доступны');
+  const unknown = ov.health.filter(t => t.state === 'unknown').length;  // первая проверка ещё не прошла
+  k.be.set(`${up}`, ` / ${ov.health.filter(t => t.state !== 'disabled').length}`,
+    down ? h('span', { class: 'status-5' }, `недоступно: ${down}`) : unknown ? `проверяется: ${unknown}` : 'все доступны');
   k.be.title = 'Доступно / всего проверяемых серверов';
   hintKpi(k.be, 'backends_down', down, { text: `недоступно: ${down}` });
   const certs = ov.certs.slice().sort((a, b) => (a.days_left ?? 1e9) - (b.days_left ?? 1e9)).slice(0, 5);

@@ -55,6 +55,7 @@ class App:
         self.bans = BanService(self)
         self.insights = Analyzer(self)
         self.stats.agg.detector = self.bans.detector
+        self.alerts.site_name = self._site_name
         self.clients: Set[WSClient] = set()
         self.tasks: List[asyncio.Task] = []
         self.started = time.time()
@@ -414,6 +415,10 @@ class App:
                       + ("" if len(ok) == len(res) else "; ошибки: " + "; ".join(
                           f"{r.get('name', r['id'])}: {r.get('error')}" for r in res if not r["ok"])))
 
+    def _site_name(self, sid: str) -> str:
+        from .services.metrics import site_names
+        return site_names(self).get(str(sid), str(sid))
+
     async def refresh_geo(self, force: bool = False) -> None:
         """База GeoIP заменена на новую — перечитать её и пересобрать сети стран для nginx."""
         g = self.stats.geoip
@@ -441,7 +446,12 @@ class App:
         last_diag = last_cert = last_geo = 0.0
         while True:
             now = time.time()
-            p = self.panel()
+            try:
+                p = self.panel()
+            except Exception:
+                log.exception("настройки панели")
+                await asyncio.sleep(60)
+                continue
             try:
                 # встроенный анализ за последние 15 минут — для значка в меню и метрики оповещений
                 res = await asyncio.to_thread(self.insights.evaluate, now - 900, now, "*")
@@ -449,27 +459,37 @@ class App:
                 self._insights_history(res["findings"])
             except Exception:
                 log.exception("анализ метрик")
-            try:
-                if now - last_diag > p.diagnostics_interval:
-                    last_diag = now
-                    await self.diag.run_all()
-                if now - last_geo > 600:
-                    last_geo = now
-                    await self.refresh_geo()
-                if now - last_cert > 6 * 3600:
-                    last_cert = now
-                    await asyncio.to_thread(self.certs.refresh_all)
-                    await self.certs.auto_renew(after=self.after_cert_issued)
-                lt = time.localtime(now)
-                today = time.strftime("%Y-%m-%d", lt)
-                await self.maybe_send_report()
-                if lt.tm_hour == p.backup_hour and self.db.kv_get("last_auto_backup") != today:
-                    self.db.kv_set("last_auto_backup", today)
-                    from .services.backup import auto_backup
-                    await asyncio.to_thread(auto_backup, self)
-            except Exception:
-                log.exception("периодические задачи")
+            # каждая задача — отдельно: сбой одной (например, диагностики) не откладывает продление сертификатов,
+            # отчёты и резервные копии
+            if now - last_diag > p.diagnostics_interval:
+                last_diag = now
+                await self._guard("диагностика", self.diag.run_all())
+            if now - last_geo > 600:
+                last_geo = now
+                await self._guard("сети стран GeoIP", self.refresh_geo())
+            if now - last_cert > 6 * 3600:
+                last_cert = now
+                await self._guard("проверка сертификатов", asyncio.to_thread(self.certs.refresh_all))
+                await self._guard("продление сертификатов", self.certs.auto_renew(after=self.after_cert_issued))
+            await self._guard("регулярный отчёт", self.maybe_send_report())
+            lt = time.localtime(now)
+            today = time.strftime("%Y-%m-%d", lt)
+            if lt.tm_hour == p.backup_hour and self.db.kv_get("last_auto_backup") != today:
+                self.db.kv_set("last_auto_backup", today)
+                from .services.backup import auto_backup
+                await self._guard("автоматическая резервная копия", asyncio.to_thread(auto_backup, self))
             await asyncio.sleep(60)
+
+    async def _guard(self, what: str, aw) -> None:
+        """Выполнить фоновую задачу; ошибка — в журнал сервиса и в «События», цикл продолжается."""
+        try:
+            await aw
+        except Exception as e:
+            log.exception(what)
+            try:
+                self.db.event("error", "panel", f"Фоновая задача «{what}» завершилась ошибкой: {e}"[:500])
+            except Exception:
+                pass
 
     def state_summary(self, user: Dict[str, Any]) -> Dict[str, Any]:
         pend = self.pending()

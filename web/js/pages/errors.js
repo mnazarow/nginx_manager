@@ -1,6 +1,6 @@
 // Журнал ошибок nginx: классификация, рекомендации, живой поток, поиск.
 import { api, live } from '../api.js';
-import { h, mount, icon, badge, table, tabs, segmented, fmtDate, fmtInt, loading, modal, card } from '../ui.js';
+import { h, mount, icon, badge, table, tabs, segmented, fmtDate, fmtInt, loading, modal } from '../ui.js';
 
 const LVL = { emerg: 'bad', alert: 'bad', crit: 'bad', error: 'bad', warn: 'warn', notice: 'info', info: '', debug: '' };
 

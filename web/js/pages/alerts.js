@@ -1,6 +1,6 @@
 // Оповещения: правила, каналы уведомлений, история срабатываний.
 import { api } from '../api.js';
-import { h, mount, icon, badge, toast, modal, confirmDlg, table, tabs, fmtDate, fmtAgo, stateBadge, fmtNum } from '../ui.js';
+import { h, mount, icon, badge, toast, modal, confirmDlg, table, tabs, fmtDate, stateBadge, fmtNum } from '../ui.js';
 import { model, defaults, renderFields, errorsToMap, SCHEMA } from '../forms.js';
 import { can, refreshState } from '../app.js';
 

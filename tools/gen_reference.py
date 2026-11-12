@@ -270,6 +270,63 @@ def insight_scenarios():
     return "\n".join(out)
 
 
+API_GROUPS = [
+    ("/api/auth", "Вход, профиль, 2FA, токены"),
+    ("/api/state", "Общее"), ("/api/schema", "Общее"), ("/api/overview", "Общее"), ("/api/version", "Общее"),
+    ("/api/docs", "Общее"),
+    ("/api/sites", "Сайты"), ("/api/streams", "Потоки TCP/UDP"),
+    ("/api/config", "Конфигурация и версии"), ("/api/settings", "Настройки"), ("/api/nginx", "Управление nginx"),
+    ("/api/certs", "Сертификаты"),
+    ("/api/stats", "Статистика"), ("/api/requests", "Журналы"), ("/api/errors", "Журналы"),
+    ("/api/health", "Бэкенды"), ("/api/diagnostics", "Диагностика"), ("/api/collector", "Диагностика"),
+    ("/api/insights", "Анализ и отчёты"), ("/api/reports", "Анализ и отчёты"),
+    ("/api/bans", "Блокировки и доступ по странам"), ("/api/geo", "Блокировки и доступ по странам"),
+    ("/api/alerts", "Оповещения"),
+    ("/api/users", "Пользователи и аудит"), ("/api/audit", "Пользователи и аудит"), ("/api/events", "Пользователи и аудит"),
+    ("/api/backup", "Резервные копии и импорт"), ("/api/import", "Резервные копии и импорт"),
+]
+ROLE_NAMES = {"viewer": "наблюдатель", "operator": "оператор", "admin": "администратор"}
+
+
+def api_routes():
+    """Все маршруты REST API: (группа, метод, путь, роль, описание). Используется и тестом полноты документации."""
+    from fastapi.routing import APIRoute
+    from app.api.routes import router
+    out = []
+    for r in router.routes:
+        if not isinstance(r, APIRoute):
+            continue
+        roles = [ROLE_NAMES[d.call.__name__] for d in r.dependant.dependencies
+                 if getattr(d.call, "__name__", "") in ROLE_NAMES]
+        role = roles[0] if roles else "без входа"
+        group = next((g for pre, g in API_GROUPS if r.path == pre or r.path.startswith(pre + "/")), "Прочее")
+        doc = " ".join((r.endpoint.__doc__ or "").split())
+        for m in sorted(r.methods):
+            out.append((group, m, r.path, role, doc))
+    return out
+
+
+def api_reference():
+    rows = api_routes()
+    order = []
+    for _, g in API_GROUPS:
+        if g not in order:
+            order.append(g)
+    order.append("Прочее")
+    out = [f"Всего методов: **{len(rows)}**. Роль — минимальная роль пользователя или токена; «администратор» "
+           "включает права оператора, «оператор» — права наблюдателя.", ""]
+    for g in order:
+        items = [r for r in rows if r[0] == g]
+        if not items:
+            continue
+        out += [f"#### {g}", "", "| Метод | Путь | Роль | Описание |", "|---|---|---|---|"]
+        for _, m, path, role, doc in items:
+            cell = doc.replace("|", "\\|")
+            out.append(f"| `{m}` | `{path}` | {role} | {cell} |")
+        out.append("")
+    return "\n".join(out).rstrip()
+
+
 BLOCKS = {
     "site": site_reference,
     "location": lambda: plain(M.Location, 4, "location"),
@@ -284,26 +341,31 @@ BLOCKS = {
     "alert_metrics": alert_metrics,
     "insight_metrics": insight_metrics,
     "insight_scenarios": insight_scenarios,
+    "api": api_reference,
 }
+
+
+def refresh(text):
+    """Текст главы с перегенерированными блоками GEN."""
+    for name, fn in BLOCKS.items():
+        pat = re.compile(rf"(<!-- GEN:{name} -->)(.*?)(<!-- /GEN:{name} -->)", re.S)
+        if pat.search(text):
+            body = fn()
+            text = pat.sub(lambda m, body=body: m.group(1) + "\n<!-- Сгенерировано tools/gen_reference.py — не редактируйте вручную -->\n"
+                           + body + "\n" + m.group(3), text)
+    return text
 
 
 def main():
     changed = 0
     for md in sorted((ROOT / "docs").glob("*.md")):
         text = md.read_text(encoding="utf-8")
-        new = text
-        for name, fn in BLOCKS.items():
-            pat = re.compile(rf"(<!-- GEN:{name} -->)(.*?)(<!-- /GEN:{name} -->)", re.S)
-            if pat.search(new):
-                body = fn()
-                new = pat.sub(lambda m, body=body: m.group(1) + "\n<!-- Сгенерировано tools/gen_reference.py из app/models.py -->\n"
-                              + body + "\n" + m.group(3), new)
+        new = refresh(text)
         if new != text:
             md.write_text(new, encoding="utf-8")
             changed += 1
             print("обновлён", md.name)
     print(f"Готово, файлов изменено: {changed}")
-
 
 if __name__ == "__main__":
     main()

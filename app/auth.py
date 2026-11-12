@@ -11,7 +11,10 @@ from fastapi import HTTPException, Request
 
 from .config import settings
 from .db import Database
-from .utils import hash_password, totp_verify, verify_password
+from .utils import hash_password, totp_step, verify_password
+
+# хеш для сравнения, когда пользователя нет: время ответа не выдаёт, существует ли логин
+_DUMMY_HASH = hash_password("nm-dummy-password-for-timing")
 
 ROLES = {"admin": 3, "operator": 2, "viewer": 1}
 ROLE_LABELS = {"admin": "Администратор", "operator": "Оператор", "viewer": "Наблюдатель"}
@@ -27,6 +30,7 @@ class AuthService:
         self.db = db
         self.get_panel = get_panel
         self.failures: Dict[str, List[float]] = {}
+        self.totp_used: Dict[int, int] = {}  # последний принятый шаг TOTP по пользователю (код не принимается дважды)
 
     # ------------------------------------------------------------------
     def client_ip(self, request: Request) -> str:
@@ -97,13 +101,18 @@ class AuthService:
 
     def authenticate(self, username: str, password: str, otp: str = "") -> Dict[str, Any]:
         u = self.db.one("SELECT * FROM users WHERE username=?", (username,))
-        if not u or u["disabled"] or not verify_password(password, u["password_hash"]):
+        ok = verify_password(password, u["password_hash"] if u else _DUMMY_HASH)
+        if not u or u["disabled"] or not ok:
             raise PermissionError("Неверное имя пользователя или пароль")
         if u["totp_enabled"]:
             if not otp:
                 raise LookupError("totp_required")
-            if not totp_verify(u["totp_secret"], otp):
+            step = totp_step(u["totp_secret"], otp)
+            if step is None:
                 raise PermissionError("Неверный код двухфакторной аутентификации")
+            if step <= self.totp_used.get(u["id"], -1):
+                raise PermissionError("Этот код уже использован — дождитесь следующего кода в приложении")
+            self.totp_used[u["id"]] = step
         return u
 
     def create_session(self, uid: int, ip: str, ua: str) -> str:
@@ -182,6 +191,15 @@ def require(request: Request, role: str = "viewer") -> Dict[str, Any]:
             raise HTTPException(403, "CSRF-проверка не пройдена")
     if ROLES.get(user["role"], 0) < ROLES[role]:
         raise HTTPException(403, f"Недостаточно прав (нужна роль «{ROLE_LABELS[role]}»)")
+    # политика входа проверяется на сервере, а не только в интерфейсе: пока не выполнена, можно смотреть,
+    # но не изменять (кроме своего профиля). API-токены — отдельные учётные данные, к ним это не относится.
+    if user.get("via") == "session" and request.method not in ("GET", "HEAD", "OPTIONS") \
+            and not request.url.path.startswith("/api/auth/"):
+        if user.get("must_change_password"):
+            raise HTTPException(403, "Сначала смените временный пароль (раздел «Мой профиль»)")
+        if user["role"] == "admin" and not user.get("totp_enabled") and app.panel().require_2fa_admin:
+            raise HTTPException(403, "Политика панели требует двухфакторную аутентификацию для администраторов — "
+                                     "включите её в разделе «Мой профиль»")
     user["ip"] = ip
     return user
 

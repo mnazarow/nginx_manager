@@ -403,9 +403,11 @@ class Database:
     # ---- журналы ------------------------------------------------------
     def audit(self, username: Optional[str], ip: Optional[str], action: str,
               target: str = "", details: Any = None) -> None:
+        d = json.dumps(details, ensure_ascii=False, default=str) if details is not None else None
+        if d and len(d) > 4000:  # журнал аудита — для людей: огромные детали обрезаются
+            d = d[:4000] + "…"
         self.execute("INSERT INTO audit_log(ts,username,ip,action,target,details) VALUES(?,?,?,?,?,?)",
-                     (time.time(), username, ip, action, target,
-                      json.dumps(details, ensure_ascii=False) if details is not None else None))
+                     (time.time(), username, ip, action, target, d))
 
     def event(self, level: str, source: str, message: str, details: Any = None) -> None:
         self.execute("INSERT INTO events(ts,level,source,message,details) VALUES(?,?,?,?,?)",

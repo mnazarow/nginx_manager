@@ -8,3 +8,4 @@ venv/
 dist/
 *.tar.gz
 nginx-manager-docs.html
+.coverage

@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import json
+import sqlite3
 import time
 from pathlib import Path
 from typing import Any, Dict, List
@@ -36,8 +38,21 @@ def export_config(app, include_users: bool = False, include_certs: bool = True) 
 
 
 def import_config(app, data: Dict[str, Any], mode: str = "replace") -> Dict[str, Any]:
-    if data.get("format") != "nginx-manager-export":
+    """Импорт настроек из экспорта. Любая ошибка в данных — ValueError с понятным текстом; база при этом не меняется
+    (всё пишется в одной транзакции)."""
+    if not isinstance(data, dict) or data.get("format") != "nginx-manager-export":
         raise ValueError("Это не файл экспорта Nginx Manager")
+    try:
+        return _import_config(app, data, mode)
+    except ValueError:
+        raise
+    except (KeyError, TypeError, AttributeError, binascii.Error) as e:
+        raise ValueError(f"Файл экспорта повреждён: нет или неверно поле {e}") from e
+    except sqlite3.IntegrityError as e:
+        raise ValueError(f"Файл экспорта противоречив (повторяющиеся номера или имена): {e}") from e
+
+
+def _import_config(app, data: Dict[str, Any], mode: str) -> Dict[str, Any]:
     from ..models import AlertChannel, AlertRule, GlobalSettings, PanelSettings, Site, Stream
     db = app.db
     now = time.time()
@@ -46,6 +61,10 @@ def import_config(app, data: Dict[str, Any], mode: str = "replace") -> Dict[str,
     sites = [(s.get("id"), Site.model_validate(s["data"])) for s in data.get("sites", [])]
     streams = [(s.get("id"), Stream.model_validate(s["data"])) for s in data.get("streams", [])]
     glob = GlobalSettings.model_validate(data.get("global", {}))
+    for u in data.get("users") or []:
+        if u.get("role") not in ("viewer", "operator", "admin") or not str(u.get("username") or "").strip() \
+                or not str(u.get("password_hash") or "").startswith("scrypt$"):
+            raise ValueError(f"Неверная запись пользователя в файле экспорта: {u.get('username')!r}")
     cert_map: Dict[int, int] = {}
     with db.transaction() as c:
         if mode == "replace":

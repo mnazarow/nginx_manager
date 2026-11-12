@@ -1,5 +1,5 @@
 // Сайты: список, мастер создания, полный редактор с предпросмотром конфигурации.
-import { api, showError } from '../api.js';
+import { api } from '../api.js';
 import { h, mount, icon, badge, toast, modal, confirmDlg, promptDlg, table, tabs, loading, codeBlock, debounce, fmtNum, fmtBps, fmtPct, fmtMs,
   fmtAgo, empty, SITE_TYPES, copyBtn, countryName } from '../ui.js';
 import { model, defaults, renderFields, errorsToMap, SCHEMA } from '../forms.js';
@@ -275,7 +275,7 @@ async function editor(root, id) {
         h('p', {}, id ? (site.domains || []).join(', ') : 'Заполните основные параметры; всё остальное имеет безопасные значения по умолчанию.')),
       h('div', { class: 'row' }, status,
         h('label', { class: 'switch small', title: 'Показать редко используемые параметры' }, h('input', { type: 'checkbox', checked: advanced, onchange: (e) => { advanced = e.target.checked; localStorage.setItem('nm-adv', advanced ? '1' : '0'); drawForm(); } }), h('span', { class: 'track' }), 'Расширенные'),
-        h('button', { class: 'btn', onclick: test }, icon('check'), 'Проверить'),
+        ro ? null : h('button', { class: 'btn', onclick: test, title: 'Проверить черновик через nginx -t, ничего не сохраняя' }, icon('check'), 'Проверить'),
         ro ? null : h('button', { class: 'btn', onclick: () => save(false) }, 'Сохранить'),
         ro ? null : h('button', { class: 'btn primary', onclick: () => save(true) }, 'Сохранить и применить'))),
     h('div', { class: 'grid split' },

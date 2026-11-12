@@ -86,7 +86,7 @@ certbot certonly --dns-cloudflare --dns-cloudflare-credentials /root/.cf.ini \
 ![Добавление сертификата](images/cert-dialog.png)
 
 <!-- GEN:certificate -->
-<!-- Сгенерировано tools/gen_reference.py из app/models.py -->
+<!-- Сгенерировано tools/gen_reference.py — не редактируйте вручную -->
 
 <a id="f-certificate-type"></a>
 

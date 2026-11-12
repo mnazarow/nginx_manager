@@ -1,6 +1,6 @@
 // Автоматическая диагностика с рекомендациями и исправлениями в один клик.
 import { api } from '../api.js';
-import { h, mount, icon, badge, toast, modal, fmtAgo, fmtNum, kpi, loading, confirmDlg } from '../ui.js';
+import { h, mount, icon, badge, toast, modal, fmtAgo, fmtNum, kpi, confirmDlg } from '../ui.js';
 import { can, refreshState } from '../app.js';
 
 const ICON = { ok: '✓', warn: '!', fail: '✕', info: 'i', skip: '–' };

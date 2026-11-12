@@ -81,7 +81,9 @@ def create_app() -> FastAPI:
     @app.exception_handler(Exception)
     async def _any(request: Request, exc: Exception):
         log.exception("Необработанная ошибка: %s %s", request.method, request.url.path)
-        return JSONResponse({"detail": f"Внутренняя ошибка: {type(exc).__name__}: {exc}"}, status_code=500)
+        # текст исключения может содержать пути и внутренние данные — он только в журнале сервиса
+        return JSONResponse({"detail": f"Внутренняя ошибка сервера ({type(exc).__name__}). Подробности — в журнале "
+                                       "сервиса: journalctl -u nginx-manager"}, status_code=500)
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):

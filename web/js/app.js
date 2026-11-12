@@ -1,6 +1,6 @@
 // Каркас приложения: вход, навигация, верхняя панель, применение конфигурации.
 import { api, live, setUnauthorizedHandler, showError } from './api.js';
-import { h, mount, icon, toast, modal, badge, fmtDur, diffBlock, codeBlock, loading, clear } from './ui.js';
+import { h, mount, icon, toast, modal, badge, fmtDur, diffBlock, loading, clear } from './ui.js';
 import { setSchema } from './forms.js';
 import { openPageHelp } from './help.js';
 import { openPalette, installPalette } from './palette.js';

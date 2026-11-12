@@ -120,7 +120,8 @@ if [ ! -x "$INSTALL_DIR/venv/bin/python" ]; then
   run "$PY" -m venv "$INSTALL_DIR/venv" || rollback
 fi
 retry 3 run "$INSTALL_DIR/venv/bin/pip" install $PIP_OPTS --upgrade -r "$INSTALL_DIR/requirements.txt" || rollback
-if [ "${WITH_GEOIP:-0}" = 1 ] || "$INSTALL_DIR/venv/bin/python" -c 'import maxminddb' 2>/dev/null; then
+if [ "${WITH_GEOIP:-0}" = 1 ] || "$INSTALL_DIR/venv/bin/python" -c 'import maxminddb' 2>/dev/null \
+    || ls "${DATA_DIR:-/var/lib/nginx-manager}"/geoip/*.mmdb >/dev/null 2>&1; then
   run "$INSTALL_DIR/venv/bin/pip" install $PIP_OPTS --upgrade -r "$INSTALL_DIR/requirements-optional.txt" || true
 fi
 "$INSTALL_DIR/venv/bin/python" -c 'import fastapi, uvicorn, psutil, pydantic' 2>>"$LOG_FILE" || rollback

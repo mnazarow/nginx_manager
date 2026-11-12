@@ -837,7 +837,11 @@ class Site(Model):
     custom_server: str = F("", label="Свои директивы в server { }", tab="advanced", ui="code",
                            help="Вставляются в HTTPS-блок server (или HTTP, если HTTPS выключен)",
                            doc="Для возможностей, которых нет в форме. Конфигурация всегда проверяется "
-                               "nginx -t перед применением — ошибка не сломает работающий nginx.")
+                               "nginx -t перед применением — ошибка не сломает работающий nginx. "
+                               "Оператор не может добавить сюда директивы, которые читают или создают файлы от имени "
+                               "root или выполняют код: include (кроме mime.types, *_params, fastcgi.conf и "
+                               "snippets/), журналы вне /var/log/nginx, *_temp_path, *_cache_path, Lua, Perl, njs — "
+                               "это может только администратор.")
     custom_location: str = F("", label="Свои директивы в location / { }", tab="advanced", ui="code")
     custom_http: str = F("", label="Свои директивы на уровне http (map, geo...)", tab="advanced", ui="code", adv=True)
 

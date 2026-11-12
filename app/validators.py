@@ -238,3 +238,81 @@ def parse_size_bytes(v: str) -> int:
     if not m:
         return 0
     return int(m.group(1)) * {"": 1, "k": 1024, "m": 1024 ** 2, "g": 1024 ** 3}[m.group(2).lower()]
+
+
+# -----------------------------------------------------------------------------
+#  «Свои директивы»: что может добавить только администратор
+# -----------------------------------------------------------------------------
+# nginx читает конфигурацию и открывает журналы от root (мастер-процесс), поэтому некоторые директивы в
+# произвольном тексте дают больше, чем «настроить сайт»: include показывает строки любого файла в ошибке nginx -t,
+# журнал или временный каталог вне стандартных мест создаёт файл от root (например, в /etc/cron.d), модули
+# Lua/Perl/njs выполняют код. Администратор может всё (он и так управляет сервером), оператор и наблюдатель — нет.
+RISKY_DIRECTIVES = {
+    "include", "load_module", "env", "ssl_engine", "xslt_stylesheet",
+    "client_body_temp_path", "proxy_temp_path", "fastcgi_temp_path", "uwsgi_temp_path", "scgi_temp_path",
+    "proxy_cache_path", "fastcgi_cache_path", "uwsgi_cache_path", "scgi_cache_path",
+}
+RISKY_PREFIXES = ("lua_", "perl", "js_", "access_by_", "content_by_", "rewrite_by_", "init_by_", "init_worker_by_",
+                  "set_by_", "header_filter_by_", "body_filter_by_", "log_by_", "balancer_by_", "ssl_certificate_by_")
+SAFE_INCLUDES = {"mime.types", "fastcgi_params", "fastcgi.conf", "scgi_params", "uwsgi_params", "proxy_params"}
+SAFE_LOG_DIR = "/var/log/nginx/"
+
+
+def _raw_statements(text: str):
+    """Директивы произвольного текста конфигурации: (имя, аргументы) — без учёта вложенности, так что лишняя
+    закрывающая скобка или блок не спрячут директиву. Кавычки и комментарии — как у nginx."""
+    args, i, n = [], 0, len(text)
+    while i < n:
+        c = text[i]
+        if c.isspace():
+            i += 1
+        elif c == "#" and not args or c == "#" and text[i - 1].isspace():
+            while i < n and text[i] != "\n":
+                i += 1
+        elif c in "{};":
+            if args:
+                yield args[0], args[1:]
+            args = []
+            i += 1
+        elif c in "\"'":
+            j, buf = i + 1, []
+            while j < n and text[j] != c:
+                if text[j] == "\\" and j + 1 < n:
+                    buf.append(text[j + 1])
+                    j += 2
+                    continue
+                buf.append(text[j])
+                j += 1
+            args.append("".join(buf))
+            i = j + 1
+        else:
+            j = i
+            while j < n and not text[j].isspace() and text[j] not in "{};\"'":
+                j += 2 if text[j] == "\\" else 1
+            args.append(text[i:j].replace("\\", ""))
+            i = j
+    if args:
+        yield args[0], args[1:]
+
+
+def _safe_path(p: str, base: str) -> bool:
+    import posixpath
+    return p.startswith(base) and ".." not in p.split("/") and posixpath.normpath(p).startswith(base.rstrip("/"))
+
+
+def risky_raw_directives(text: str) -> list:
+    """Директивы из текста «Своих директив», которые может добавить только администратор (см. RISKY_DIRECTIVES)."""
+    out = []
+    for name, args in _raw_statements(text or ""):
+        low = name.lower()
+        bad = low in RISKY_DIRECTIVES or low.startswith(RISKY_PREFIXES) or "_by_lua" in low
+        if low == "include" and len(args) == 1:
+            a = args[0]
+            bad = not (a in SAFE_INCLUDES or a.split("/")[-1] in SAFE_INCLUDES and _safe_path(a, "/etc/nginx/")
+                       or _safe_path(a, "/etc/nginx/snippets/") or (a.startswith("snippets/") and ".." not in a))
+        if low in ("access_log", "error_log") and args:
+            a = args[0]
+            bad = not (a == "off" or a.startswith(("syslog:", "memory:", "stderr")) or _safe_path(a, SAFE_LOG_DIR))
+        if bad:
+            out.append(" ".join([name] + args[:1]))
+    return out

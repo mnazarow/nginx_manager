@@ -44,6 +44,12 @@ async def main(a):
         await page.fill("input[autocomplete=current-password]", a.password)
         await page.click("button[type=submit]")
         await page.wait_for_selector(".sidebar", timeout=15000)
+        if not a.toasts:  # всплывающие уведомления о событиях стенда (бэкенд упал/поднялся) только мешают снимкам
+            hide = ".toasts{display:none!important}"
+            await page.add_style_tag(content=hide)
+            await page.add_init_script("document.addEventListener('DOMContentLoaded', () => {"
+                                       f"const s = document.createElement('style'); s.textContent = '{hide}';"
+                                       "document.head.appendChild(s); });")
         only = set(a.only.split(",")) if a.only else None
         for name, hash_, wait in PAGES:
             if (only and name not in only) or a.only == "none":
@@ -212,6 +218,8 @@ async def mobile(browser, a):
     await page.fill("input[autocomplete=current-password]", a.password)
     await page.click("button[type=submit]")
     await page.wait_for_selector(".main", timeout=15000)
+    if not a.toasts:
+        await page.add_style_tag(content=".toasts{display:none!important}")
     shots = []
     await page.goto(f"{a.url}/#/")
     await page.wait_for_timeout(6000)
@@ -249,4 +257,5 @@ if __name__ == "__main__":
     ap.add_argument("--full", action="store_true")
     ap.add_argument("--only", default="")
     ap.add_argument("--extras", action="store_true", help="снимки диалогов и тёмной темы")
+    ap.add_argument("--toasts", action="store_true", help="не скрывать всплывающие уведомления")
     sys.exit(asyncio.run(main(ap.parse_args())))

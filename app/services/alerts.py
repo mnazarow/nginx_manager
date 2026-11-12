@@ -14,6 +14,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ..db import Database
 from ..models import ALERT_METRICS, AlertChannel, AlertRule
+from ..utils import spawn
 
 log = logging.getLogger("nm.alerts")
 
@@ -81,6 +82,7 @@ class AlertEngine:
         self.broadcast = broadcast
         self.state: Dict[int, Dict[str, Any]] = {}
         self.task: Optional[asyncio.Task] = None
+        self.site_name: Callable[[str], str] = lambda sid: sid  # имя сайта для текста уведомления (задаёт ядро)
 
     def rules(self) -> List[Tuple[int, AlertRule]]:
         out = []
@@ -92,9 +94,12 @@ class AlertEngine:
         return out
 
     def channels(self, ids: List[int]) -> List[Tuple[int, AlertChannel]]:
-        out = []
+        """Включённые каналы из списка правила. Пустой список — «только в панели»: никуда не отправлять."""
+        out: List[Tuple[int, AlertChannel]] = []
+        if not ids:
+            return out
         for r in self.db.query("SELECT id, data FROM alert_channels"):
-            if not ids or r["id"] in ids:
+            if r["id"] in ids:
                 try:
                     ch = AlertChannel.model_validate(json.loads(r["data"]))
                     if ch.enabled:
@@ -152,9 +157,10 @@ class AlertEngine:
             st["value"] = value
             st["detail"] = detail
             if value is None:
-                breach = False
-            else:
-                breach = value > rule.threshold if rule.operator == ">" else value < rule.threshold
+                # нет данных (мало запросов в окне и т.п.) — это не восстановление и не срабатывание:
+                # состояние не меняется, иначе открытый инцидент «закрывался» бы с текстом «None — норма»
+                continue
+            breach = value > rule.threshold if rule.operator == ">" else value < rule.threshold
             label, unit = ALERT_METRICS.get(rule.metric, (rule.metric, ""))
             vtxt = f"{value:.2f}".rstrip("0").rstrip(".") if isinstance(value, float) else str(value)
             if breach:
@@ -167,7 +173,7 @@ class AlertEngine:
                     if detail:
                         msg += f"\n{detail}"
                     if rule.site != "*":
-                        msg += f"\nСайт: {rule.site}"
+                        msg += f"\nСайт: {self.site_name(rule.site)}"
                     res = await self.notify(rule, rule.name, msg, rule.severity,
                                             {"metric": rule.metric, "value": value, "state": "firing"}, rid)
                     st["last_notify"] = now
@@ -203,7 +209,7 @@ class AlertEngine:
             r = self.broadcast({"type": "alert", "rule": rule.name, "state": state, "severity": rule.severity,
                                 "message": msg})
             if asyncio.iscoroutine(r):
-                asyncio.get_running_loop().create_task(r)
+                spawn(r, name="alert-broadcast")
         except Exception:
             pass
 

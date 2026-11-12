@@ -79,6 +79,40 @@ def compact(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return out
 
 
+NGINX_PORT_TYPES = ("http_port_t", "http_cache_port_t")  # порты, на которых nginx (httpd_t) может слушать
+
+
+def selinux_port_types(semanage_out: str) -> Dict[tuple, str]:
+    """Вывод `semanage port -l` → {(протокол, порт): тип}. Диапазоны «10001-10010» разворачиваются."""
+    out: Dict[tuple, str] = {}
+    for line in semanage_out.splitlines():
+        m = re.match(r"^(\S+_t)\s+(tcp|udp|sctp|dccp)\s+(.+)$", line.strip())
+        if not m:
+            continue
+        typ, proto, ports = m.groups()
+        for part in ports.split(","):
+            part = part.strip()
+            if re.fullmatch(r"\d+-\d+", part):
+                a, b = (int(x) for x in part.split("-"))
+                if b - a <= 70000:
+                    for p in range(a, b + 1):
+                        out.setdefault((proto, p), typ)
+            elif part.isdigit():
+                out.setdefault((proto, int(part)), typ)
+    return out
+
+
+def selinux_port_problems(needed: List[tuple], types: Dict[tuple, str]) -> List[Dict[str, Any]]:
+    """Какие порты nginx не сможет занять: [(протокол, порт, кто)] → список проблем с текущим типом метки."""
+    out = []
+    for proto, port, who in needed:
+        typ = types.get((proto, port))
+        if typ in NGINX_PORT_TYPES:
+            continue
+        out.append({"proto": proto, "port": port, "who": who, "type": typ})
+    return out
+
+
 def plural(n: int, one: str, few: str, many: str) -> str:
     n = abs(n) % 100
     if 10 < n < 20:
@@ -631,6 +665,41 @@ class Diagnostics:
             res.append(R("selinux_net", g, "httpd_can_network_connect", FAIL,
                          "off — nginx не может подключаться к бэкендам (502, Permission denied)",
                          fix="selinux_net", fix_label="Разрешить (setsebool -P)"))
+        # порты: nginx может слушать только порты с меткой http_port_t / http_cache_port_t
+        if which("semanage"):
+            state = self.app.nginx.load_state()
+            needed = [("tcp", settings.stub_status_port, "stub_status панели")]
+            for _, s in state.sites:
+                if s.enabled:
+                    needed.append(("tcp", s.http_port, f"сайт «{s.name}»"))
+                    if s.ssl.enabled:
+                        needed.append(("tcp", s.https_port, f"сайт «{s.name}» (HTTPS)"))
+                        if s.ssl.http3:
+                            needed.append(("udp", s.https_port, f"сайт «{s.name}» (HTTP/3)"))
+            for _, st in state.streams:
+                if st.enabled:
+                    for proto in (("tcp", "udp") if st.protocol == "both" else (st.protocol,)):
+                        needed.append((proto, st.listen_port, f"поток «{st.name}»"))
+            needed = list({(p, n): (p, n, w) for p, n, w in needed}.values())
+            code, out = await asyncio.to_thread(run, ["semanage", "port", "-l"], 60)
+            probs = selinux_port_problems(needed, selinux_port_types(out)) if code == 0 else []
+            for pr in probs:
+                if pr["type"] is None:
+                    res.append(R(f"selinux_port_{pr['proto']}_{pr['port']}", g,
+                                 f"Порт {pr['port']}/{pr['proto']}", FAIL,
+                                 f"{pr['who']}: у порта нет метки http_port_t — nginx не сможет его занять "
+                                 "(bind() … Permission denied при перезагрузке)",
+                                 fix="selinux_port", fix_label="Разрешить порт для nginx",
+                                 fix_args={"proto": pr["proto"], "port": pr["port"]}))
+                else:
+                    res.append(R(f"selinux_port_{pr['proto']}_{pr['port']}", g,
+                                 f"Порт {pr['port']}/{pr['proto']}", FAIL,
+                                 f"{pr['who']}: порт помечен как {pr['type']} — nginx не сможет его занять",
+                                 hint=f"Порт закреплён за другой службой. Если её нет на этом сервере, выполните: "
+                                      f"semanage port -m -t http_port_t -p {pr['proto']} {pr['port']} "
+                                      f"(изменит метку для всех программ). Или выберите другой порт."))
+            if code == 0 and not probs:
+                res.append(R("selinux_ports", g, "Порты nginx", OK, f"меток достаточно ({len(needed)} портов)"))
         return res
 
     async def c_system(self) -> List[Dict[str, Any]]:
@@ -870,6 +939,14 @@ class Diagnostics:
                     outs.append((await asyncio.to_thread(run, ["firewall-cmd", "--permanent", f"--add-port={p}/tcp"]))[1])
                 outs.append((await asyncio.to_thread(run, ["firewall-cmd", "--reload"]))[1])
             return {"ok": True, "output": "\n".join(outs)}
+        if action == "selinux_port":
+            proto = str(args.get("proto", "tcp"))
+            port = int(args.get("port", 0))
+            if proto not in ("tcp", "udp") or not 1 <= port <= 65535:
+                return {"ok": False, "output": "некорректный порт"}
+            code, out = await asyncio.to_thread(run, ["semanage", "port", "-a", "-t", "http_port_t", "-p", proto,
+                                                      str(port)], 120)
+            return {"ok": code == 0, "output": out or f"порт {port}/{proto} помечен как http_port_t"}
         if action == "selinux_net":
             code, out = await asyncio.to_thread(run, ["setsebool", "-P", "httpd_can_network_connect", "1"], 120)
             return {"ok": code == 0, "output": out}

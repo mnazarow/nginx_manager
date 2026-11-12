@@ -1,6 +1,6 @@
 // Настройки самой панели.
 import { api } from '../api.js';
-import { h, mount, icon, toast, tabs, badge, modal, loading } from '../ui.js';
+import { h, mount, icon, toast, tabs, modal, loading } from '../ui.js';
 import { model, renderFields, errorsToMap, SCHEMA } from '../forms.js';
 import { applyDialog } from '../app.js';
 

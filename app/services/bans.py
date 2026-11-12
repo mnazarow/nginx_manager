@@ -193,7 +193,7 @@ class BanService:
         self.last_error = ""
         self.last_sync_ok: Optional[float] = None
         self.task: Optional[asyncio.Task] = None
-        self._lock = asyncio.Lock()
+        self._sync_lock: Optional[asyncio.Lock] = None  # создаётся в цикле событий (Python 3.9)
 
     # ------------------------------------------------------------------ данные
     def active(self) -> List[Dict[str, Any]]:
@@ -327,7 +327,9 @@ class BanService:
     async def sync(self, force: bool = False) -> Tuple[bool, str]:
         if not (self.dirty or force):
             return True, ""
-        async with self._lock:
+        if self._sync_lock is None:
+            self._sync_lock = asyncio.Lock()
+        async with self._sync_lock:
             if time.time() - self.last_sync < self.SYNC_MIN_INTERVAL and not force:
                 return True, "отложено"
             self.last_sync = time.time()

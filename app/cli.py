@@ -236,7 +236,8 @@ def cmd_import(a) -> int:
     from .core import App
     from .services.backup import db_backup, import_config
     app = App()
-    data = json.load(open(a.file, encoding="utf-8"))
+    with open(a.file, encoding="utf-8") as f:
+        data = json.load(f)
     db_backup(app, "before-import")
     print(import_config(app, data, a.mode))
     print("Импорт завершён. Примените конфигурацию: nmctl apply")
@@ -309,9 +310,22 @@ def main(argv=None) -> int:
     if not a.cmd:
         ap.print_help()
         return 0
-    return {"status": cmd_status, "apply": cmd_apply, "test": cmd_test, "diag": cmd_diag, "user": cmd_user,
-            "allowlist": cmd_allowlist, "backup": cmd_backup, "export": cmd_export, "import": cmd_import,
-            "versions": cmd_versions, "rollback": cmd_rollback, "sites": cmd_sites}[a.cmd](a)
+    cmd = {"status": cmd_status, "apply": cmd_apply, "test": cmd_test, "diag": cmd_diag, "user": cmd_user,
+           "allowlist": cmd_allowlist, "backup": cmd_backup, "export": cmd_export, "import": cmd_import,
+           "versions": cmd_versions, "rollback": cmd_rollback, "sites": cmd_sites}[a.cmd]
+    from .nginx.manager import ApplyError
+    try:
+        return cmd(a)
+    except ApplyError as e:  # понятное сообщение вместо трассировки
+        print(f"{C['fail']}✗ {e}{C['r']}", file=sys.stderr)
+        if e.output:
+            print(e.output.strip()[-3000:], file=sys.stderr)
+        return 1
+    except (ValueError, OSError) as e:  # в т.ч. ошибки JSON и проверки данных, нет файла, нет прав
+        print(f"{C['fail']}✗ {e}{C['r']}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 130
 
 
 if __name__ == "__main__":

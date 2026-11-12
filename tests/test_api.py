@@ -3,6 +3,7 @@
 Сервис запускается целиком (с фоновыми задачами) на временных каталогах из conftest.py; nginx не
 перезагружается — конфигурация в тестах не применяется.
 """
+import json
 import time
 
 import pytest
@@ -233,6 +234,27 @@ def test_websocket_tick(admin):
     with admin.websocket_connect("/api/ws") as ws:
         msg = ws.receive_json()
         assert msg["type"] in ("tick", "hello", "state")
+        # мусор от клиента не рвёт соединение и не ломает общий цикл рассылки
+        for junk in ("не json", "[1, 2]", '{"type": "live", "on": true, "filter": {"min_rt": "abc", "ip": [1], "q": 5}}',
+                     '{"type": "live", "on": true, "filter": "x"}', '{"type": "errors", "on": 1}'):
+            ws.send_text(junk)
+        ws.send_text('{"type": "ping"}')
+        for _ in range(10):
+            if ws.receive_json()["type"] == "pong":
+                break
+        else:
+            raise AssertionError("нет ответа на ping")
+
+
+def test_live_filter_sanitized():
+    from app.api.routes import _live_filter
+    from app.core import App
+    f = _live_filter({"site": 3, "status": "5xx", "ip": ["x"], "min_rt": "oops", "q": {"a": 1}, "evil": "1"})
+    assert f == {"site": "3", "status": "5xx", "hide_bots": False}
+    item = {"site": "3", "s": 502, "ip": "1.2.3.4", "u": "/x", "host": "h", "ua": "", "rt": 0.7, "bot": False}
+    assert App._match(item, f) and App._match(item, _live_filter({"min_rt": "500"}))
+    assert not App._match(item, _live_filter({"min_rt": 900}))
+    assert _live_filter(None) == {} and _live_filter([1]) == {}
 
 
 def test_thresholds(admin):
@@ -253,6 +275,7 @@ def test_report_preview(admin):
     for period in ("day", "week"):
         r = admin.get("/api/reports/preview", params={"period": period}).json()
         assert r["title"].startswith("Отчёт") and "Запросов:" in r["text"] and "Сейчас:" in r["text"]
+        assert "тыс," not in r["text"] and "млн," not in r["text"]
     assert admin.post("/api/reports/send", json={"period": "day", "channels": []}, headers=H).status_code == 400
 
 
@@ -319,6 +342,8 @@ def test_sites_bulk(admin):
     r = admin.post("/api/sites/bulk", json={"ids": ids, "action": "delete"}, headers=H).json()
     assert r["changed"] == 3
     assert all(admin.get(f"/api/sites/{i}").status_code == 404 for i in ids)
+    rec = admin.get("/api/audit", params={"q": "sites_bulk", "limit": 1}).json()[0]
+    assert rec["target"] == "delete" and json.loads(rec["details"])["changed"] == 3
 
 
 def test_geo_status_and_site_rules(admin):
@@ -355,3 +380,151 @@ def test_sla_and_heatmap(admin, client):
     hm = admin.get("/api/stats/heatmap", params={"weeks": 1}).json()
     assert len(hm) >= 24 * 6 and hm[0][1] == 1000
     db.execute("DELETE FROM stats_hour WHERE site='*'")
+
+
+# ---------------------------------------------------------------- устойчивость: мусор во все маршруты
+UNSAFE = {"/api/nginx/{action}", "/api/config/apply", "/api/config/versions/{vid}/rollback", "/api/diagnostics/fix",
+          "/api/backup/import", "/api/alerts/channels/test", "/api/reports/send", "/api/certs", "/api/certs/{cid}/renew",
+          "/api/import/nginx/commit", "/api/users/{uid}", "/api/auth/password", "/api/auth/logout",
+          "/api/auth/sessions/{sid}", "/api/backup/create", "/api/geo/rebuild", "/api/diagnostics/run",
+          "/api/health/check", "/api/certs/selftest"}
+GARBAGE_QUERY = [{}, {"from": "abc", "to": "-1", "limit": "-5", "offset": "x", "site": "../../etc/passwd",
+                      "minutes": "1e309", "days": "0", "weeks": "999", "slo": "NaN", "points": "0", "q": "%' OR 1=1 --",
+                      "status": "5xx", "kind": "bogus", "seconds": "-1", "period": "year", "key": "\x00"}]
+GARBAGE_BODY = [None, {}, {"x": [1, {"y": None}]}, [], "строка", {"name": "\x00" * 3, "ids": ["a"], "minutes": -1}]
+
+
+def test_no_server_errors_on_garbage(admin):
+    import itertools
+
+    from fastapi.routing import APIRoute
+
+    from app.api.routes import router
+    problems, calls = [], 0
+    for route in router.routes:
+        if not isinstance(route, APIRoute) or not route.path.startswith("/api/") or route.path in UNSAFE:
+            continue
+        paths = [route.path]
+        if "{" in route.path:
+            paths = [route.path.replace("{" + p + "}", v) for p in ("sid", "vid", "cid", "rid", "uid", "tid", "ban_id",
+                                                                   "stid", "name", "action", "key", "kind")
+                     for v in ("999999", "abc", "..%2F..%2Fetc")
+                     if "{" + p + "}" in route.path] or [route.path]
+            paths = [p for p in paths if "{" not in p]
+        for method, path in itertools.product(route.methods, paths):
+            if method == "GET":
+                for q in GARBAGE_QUERY:
+                    r = admin.get(path, params=q)
+                    calls += 1
+                    if r.status_code >= 500:
+                        problems.append((method, path, q, r.status_code, r.text[:200]))
+            else:
+                for body in GARBAGE_BODY:
+                    r = admin.request(method, path, json=body, headers=H)
+                    calls += 1
+                    if r.status_code >= 500:
+                        problems.append((method, path, body, r.status_code, r.text[:200]))
+    assert calls > 300
+    assert not problems, problems[:15]
+
+
+def test_every_route_requires_auth():
+    """Без входа доступны только вход, выход и версия; все остальные маршруты API отвечают 401/403."""
+    from fastapi.routing import APIRoute
+
+    from app.api.routes import router
+    from app.main import create_app
+    public = {("POST", "/api/auth/login"), ("POST", "/api/auth/logout"), ("GET", "/api/version")}
+    leaks = []
+    with TestClient(create_app()) as c:
+        for r in router.routes:
+            if not isinstance(r, APIRoute):
+                continue
+            path = r.path
+            for p in ("sid", "vid", "cid", "rid", "uid", "tid", "ban_id", "stid", "name", "action", "key", "kind"):
+                path = path.replace("{" + p + "}", "1")
+            for m in r.methods:
+                if (m, r.path) in public:
+                    continue
+                code = c.request(m, path, json={}, headers=H).status_code
+                if code not in (401, 403):
+                    leaks.append((m, r.path, code))
+        assert c.get("/metrics").status_code == 401
+    assert not leaks, leaks
+
+
+def test_login_policy_enforced_on_server(admin, client):
+    from app.utils import totp_code
+    r = admin.post("/api/users", json={"username": "tmpop", "password": "Temp-Passw0rd!", "role": "operator"}, headers=H)
+    assert r.status_code == 200
+    op = TestClient(client.app)
+    login = op.post("/api/auth/login", json={"username": "tmpop", "password": "Temp-Passw0rd!"}).json()
+    assert login["must_change_password"] is True
+    assert op.get("/api/sites").status_code == 200                       # смотреть можно
+    r = op.post("/api/sites", json=SITE, headers=H)
+    assert r.status_code == 403 and "временный пароль" in r.json()["detail"]   # изменять — нет
+    r = op.post("/api/auth/tokens", json={"name": "обход", "days": 1}, headers=H)  # и токеном политику не обойти
+    assert r.status_code == 403
+    assert op.post("/api/auth/password", json={"current": "Temp-Passw0rd!", "new": "Fresh-Passw0rd!"},
+                   headers=H).status_code == 200
+    op = TestClient(client.app)
+    assert op.post("/api/auth/login", json={"username": "tmpop", "password": "Fresh-Passw0rd!"}).status_code == 200
+    r = op.post("/api/sites", json=dict(SITE, name="Политика", domains=["policy.example.com"]), headers=H)
+    assert r.status_code == 200, r.text
+    admin.delete(f"/api/sites/{r.json()['id']}", headers=H)
+    # 2FA: код нельзя использовать повторно
+    sec = op.post("/api/auth/totp/setup", headers=H).json()["secret"]
+    assert op.post("/api/auth/totp/enable", json={"secret": sec, "code": totp_code(sec)}, headers=H).status_code == 200
+    c1, c2 = TestClient(client.app), TestClient(client.app)
+    assert c1.post("/api/auth/login", json={"username": "tmpop", "password": "Fresh-Passw0rd!"}).json() == {"totp_required": True}
+    code = totp_code(sec)
+    assert c1.post("/api/auth/login", json={"username": "tmpop", "password": "Fresh-Passw0rd!", "otp": code}).status_code == 200
+    r = c2.post("/api/auth/login", json={"username": "tmpop", "password": "Fresh-Passw0rd!", "otp": code})
+    assert r.status_code == 401 and "уже использован" in r.json()["detail"]
+    # обязательная 2FA для администраторов: включить её без своей 2FA нельзя
+    panel = admin.get("/api/settings/panel").json()
+    r = admin.put("/api/settings/panel", json=dict(panel, require_2fa_admin=True), headers=H)
+    assert r.status_code == 400 and "двухфакторную" in r.json()["detail"]
+    # неизвестный пользователь и неверный пароль неотличимы
+    a = client.post("/api/auth/login", json={"username": "no-such-user", "password": "x"}).json()["detail"]
+    b = client.post("/api/auth/login", json={"username": "tmpop", "password": "wrong"}).json()["detail"]
+    assert a == b
+    uid = next(u["id"] for u in admin.get("/api/users").json() if u["username"] == "tmpop")
+    assert admin.delete(f"/api/users/{uid}", headers=H).status_code == 200
+
+
+def test_raw_directives_policy(admin, client):
+    """Оператор не может добавить в «Свои директивы» то, что читает файлы или выполняет код от root;
+    наблюдатель не может запускать nginx -t для черновика."""
+    r = admin.post("/api/users", json={"username": "rawop", "password": "Raw-Passw0rd!", "role": "operator"}, headers=H)
+    uid = r.json()["id"]
+    admin.put(f"/api/users/{uid}", json={"password": "Raw-Passw0rd2!"}, headers=H)
+    nmapp = client.app.state.nm
+    nmapp.db.execute("UPDATE users SET must_change_password=0 WHERE id=?", (uid,))
+    op = TestClient(client.app)
+    assert op.post("/api/auth/login", json={"username": "rawop", "password": "Raw-Passw0rd2!"}).status_code == 200
+    evil = dict(SITE, name="Сырые", domains=["raw.example.com"], custom_server="include /etc/shadow;")
+    r = op.post("/api/sites", json=evil, headers=H)
+    assert r.status_code == 403 and "include /etc/shadow" in r.json()["detail"]
+    r = op.post("/api/sites/preview", params={"test": 1}, json=evil, headers=H)
+    assert r.status_code == 403
+    for txt in ("access_log /etc/cron.d/x;", "location /l { content_by_lua_block { ngx.say(1) } }"):
+        assert op.post("/api/sites", json=dict(evil, custom_server=txt), headers=H).status_code == 403, txt
+    ok = dict(evil, custom_server="add_header X-Test 1;\naccess_log /var/log/nginx/raw.log;")
+    r = op.post("/api/sites", json=ok, headers=H)
+    assert r.status_code == 200, r.text
+    sid = r.json()["id"]
+    # администратор добавил include — оператор по-прежнему может менять остальные поля сайта
+    data = admin.get(f"/api/sites/{sid}").json()["data"]
+    data["custom_server"] += "\ninclude snippets/../../../etc/passwd;"
+    assert admin.put(f"/api/sites/{sid}", json=data, headers=H).status_code == 200
+    data["client_max_body_size"] = "20m"
+    assert op.put(f"/api/sites/{sid}", json=data, headers=H).status_code == 200
+    data["locations"] = [{"path": "/x", "custom": "include /etc/hosts;"}]
+    assert op.put(f"/api/sites/{sid}", json=data, headers=H).status_code == 403
+    # наблюдатель видит черновик, но не запускает nginx -t
+    nmapp.db.execute("UPDATE users SET role='viewer' WHERE id=?", (uid,))
+    assert op.post("/api/sites/preview", json=ok, headers=H).status_code == 200
+    assert op.post("/api/sites/preview", params={"test": 1}, json=ok, headers=H).status_code == 403
+    admin.delete(f"/api/sites/{sid}", headers=H)
+    admin.delete(f"/api/users/{uid}", headers=H)

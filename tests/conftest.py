@@ -1,5 +1,6 @@
 """Общая подготовка тестов: все пути сервиса — во временном каталоге (до импорта app.config)."""
 import os
+import warnings
 import sys
 import tempfile
 from pathlib import Path
@@ -13,3 +14,6 @@ os.environ.update(NM_DATA_DIR=str(TMP / "data"), NM_MANAGED_DIR=str(TMP / "manag
                   NM_DISABLE_COLLECTOR="1", NM_TEST_TMP=str(TMP), NM_BIND_PORT="18088", NM_STUB_STATUS_PORT="18089")
 for d in ("data", "managed", "logs", "cache"):
     (TMP / d).mkdir(parents=True, exist_ok=True)
+
+# консольные команды открывают свои соединения с БД и не закрывают их — в отдельном процессе это нормально
+warnings.filterwarnings("ignore", category=ResourceWarning)

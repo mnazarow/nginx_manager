@@ -1,6 +1,6 @@
 // Состояние бэкендов: активные проверки, задержка, доступность, история.
 import { api } from '../api.js';
-import { h, mount, icon, badge, stateBadge, fmtMs, fmtAgo, fmtPct, fmtDur, toast, card, kpi, table, segmented, debounce } from '../ui.js';
+import { h, mount, icon, badge, stateBadge, fmtMs, fmtAgo, fmtPct, toast, card, kpi, table, segmented, debounce } from '../ui.js';
 import { hintKpi } from '../advice.js';
 
 const isProblem = (x) => x.state === 'down' || (x.uptime_pct != null && x.uptime_pct < 99);

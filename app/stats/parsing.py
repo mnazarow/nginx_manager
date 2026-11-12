@@ -19,8 +19,11 @@ def _f(v: Any) -> float:
     """Числа nginx: '-', '0.012', '0.010, 0.004 : 0.002' (несколько бэкендов) → сумма."""
     if not v or v == "-":
         return 0.0
+    if not isinstance(v, (str, int, float)):
+        return 0.0
     try:
-        return float(v)
+        f = float(v)
+        return f if f == f and abs(f) != float("inf") else 0.0  # NaN и бесконечность — не числа nginx
     except ValueError:
         total = 0.0
         for part in re.split(r"[,:]\s*", v):
@@ -52,16 +55,23 @@ def parse_access(line: str) -> Optional[Dict[str, Any]]:
     if not line or line[0] != "{":
         return None
     try:
-        d = json.loads(line)
+        raw = json.loads(line)
     except ValueError:
         return None
+    if not isinstance(raw, dict):
+        return None
+    # строка журнала nm_json всегда содержит время и код ответа; обрывки (ротация, ручная правка) пропускаем
+    ts, status = _f(raw.get("t")), _i(raw.get("s"))
+    if not ts or not 100 <= status <= 999:
+        return None
+    d = {k: v if isinstance(v, str) else ("" if v is None else str(v)) for k, v in raw.items()}
     uri = d.get("u", "")
     path = uri.split("?", 1)[0]
     ua_addr = d.get("ua", "")
     upstream = ua_addr.split(",")[-1].strip() if ua_addr and ua_addr != "-" else ""
     tls = d.get("tls", "")
     return {
-        "ts": _f(d.get("t")) or time.time(),
+        "ts": ts,
         "site": d.get("site") or "-",
         "host": d.get("host", ""),
         "ip": d.get("ip", ""),

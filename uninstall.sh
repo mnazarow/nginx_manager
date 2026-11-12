@@ -52,22 +52,30 @@ echo
 confirm "Продолжить?" || { echo "Отменено."; exit 1; }
 
 TS="$(date +%Y%m%d-%H%M%S)"
+# сначала останавливаем сервис: иначе база меняется во время архивации и копия получается несогласованной
+step "Остановка сервиса"
+service_stop
+ok "сервис остановлен"
+
 if [ "$DO_BACKUP" = 1 ] && [ -d "$DATA_DIR" ]; then
   step "Финальная резервная копия"
   F="/root/nginx-manager-final-backup-$TS.tar.gz"
   [ -x /usr/local/bin/nmctl ] && /usr/local/bin/nmctl backup >>"$LOG_FILE" 2>&1 || true
-  tar -czf "$F" -C / "${DATA_DIR#/}" "${CONF_DIR#/}" "${MANAGED_DIR#/}" "${NGINX_CONF#/}" 2>>"$LOG_FILE" && chmod 600 "$F" && ok "$F" || warn "резервная копия создана частично"
+  # в копии хеши паролей и закрытые ключи — файл доступен только root, даже если архивация прошла с ошибкой
+  ( umask 077; tar -czf "$F" -C / "${DATA_DIR#/}" "${CONF_DIR#/}" "${MANAGED_DIR#/}" "${NGINX_CONF#/}" 2>>"$LOG_FILE" )
+  rc=$?
+  chmod 600 "$F" 2>/dev/null || true
+  if [ "$rc" = 0 ]; then ok "$F"; else warn "резервная копия создана с предупреждениями ($F, подробности в $LOG_FILE)"; fi
 fi
 
-step "Остановка сервиса"
-service_stop
+step "Удаление сервиса"
 if has_systemd; then
   systemctl disable nginx-manager.service >/dev/null 2>&1 || true
   rm -f "$UNIT_FILE" /etc/systemd/system/nginx.service.d/nginx-manager.conf
   rmdir /etc/systemd/system/nginx.service.d 2>/dev/null || true
   systemctl daemon-reload
 fi
-ok "сервис остановлен и удалён"
+ok "сервис удалён"
 
 step "Конфигурация nginx"
 NGINX_BIN="$(command -v nginx || echo /usr/sbin/nginx)"

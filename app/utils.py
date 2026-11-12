@@ -18,6 +18,20 @@ from typing import List, Optional, Sequence, Tuple, Union
 # ---------------------------------------------------------------------------
 #  Запуск внешних команд
 # ---------------------------------------------------------------------------
+
+_BACKGROUND: set = set()
+
+
+def spawn(coro, name: Optional[str] = None) -> "asyncio.Task":
+    """Запустить корутину в фоне, удерживая ссылку на задачу до её завершения.
+
+    Цикл событий хранит на задачи только слабые ссылки: задача без внешней ссылки может быть собрана сборщиком
+    мусора посреди работы (например, выпуск сертификата или рассылка уведомления)."""
+    task = asyncio.get_running_loop().create_task(coro, name=name)
+    _BACKGROUND.add(task)
+    task.add_done_callback(_BACKGROUND.discard)
+    return task
+
 def run(cmd: Sequence[str], timeout: float = 60, input: Optional[str] = None,
         env: Optional[dict] = None) -> Tuple[int, str]:
     """Выполнить команду, вернуть (код, stdout+stderr). Никогда не бросает исключение."""
@@ -143,6 +157,18 @@ def totp_code(secret: str, t: Optional[float] = None, step: int = 30, digits: in
     o = h[-1] & 0x0F
     code = (struct.unpack(">I", h[o:o + 4])[0] & 0x7FFFFFFF) % (10 ** digits)
     return str(code).zfill(digits)
+
+
+def totp_step(secret: str, code: str, window: int = 1) -> Optional[int]:
+    """Номер 30-секундного шага, которому соответствует код (с допуском ±window), или None."""
+    code = (code or "").strip().replace(" ", "")
+    if not code.isdigit():
+        return None
+    now = time.time()
+    for i in range(-window, window + 1):
+        if hmac.compare_digest(totp_code(secret, now + i * 30), code):
+            return int((now + i * 30) // 30)
+    return None
 
 
 def totp_verify(secret: str, code: str, window: int = 1) -> bool:

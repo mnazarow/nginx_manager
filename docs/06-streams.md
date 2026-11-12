@@ -55,7 +55,7 @@ stream {
 ## Справочник параметров
 
 <!-- GEN:stream -->
-<!-- Сгенерировано tools/gen_reference.py из app/models.py -->
+<!-- Сгенерировано tools/gen_reference.py — не редактируйте вручную -->
 
 <a id="f-stream-name"></a>
 

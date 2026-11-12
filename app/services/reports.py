@@ -65,7 +65,8 @@ def build(app, period: str = "day", start: Optional[float] = None, end: Optional
     title = (f"Отчёт за {d0:%d.%m.%Y}" if period == "day" else f"Отчёт за неделю {d0:%d.%m}–{d1:%d.%m.%Y}")
     lines: List[str] = []
     n = cur["requests"]
-    lines.append(f"Запросов: {_num(n)}{_delta(n, prev['requests'])}, в среднем {cur['rps']:.1f} в секунду".replace(".", ","))
+    rps = f"{cur['rps']:.1f}".replace(".", ",")
+    lines.append(f"Запросов: {_num(n)}{_delta(n, prev['requests'])}, в среднем {rps} в секунду")
     if n:
         lines.append(f"Ошибки 5xx: {_pct(cur['err5_pct'], 2)} (было {_pct(prev['err5_pct'], 2)}) · 4xx: {_pct(cur['err4_pct'])}")
         lines.append(f"Время ответа p95: {cur['p95']:.0f} мс (было {prev['p95']:.0f} мс) · среднее бэкенда "
