@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 360" font-family="system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="13">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#52514e"/></marker>
+    <style>.b{fill:#fff;stroke:#c3c2b7;stroke-width:1.2}.o{fill:#fdf0e9;stroke:#eb6834;stroke-width:1.4}.p{fill:#e6f0fc;stroke:#2a78d6;stroke-width:1.4}.t{font-weight:600;font-size:13.5px;fill:#0b0b0b}.s{fill:#52514e;font-size:11.5px}.l{stroke:#52514e;stroke-width:1.4;fill:none;marker-end:url(#a)}.lab{fill:#52514e;font-size:11.5px}</style>
+  </defs>
+  <rect width="1100" height="360" fill="#fcfcfb"/>
+  <text x="550" y="34" text-anchor="middle" font-size="18" font-weight="700" fill="#0b0b0b">Выпуск сертификата Let's Encrypt (HTTP-01, webroot)</text>
+  <rect class="p" x="20" y="70" width="200" height="110" rx="10"/><text class="t" x="120" y="96" text-anchor="middle">Панель</text><text class="s" x="120" y="118" text-anchor="middle">1. самотест: DNS + файл</text><text class="s" x="120" y="134" text-anchor="middle">через nginx и по домену</text><text class="s" x="120" y="150" text-anchor="middle">2. запуск certbot certonly</text><text class="s" x="120" y="166" text-anchor="middle">--webroot</text>
+  <rect class="b" x="290" y="70" width="210" height="110" rx="10"/><text class="t" x="395" y="96" text-anchor="middle">certbot</text><text class="s" x="395" y="118" text-anchor="middle">3. кладёт токен в</text><text class="s" x="395" y="134" text-anchor="middle">/var/lib/nginx-manager/acme/</text><text class="s" x="395" y="150" text-anchor="middle">.well-known/acme-challenge/</text>
+  <rect class="o" x="570" y="70" width="230" height="110" rx="10"/><text class="t" x="685" y="96" text-anchor="middle">Let's Encrypt</text><text class="s" x="685" y="118" text-anchor="middle">4. GET http://домен/.well-known/</text><text class="s" x="685" y="134" text-anchor="middle">acme-challenge/ТОКЕН</text><text class="s" x="685" y="150" text-anchor="middle">с нескольких точек мира</text>
+  <rect class="b" x="860" y="70" width="220" height="110" rx="10"/><text class="t" x="970" y="96" text-anchor="middle">nginx :80</text><text class="s" x="970" y="118" text-anchor="middle">location ^~ /.well-known/</text><text class="s" x="970" y="134" text-anchor="middle">acme-challenge/ — в каждом</text><text class="s" x="970" y="150" text-anchor="middle">сайте и сервере по умолчанию</text>
+  <rect class="b" x="290" y="230" width="510" height="100" rx="10"/><text class="t" x="545" y="256" text-anchor="middle">5. Сертификат: /etc/letsencrypt/live/nm-XXXX/{fullchain,privkey}.pem</text>
+  <text class="s" x="545" y="278" text-anchor="middle">6. Панель читает срок действия и домены, проверяет ключ,</text>
+  <text class="s" x="545" y="296" text-anchor="middle">переприменяет конфигурацию — HTTPS включается автоматически</text>
+  <text class="s" x="545" y="316" text-anchor="middle">7. Продление: за 30 дней (таймер certbot и ежедневная проверка панели) → reload</text>
+  <path class="l" d="M220 125 H290"/><path class="l" d="M500 125 H570"/><path class="l" d="M800 125 H860"/>
+  <path class="l" d="M970 180 V280 H800"/><text class="lab" x="976" y="230">проверка пройдена</text>
+  <path class="l" d="M290 280 H120 V180"/>
+</svg>

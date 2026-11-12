@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 470" font-family="system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="13">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#52514e"/></marker>
+    <marker id="r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#d03b3b"/></marker>
+    <style>.b{fill:#fff;stroke:#c3c2b7;stroke-width:1.2}.k{fill:#e6f0fc;stroke:#2a78d6;stroke-width:1.4}.ok{fill:#e5f5e5;stroke:#0ca30c;stroke-width:1.4}.bad{fill:#fbe8e8;stroke:#d03b3b;stroke-width:1.4}.t{font-weight:600;font-size:13.5px;fill:#0b0b0b}.s{fill:#52514e;font-size:11.5px}.l{stroke:#52514e;stroke-width:1.4;fill:none;marker-end:url(#a)}.e{stroke:#d03b3b;stroke-width:1.3;fill:none;stroke-dasharray:5 4;marker-end:url(#r)}.lab{fill:#a32424;font-size:11.5px}</style>
+  </defs>
+  <rect width="1100" height="470" fill="#fcfcfb"/>
+  <text x="550" y="34" text-anchor="middle" font-size="18" font-weight="700" fill="#0b0b0b">Безопасное применение конфигурации</text>
+  <g>
+    <rect class="b" x="20" y="70" width="150" height="80" rx="10"/><text class="t" x="95" y="98" text-anchor="middle">1. Сохранение</text><text class="s" x="95" y="117" text-anchor="middle">валидация полей</text><text class="s" x="95" y="133" text-anchor="middle">(pydantic) → БД</text>
+    <rect class="b" x="195" y="70" width="150" height="80" rx="10"/><text class="t" x="270" y="98" text-anchor="middle">2. Генерация</text><text class="s" x="270" y="117" text-anchor="middle">все файлы в новый</text><text class="s" x="270" y="133" text-anchor="middle">каталог versions/ДАТА</text>
+    <rect class="k" x="370" y="70" width="160" height="80" rx="10"/><text class="t" x="450" y="98" text-anchor="middle">3. nginx -t (изолир.)</text><text class="s" x="450" y="117" text-anchor="middle">в каталоге новой версии</text><text class="s" x="450" y="133" text-anchor="middle">рабочий nginx не затронут</text>
+    <rect class="b" x="555" y="70" width="160" height="80" rx="10"/><text class="t" x="635" y="98" text-anchor="middle">4. Переключение</text><text class="s" x="635" y="117" text-anchor="middle">атомарно: симлинк live</text><text class="s" x="635" y="133" text-anchor="middle">+ /etc/nginx/nginx.conf</text>
+    <rect class="k" x="740" y="70" width="150" height="80" rx="10"/><text class="t" x="815" y="98" text-anchor="middle">5. nginx -t</text><text class="s" x="815" y="117" text-anchor="middle">итоговая проверка</text><text class="s" x="815" y="133" text-anchor="middle">реальных путей</text>
+    <rect class="b" x="915" y="70" width="165" height="80" rx="10"/><text class="t" x="997" y="98" text-anchor="middle">6. reload</text><text class="s" x="997" y="117" text-anchor="middle">плавно, без разрыва</text><text class="s" x="997" y="133" text-anchor="middle">соединений (или start)</text>
+    <rect class="k" x="740" y="200" width="150" height="80" rx="10"/><text class="t" x="815" y="228" text-anchor="middle">7. Контроль</text><text class="s" x="815" y="247" text-anchor="middle">через 0,6 с: мастер</text><text class="s" x="815" y="263" text-anchor="middle">процесс жив?</text>
+    <rect class="ok" x="915" y="200" width="165" height="80" rx="10"/><text class="t" x="997" y="228" text-anchor="middle">8. Версия сохранена</text><text class="s" x="997" y="247" text-anchor="middle">файлы + состояние БД</text><text class="s" x="997" y="263" text-anchor="middle">→ история, откат</text>
+    <rect class="bad" x="320" y="330" width="450" height="110" rx="10"/><text class="t" x="542" y="358" text-anchor="middle">Ошибка на любом шаге</text>
+    <text class="s" x="542" y="380" text-anchor="middle">• шаг 3: каталог удаляется, версия «ошибка», nginx не трогается</text>
+    <text class="s" x="542" y="398" text-anchor="middle">• шаги 5–7: возврат симлинка и nginx.conf, повторный reload</text>
+    <text class="s" x="542" y="416" text-anchor="middle">• пользователь видит строку с ошибкой, сайт и подсказку</text>
+    <text class="s" x="542" y="432" text-anchor="middle">• работающий сайт ни на секунду не остаётся без конфигурации</text>
+  </g>
+  <path class="l" d="M170 110 H195"/><path class="l" d="M345 110 H370"/><path class="l" d="M530 110 H555"/><path class="l" d="M715 110 H740"/><path class="l" d="M890 110 H915"/>
+  <path class="l" d="M997 150 V175 H815 V200"/><path class="l" d="M890 240 H915"/>
+  <path class="e" d="M450 150 V330"/><text class="lab" x="456" y="250">nginx -t: ошибка</text>
+  <path class="e" d="M815 150 V165 H600 V330"/><path class="e" d="M780 280 V305 H680 V330"/>
+</svg>

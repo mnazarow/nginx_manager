@@ -1,0 +1,2 @@
+# Опционально: определение стран по IP (GeoLite2 / DB-IP mmdb)
+maxminddb>=2.2

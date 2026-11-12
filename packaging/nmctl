@@ -1,0 +1,4 @@
+#!/bin/sh
+# Консольная утилита Nginx Manager (обёртка над venv)
+cd /opt/nginx-manager || exit 1
+exec /opt/nginx-manager/venv/bin/python -m app.cli "$@"

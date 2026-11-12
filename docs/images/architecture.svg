@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 640" font-family="system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="13">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#52514e"/></marker>
+    <style>.b{fill:#fff;stroke:#c3c2b7;stroke-width:1.2}.p{fill:#e6f0fc;stroke:#2a78d6;stroke-width:1.4}.n{fill:#e5f5e5;stroke:#0ca30c;stroke-width:1.4}.o{fill:#fdf0e9;stroke:#eb6834;stroke-width:1.4}.t{font-weight:600;font-size:13.5px;fill:#0b0b0b}.s{fill:#52514e;font-size:12px}.l{stroke:#52514e;stroke-width:1.4;fill:none;marker-end:url(#a)}.d{stroke:#898781;stroke-width:1.2;fill:none;stroke-dasharray:5 4;marker-end:url(#a)}.lab{fill:#52514e;font-size:11.5px}</style>
+  </defs>
+  <rect width="1100" height="640" fill="#fcfcfb"/>
+  <text x="550" y="34" text-anchor="middle" font-size="18" font-weight="700" fill="#0b0b0b">Архитектура Nginx Manager</text>
+
+  <rect class="b" x="30" y="70" width="190" height="64" rx="10"/><text class="t" x="125" y="97" text-anchor="middle">Браузер администратора</text><text class="s" x="125" y="117" text-anchor="middle">веб-панель, графики, формы</text>
+  <rect class="b" x="30" y="160" width="190" height="64" rx="10"/><text class="t" x="125" y="187" text-anchor="middle">nmctl / REST API</text><text class="s" x="125" y="207" text-anchor="middle">консоль, CI/CD, токены</text>
+
+  <rect class="p" x="290" y="60" width="470" height="300" rx="14"/>
+  <text class="t" x="525" y="86" text-anchor="middle">Сервис nginx-manager (Python, FastAPI, порт 8088)</text>
+  <rect class="b" x="310" y="104" width="140" height="54" rx="8"/><text class="t" x="380" y="127" text-anchor="middle">REST + WebSocket</text><text class="s" x="380" y="145" text-anchor="middle">вход, роли, аудит</text>
+  <rect class="b" x="460" y="104" width="140" height="54" rx="8"/><text class="t" x="530" y="127" text-anchor="middle">Генератор</text><text class="s" x="530" y="145" text-anchor="middle">модели → конфиг</text>
+  <rect class="b" x="610" y="104" width="135" height="54" rx="8"/><text class="t" x="677" y="127" text-anchor="middle">Применение</text><text class="s" x="677" y="145" text-anchor="middle">nginx -t, reload, откат</text>
+  <rect class="b" x="310" y="172" width="140" height="54" rx="8"/><text class="t" x="380" y="195" text-anchor="middle">Сбор статистики</text><text class="s" x="380" y="213" text-anchor="middle">журналы, stub_status</text>
+  <rect class="b" x="460" y="172" width="140" height="54" rx="8"/><text class="t" x="530" y="195" text-anchor="middle">Проверки серверов</text><text class="s" x="530" y="213" text-anchor="middle">HTTP/TCP, failover</text>
+  <rect class="b" x="610" y="172" width="135" height="54" rx="8"/><text class="t" x="677" y="195" text-anchor="middle">Сертификаты</text><text class="s" x="677" y="213" text-anchor="middle">certbot, openssl</text>
+  <rect class="b" x="310" y="240" width="140" height="54" rx="8"/><text class="t" x="380" y="263" text-anchor="middle">Диагностика</text><text class="s" x="380" y="281" text-anchor="middle">проверки и исправления</text>
+  <rect class="b" x="460" y="240" width="140" height="54" rx="8"/><text class="t" x="530" y="263" text-anchor="middle">Оповещения</text><text class="s" x="530" y="281" text-anchor="middle">правила, каналы</text>
+  <rect class="b" x="610" y="240" width="135" height="54" rx="8"/><text class="t" x="677" y="263" text-anchor="middle">Сторож, копии</text><text class="s" x="677" y="281" text-anchor="middle">автозапуск, бэкапы</text>
+  <rect class="b" x="310" y="306" width="435" height="40" rx="8"/><text class="t" x="527" y="331" text-anchor="middle">SQLite (WAL): настройки, версии, статистика, журналы, пользователи</text>
+
+  <rect class="n" x="290" y="410" width="470" height="200" rx="14"/>
+  <text class="t" x="525" y="436" text-anchor="middle">nginx</text>
+  <rect class="b" x="310" y="452" width="210" height="54" rx="8"/><text class="t" x="415" y="475" text-anchor="middle">/etc/nginx/nginx.conf</text><text class="s" x="415" y="493" text-anchor="middle">генерируется панелью</text>
+  <rect class="b" x="530" y="452" width="215" height="54" rx="8"/><text class="t" x="637" y="475" text-anchor="middle">nginx-manager/live/…</text><text class="s" x="637" y="493" text-anchor="middle">сайты, потоки, страницы, htpasswd</text>
+  <rect class="b" x="310" y="520" width="210" height="72" rx="8"/><text class="t" x="415" y="543" text-anchor="middle">Журналы JSON</text><text class="s" x="415" y="561" text-anchor="middle">nm-access.log, nm-stream.log</text><text class="s" x="415" y="579" text-anchor="middle">nm-error.log</text>
+  <rect class="b" x="530" y="520" width="215" height="72" rx="8"/><text class="t" x="637" y="543" text-anchor="middle">stub_status</text><text class="s" x="637" y="561" text-anchor="middle">127.0.0.1:8089/nm_status</text><text class="s" x="637" y="579" text-anchor="middle">соединения, запросы</text>
+
+  <rect class="o" x="840" y="70" width="230" height="64" rx="10"/><text class="t" x="955" y="97" text-anchor="middle">Let's Encrypt</text><text class="s" x="955" y="117" text-anchor="middle">ACME HTTP-01</text>
+  <rect class="o" x="840" y="160" width="230" height="64" rx="10"/><text class="t" x="955" y="187" text-anchor="middle">Telegram, Slack, e-mail…</text><text class="s" x="955" y="207" text-anchor="middle">уведомления</text>
+  <rect class="b" x="840" y="410" width="230" height="64" rx="10"/><text class="t" x="955" y="437" text-anchor="middle">Клиенты из интернета</text><text class="s" x="955" y="457" text-anchor="middle">внешний IP :80 / :443</text>
+  <rect class="b" x="840" y="520" width="230" height="90" rx="10"/><text class="t" x="955" y="547" text-anchor="middle">Бэкенды сайтов</text><text class="s" x="955" y="567" text-anchor="middle">приложения, API, БД</text><text class="s" x="955" y="587" text-anchor="middle">во внутренней сети</text>
+
+  <path class="l" d="M220 102 H290"/><path class="l" d="M220 192 H290"/>
+  <path class="l" d="M530 158 V380 H470 V452"/><text class="lab" x="476" y="395">запись файлов</text>
+  <path class="l" d="M677 158 V440"/><text class="lab" x="684" y="400">nginx -t / reload</text>
+  <path class="l" d="M310 556 H260 V199 H310"/><text class="lab" x="232" y="380" transform="rotate(-90 250 380)">чтение «хвоста»</text>
+  <path class="l" d="M745 556 H790 V230 H745" /><text class="lab" x="796" y="395">опрос 1 с</text>
+  <path class="l" d="M840 442 H760"/>
+  <path class="l" d="M760 576 H840"/><text class="lab" x="772" y="568">proxy_pass</text>
+  <path class="d" d="M600 210 H800 V560 H840"/><text class="lab" x="806" y="300">проверки</text>
+  <path class="d" d="M745 199 H800 V102 H840"/>
+  <path class="d" d="M600 267 H820 V192 H840"/>
+</svg>

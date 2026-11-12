@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 500" font-family="system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="13">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#52514e"/></marker>
+    <style>.b{fill:#fff;stroke:#c3c2b7;stroke-width:1.2}.n{fill:#e5f5e5;stroke:#0ca30c;stroke-width:1.4}.m{fill:#e6f0fc;stroke:#2a78d6;stroke-width:1.4}.d{fill:#fdf3dc;stroke:#eda100;stroke-width:1.4}.t{font-weight:600;font-size:13.5px;fill:#0b0b0b}.s{fill:#52514e;font-size:11.5px}.c{font-family:ui-monospace,Menlo,monospace;font-size:11px;fill:#1c5cab}.l{stroke:#52514e;stroke-width:1.4;fill:none;marker-end:url(#a)}.lab{fill:#52514e;font-size:11px}</style>
+  </defs>
+  <rect width="1100" height="500" fill="#fcfcfb"/>
+  <text x="550" y="34" text-anchor="middle" font-size="18" font-weight="700" fill="#0b0b0b">Сбор и хранение статистики</text>
+  <rect class="n" x="20" y="70" width="210" height="390" rx="12"/><text class="t" x="125" y="96" text-anchor="middle">nginx</text>
+  <rect class="b" x="36" y="112" width="178" height="96" rx="8"/><text class="t" x="125" y="134" text-anchor="middle">nm-access.log</text><text class="c" x="46" y="154">{"t":"1731..","site":"1",</text><text class="c" x="46" y="170"> "s":"200","rt":"0.012",</text><text class="c" x="46" y="186"> "ua":"10.0.0.5:8080",…}</text>
+  <rect class="b" x="36" y="222" width="178" height="60" rx="8"/><text class="t" x="125" y="246" text-anchor="middle">nm-error.log</text><text class="s" x="125" y="266" text-anchor="middle">текстовые ошибки</text>
+  <rect class="b" x="36" y="296" width="178" height="60" rx="8"/><text class="t" x="125" y="320" text-anchor="middle">nm-stream.log</text><text class="s" x="125" y="340" text-anchor="middle">TCP/UDP-сессии</text>
+  <rect class="b" x="36" y="370" width="178" height="74" rx="8"/><text class="t" x="125" y="394" text-anchor="middle">stub_status</text><text class="s" x="125" y="414" text-anchor="middle">active, reading,</text><text class="s" x="125" y="430" text-anchor="middle">writing, waiting</text>
+
+  <rect class="m" x="290" y="70" width="330" height="390" rx="12"/><text class="t" x="455" y="96" text-anchor="middle">Сборщик (в памяти сервиса)</text>
+  <rect class="b" x="306" y="112" width="298" height="58" rx="8"/><text class="t" x="455" y="134" text-anchor="middle">Чтение «хвоста» каждые 0,25 с</text><text class="s" x="455" y="154" text-anchor="middle">учёт ротации (inode), продолжение после рестарта</text>
+  <rect class="b" x="306" y="182" width="298" height="58" rx="8"/><text class="t" x="455" y="204" text-anchor="middle">Разбор и классификация</text><text class="s" x="455" y="224" text-anchor="middle">User-Agent, боты, GeoIP, категории ошибок</text>
+  <rect class="b" x="306" y="252" width="145" height="96" rx="8"/><text class="t" x="378" y="274" text-anchor="middle">Посекундно</text><text class="s" x="378" y="294" text-anchor="middle">последние 10 мин</text><text class="s" x="378" y="310" text-anchor="middle">гистограмма времени</text><text class="s" x="378" y="326" text-anchor="middle">по сайтам</text>
+  <rect class="b" x="459" y="252" width="145" height="96" rx="8"/><text class="t" x="531" y="274" text-anchor="middle">Поминутно</text><text class="s" x="531" y="294" text-anchor="middle">коды, методы, TLS,</text><text class="s" x="531" y="310" text-anchor="middle">кэш, уникальные IP,</text><text class="s" x="531" y="326" text-anchor="middle">топы URI / IP / UA</text>
+  <rect class="b" x="306" y="360" width="298" height="84" rx="8"/><text class="t" x="455" y="382" text-anchor="middle">Кольца «живых» событий</text><text class="s" x="455" y="402" text-anchor="middle">3000 последних запросов, 1000 ошибок</text><text class="s" x="455" y="420" text-anchor="middle">→ WebSocket с фильтрами на стороне сервера</text>
+
+  <rect class="d" x="680" y="70" width="200" height="390" rx="12"/><text class="t" x="780" y="96" text-anchor="middle">SQLite</text>
+  <rect class="b" x="694" y="112" width="172" height="44" rx="8"/><text class="t" x="780" y="139" text-anchor="middle">stats_minute (14 дн)</text>
+  <rect class="b" x="694" y="166" width="172" height="44" rx="8"/><text class="t" x="780" y="193" text-anchor="middle">stats_hour (400 дн)</text>
+  <rect class="b" x="694" y="220" width="172" height="44" rx="8"/><text class="t" x="780" y="247" text-anchor="middle">top_hour → top_day</text>
+  <rect class="b" x="694" y="274" width="172" height="44" rx="8"/><text class="t" x="780" y="301" text-anchor="middle">requests (72 ч)</text>
+  <rect class="b" x="694" y="328" width="172" height="44" rx="8"/><text class="t" x="780" y="355" text-anchor="middle">errors (30 дн)</text>
+  <rect class="b" x="694" y="382" width="172" height="62" rx="8"/><text class="t" x="780" y="406" text-anchor="middle">system_minute,</text><text class="t" x="780" y="424" text-anchor="middle">health_minute</text>
+
+  <rect class="b" x="930" y="110" width="150" height="80" rx="10"/><text class="t" x="1005" y="138" text-anchor="middle">Дашборд</text><text class="s" x="1005" y="158" text-anchor="middle">обновление 1 с</text><text class="s" x="1005" y="174" text-anchor="middle">(WebSocket)</text>
+  <rect class="b" x="930" y="210" width="150" height="80" rx="10"/><text class="t" x="1005" y="238" text-anchor="middle">Аналитика</text><text class="s" x="1005" y="258" text-anchor="middle">любой период,</text><text class="s" x="1005" y="274" text-anchor="middle">до 300 точек</text>
+  <rect class="b" x="930" y="310" width="150" height="80" rx="10"/><text class="t" x="1005" y="338" text-anchor="middle">Оповещения</text><text class="s" x="1005" y="358" text-anchor="middle">окна по</text><text class="s" x="1005" y="374" text-anchor="middle">посекундным данным</text>
+  <path class="l" d="M214 160 H306"/><path class="l" d="M214 252 C260 252 260 141 306 141"/><path class="l" d="M214 326 C270 326 270 141 306 141"/>
+  <path class="l" d="M214 407 H260 V300 H306"/><text class="lab" x="226" y="398">1 с</text>
+  <path class="l" d="M455 170 V182"/><path class="l" d="M378 240 V252"/><path class="l" d="M531 240 V252"/>
+  <path class="l" d="M604 300 H680"/><text class="lab" x="610" y="290">каждую мин.</text>
+  <path class="l" d="M604 211 H680"/><text class="lab" x="610" y="203">пачками/с</text>
+  <path class="l" d="M880 250 H930"/><text class="lab" x="884" y="242">SQL</text>
+  <path class="l" d="M455 70 V54 H1005 V110"/><text class="lab" x="700" y="48">из памяти: WebSocket каждую секунду</text>
+  <path class="l" d="M1005 54 H1092 V350 H1080"/>
+</svg>

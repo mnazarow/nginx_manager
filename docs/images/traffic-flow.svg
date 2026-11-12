@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 520" font-family="system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="13">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#52514e"/></marker>
+    <style>.b{fill:#fff;stroke:#c3c2b7;stroke-width:1.2}.g{fill:#e5f5e5;stroke:#0ca30c;stroke-width:1.4}.p{fill:#e6f0fc;stroke:#2a78d6;stroke-width:1.2}.t{font-weight:600;font-size:14px;fill:#0b0b0b}.s{fill:#52514e;font-size:12px}.m{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;fill:#1c5cab}.l{stroke:#52514e;stroke-width:1.4;fill:none;marker-end:url(#a)}.lab{fill:#52514e;font-size:11.5px}</style>
+  </defs>
+  <rect width="1100" height="520" fill="#fcfcfb"/>
+  <text x="550" y="34" text-anchor="middle" font-size="18" font-weight="700" fill="#0b0b0b">Как запрос проходит через сервер</text>
+  <rect class="b" x="30" y="90" width="170" height="60" rx="10"/><text class="t" x="115" y="116" text-anchor="middle">shop.example.com</text><text class="s" x="115" y="135" text-anchor="middle">браузер покупателя</text>
+  <rect class="b" x="30" y="200" width="170" height="60" rx="10"/><text class="t" x="115" y="226" text-anchor="middle">api.example.com</text><text class="s" x="115" y="245" text-anchor="middle">мобильное приложение</text>
+  <rect class="b" x="30" y="310" width="170" height="60" rx="10"/><text class="t" x="115" y="336" text-anchor="middle">db.example.com:5432</text><text class="s" x="115" y="355" text-anchor="middle">клиент PostgreSQL</text>
+  <rect class="b" x="30" y="420" width="170" height="60" rx="10"/><text class="t" x="115" y="446" text-anchor="middle">сканер по IP</text><text class="s" x="115" y="465" text-anchor="middle">Host не совпадает</text>
+
+  <rect class="g" x="260" y="60" width="480" height="440" rx="14"/>
+  <text class="t" x="500" y="86" text-anchor="middle">nginx на внешнем IP 203.0.113.10</text>
+  <rect class="p" x="280" y="100" width="440" height="70" rx="8"/><text class="t" x="300" y="122">server shop.example.com :443 (HTTPS, HTTP/2)</text>
+  <text class="m" x="300" y="142">TLS · заголовки безопасности · кэш · limit_req · локации</text><text class="m" x="300" y="159">location /api/ → upstream nm_site_1_l0;  / → nm_site_1</text>
+  <rect class="p" x="280" y="190" width="440" height="70" rx="8"/><text class="t" x="300" y="212">server api.example.com :80/:443</text>
+  <text class="m" x="300" y="232">least_conn · keepalive 32 · proxy_next_upstream</text><text class="m" x="300" y="249">upstream nm_site_2 { 10.0.0.11:8080; 10.0.0.12:8080; }</text>
+  <rect class="p" x="280" y="280" width="440" height="70" rx="8"/><text class="t" x="300" y="302">stream: listen 5432 (TCP)</text>
+  <text class="m" x="300" y="322">allow 10.0.0.0/8; deny all;  proxy_timeout 1h</text><text class="m" x="300" y="339">upstream nm_stream_1 { 10.0.0.20:5432; }</text>
+  <rect class="b" x="280" y="370" width="440" height="60" rx="8"/><text class="t" x="300" y="392">server _ (default_server)</text><text class="m" x="300" y="412">HTTP: return 444 · HTTPS: ssl_reject_handshake on</text>
+  <rect class="b" x="280" y="444" width="440" height="42" rx="8"/><text class="s" x="300" y="470">Каждый запрос → JSON-строка в журнал → статистика панели</text>
+
+  <rect class="b" x="820" y="100" width="250" height="70" rx="10"/><text class="t" x="945" y="126" text-anchor="middle">10.0.0.5:8080, 10.0.0.6:8080</text><text class="s" x="945" y="146" text-anchor="middle">приложение магазина (+ backup)</text>
+  <rect class="b" x="820" y="190" width="250" height="70" rx="10"/><text class="t" x="945" y="216" text-anchor="middle">10.0.0.11–12:8080</text><text class="s" x="945" y="236" text-anchor="middle">API-серверы</text>
+  <rect class="b" x="820" y="280" width="250" height="70" rx="10"/><text class="t" x="945" y="306" text-anchor="middle">10.0.0.20:5432</text><text class="s" x="945" y="326" text-anchor="middle">PostgreSQL</text>
+  <rect class="b" x="820" y="370" width="250" height="60" rx="10"/><text class="t" x="945" y="396" text-anchor="middle">соединение закрыто</text><text class="s" x="945" y="414" text-anchor="middle">сертификаты не раскрываются</text>
+  <path class="l" d="M200 120 H280"/><path class="l" d="M200 230 H280"/><path class="l" d="M200 340 H280"/><path class="l" d="M200 450 C240 450 240 400 280 400"/>
+  <path class="l" d="M720 135 H820"/><path class="l" d="M720 225 H820"/><path class="l" d="M720 315 H820"/><path class="l" d="M720 400 H820"/>
+  <text class="lab" x="780" y="127" text-anchor="middle">proxy_pass</text><text class="lab" x="780" y="217" text-anchor="middle">least_conn</text><text class="lab" x="780" y="307" text-anchor="middle">TCP</text>
+</svg>
