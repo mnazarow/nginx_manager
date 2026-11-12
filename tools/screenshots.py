@@ -148,6 +148,28 @@ async def extras(page, a):
     await page.wait_for_timeout(800)
     await page.screenshot(path=f"{a.out}/insights-hint.png")
     print("insights: ok")
+    # быстрый поиск
+    await page.keyboard.press("Escape")
+    await page.goto(f"{a.url}/#/insights")
+    await page.wait_for_timeout(1000)
+    await page.goto(f"{a.url}/#/")
+    await page.wait_for_timeout(3000)
+    await page.keyboard.press("Control+k")
+    await page.fill(".pal-input input", "таймаут")
+    await page.wait_for_timeout(1800)
+    await page.screenshot(path=f"{a.out}/palette.png")
+    await page.keyboard.press("Escape")
+    # тишина оповещений (создаётся и снимается через API)
+    sid = await page.evaluate("""async () => {
+        const h = {'Content-Type': 'application/json', 'X-NM-CSRF': '1'};
+        const r = await fetch('/api/alerts/silences', {method: 'POST', headers: h,
+            body: JSON.stringify({minutes: 120, reason: 'Обновление базы данных'})});
+        return (await r.json()).id; }""")
+    await page.goto(f"{a.url}/#/alerts")
+    await page.wait_for_timeout(2500)
+    await page.screenshot(path=f"{a.out}/alerts-silence.png")
+    await page.evaluate("async (id) => fetch('/api/alerts/silences/' + id, {method: 'DELETE', headers: {'X-NM-CSRF': '1'}})", sid)
+    print("palette, silence: ok")
     await mobile(page.context.browser, a)
 
 

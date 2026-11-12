@@ -135,6 +135,12 @@ function searchView(box, sites, names) {
 
 function toCsv(items) {
   const keys = ['ts', 'site', 'host', 'ip', 'method', 'uri', 'status', 'bytes', 'rt', 'urt', 'upstream', 'ustatus', 'ref', 'ua', 'cache', 'tls', 'country', 'rid'];
-  const esc = (v) => { v = v == null ? '' : String(v); return /[",\n;]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
-  return keys.join(',') + '\n' + items.map(r => keys.map(k => esc(k === 'ts' ? new Date(r.ts * 1000).toISOString() : r[k])).join(',')).join('\n');
+  // Значения из запросов приходят от посетителей: «=…», «+…», «-…», «@…» Excel выполнил бы как формулу
+  // (CSV injection), поэтому такие ячейки начинаются с апострофа. BOM — чтобы Excel распознал UTF-8.
+  const esc = (v) => {
+    v = v == null ? '' : String(v);
+    if (/^[=+\-@\t\r]/.test(v) && !/^-?\d+(\.\d+)?$/.test(v)) v = "'" + v;
+    return /[",\n;\r]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+  };
+  return '\ufeff' + keys.join(',') + '\n' + items.map(r => keys.map(k => esc(k === 'ts' ? new Date(r.ts * 1000).toISOString() : r[k])).join(',')).join('\n');
 }

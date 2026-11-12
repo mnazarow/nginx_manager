@@ -467,3 +467,25 @@ img.zoomed { max-width: 100%; height: auto; display: block; margin: 0 auto; bord
 .group-title { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 18px 0 8px; font-weight: 600; }
 .card.flush-list { overflow: hidden; }
 .insights-card .card-body.flush { padding: 0; }
+
+/* ---------- Быстрый поиск (Ctrl+K) ---------- */
+kbd { font: 600 10.5px var(--mono, ui-monospace, monospace); border: 1px solid var(--line-2); border-bottom-width: 2px; border-radius: 4px;
+  padding: 0 5px; color: var(--muted); background: var(--surface); margin: 0 2px; }
+.search-btn { gap: 6px; color: var(--muted); border: 1px solid var(--line); height: 32px; padding: 0 8px 0 10px; }
+.search-btn:hover { color: var(--ink); border-color: var(--line-2); }
+.pal-back { position: fixed; inset: 0; z-index: 130; background: rgba(11, 11, 11, .35); display: flex; justify-content: center; align-items: flex-start; padding-top: 12vh; }
+.pal { width: min(680px, 94vw); background: var(--surface); border: 1px solid var(--line-2); border-radius: 12px; box-shadow: var(--shadow-lg);
+  overflow: hidden; display: flex; flex-direction: column; max-height: 70vh; animation: help-in .12s ease-out; }
+.pal-input { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+.pal-input svg { width: 18px; height: 18px; color: var(--muted); flex: none; }
+.pal-input input { border: 0; outline: none; background: none; font-size: 15px; flex: 1; padding: 4px 0; box-shadow: none; }
+.pal-list { overflow: auto; padding: 6px; }
+.pal-group { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); padding: 8px 10px 4px; }
+.pal-item { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; cursor: pointer; }
+.pal-item svg { width: 16px; height: 16px; color: var(--muted); flex: none; }
+.pal-item.sel { background: var(--accent-wash); } .pal-item.sel svg { color: var(--accent-ink); }
+.pal-label { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pal-hint { margin-left: auto; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 50%; }
+.pal-empty { padding: 24px; text-align: center; color: var(--muted); }
+.pal-foot { display: flex; gap: 16px; padding: 8px 14px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); flex-wrap: wrap; }
+@media (max-width: 900px) { .search-btn kbd, .search-label { display: none; } .search-btn { width: 32px; padding: 0; justify-content: center; } .pal-foot { display: none; } .pal-back { padding-top: 8px; } }

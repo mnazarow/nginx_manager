@@ -3,8 +3,9 @@ import { api, live, setUnauthorizedHandler, showError } from './api.js';
 import { h, mount, icon, toast, modal, badge, fmtDur, diffBlock, codeBlock, loading, clear } from './ui.js';
 import { setSchema } from './forms.js';
 import { openPageHelp } from './help.js';
+import { openPalette, installPalette } from './palette.js';
 
-const NAV = [
+export const NAV = [
   ['Мониторинг', [
     ['/', 'Дашборд', 'dash'], ['/insights', 'Анализ и подсказки', 'bulb'], ['/analytics', 'Аналитика', 'chart'], ['/requests', 'Журнал запросов', 'list'],
     ['/errors', 'Журнал ошибок', 'alert'], ['/backends', 'Бэкенды', 'server'], ['/system', 'Сервер', 'cpu']]],
@@ -36,6 +37,10 @@ export const can = (role) => ROLE[ctx.user?.role] >= ROLE[role];
 function applyTheme(t) {
   document.documentElement.setAttribute('data-theme', t);
   localStorage.setItem('nm-theme', t);
+}
+export function toggleTheme() {
+  applyTheme(document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
+  route(true);
 }
 applyTheme(localStorage.getItem('nm-theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
 
@@ -87,6 +92,7 @@ function layout() {
     title: h('div', { class: 'title' }), nginx: h('span', { class: 'pill' }), live: h('span', { class: 'pill', title: 'Соединение реального времени' }),
     pending: h('div', {}), alerts: h('div', {}),
   };
+  const searchBtn = h('button', { class: 'btn ghost search-btn', title: 'Поиск по панели (Ctrl+K или /)', onclick: () => openPalette() }, icon('search'), h('span', { class: 'search-label' }, 'Поиск'), h('kbd', {}, 'Ctrl K'));
   const helpBtn = h('button', { class: 'btn ghost icon help-btn', title: 'Справка по этой странице (F1)', onclick: () => openPageHelp(ctx.route, ctx.params) }, '?');
   document.addEventListener('keydown', (e) => {
     if (e.key === 'F1' && ctx.user) { e.preventDefault(); openPageHelp(ctx.route, ctx.params); }
@@ -104,7 +110,7 @@ function layout() {
       h('div', { class: 'sidebar-foot' }, h('div', {}, ctx.user.username, ' · ', ctx.user.role_label || ctx.user.role),
         h('a', { href: '#', onclick: async (e) => { e.preventDefault(); await api('/auth/logout', { method: 'POST' }); ctx.user = null; loginPage(); } }, 'Выйти'))),
     h('div', { class: 'main' },
-      h('header', { class: 'topbar' }, menuBtn, topEls.title, h('span', { class: 'grow' }), topEls.alerts, topEls.pending, topEls.nginx, topEls.live, helpBtn, themeBtn),
+      h('header', { class: 'topbar' }, menuBtn, topEls.title, h('span', { class: 'grow' }), searchBtn, topEls.alerts, topEls.pending, topEls.nginx, topEls.live, helpBtn, themeBtn),
       h('main', { class: 'content', id: 'page' }))));
   live.on('status', (ok) => drawLive(ok));
   drawLive(live.connected);
@@ -134,7 +140,10 @@ export function drawTop() {
       h('button', { class: 'btn sm', onclick: showPending }, 'Изменения'),
       h('button', { class: 'btn sm primary', onclick: () => applyDialog() }, icon('check'), 'Применить')));
   } else clear(topEls.pending);
-  mount(topEls.alerts, s.alerts_firing ? h('a', { href: '#/alerts', class: 'badge bad', title: 'Сработавшие оповещения' }, icon('bell'), s.alerts_firing) : null);
+  const sil = s.silence;
+  mount(topEls.alerts,
+    sil ? h('a', { href: '#/alerts', class: 'badge warn', title: `Тишина оповещений до ${new Date(sil.ends_at * 1000).toLocaleString('ru-RU')}${sil.reason ? ': ' + sil.reason : ''}` }, icon('bell'), 'тишина') : null,
+    s.alerts_firing ? h('a', { href: '#/alerts', class: 'badge bad', title: 'Сработавшие оповещения' }, icon('bell'), s.alerts_firing) : null);
   const d = s.diagnostics?.summary || {};
   document.querySelectorAll('.nav-badge-diag').forEach(el => mount(el, d.fail ? badge(d.fail, 'bad') : d.warn ? badge(d.warn, 'warn') : null));
   document.querySelectorAll('.nav-badge-alerts').forEach(el => mount(el, s.alerts_firing ? badge(s.alerts_firing, 'bad') : null));
@@ -262,3 +271,4 @@ window.addEventListener('unhandledrejection', (e) => { if (e.reason && e.reason.
 boot();
 
 export { showError };
+installPalette();

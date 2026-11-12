@@ -291,6 +291,20 @@ SCHEMA: List[str] = [
         last_at REAL NOT NULL
     )
     """,
+    # ---- v3: тишина оповещений (плановые работы) ----------------------------
+    """
+    CREATE TABLE IF NOT EXISTS silences (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at REAL NOT NULL,
+        starts_at REAL NOT NULL,
+        ends_at REAL NOT NULL,
+        rule_ids TEXT NOT NULL DEFAULT '[]',
+        reason TEXT NOT NULL DEFAULT '',
+        username TEXT NOT NULL DEFAULT '',
+        suppressed INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_silences_end ON silences(ends_at)
+    """,
 ]
 
 

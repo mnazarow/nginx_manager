@@ -368,6 +368,15 @@ class App:
                 log.exception("watchdog")
             await asyncio.sleep(10)
 
+    def _silence_brief(self) -> Optional[Dict[str, Any]]:
+        s = self.alerts.silence_for(None)
+        if not s:
+            now = time.time()
+            s = self.db.one("SELECT * FROM silences WHERE starts_at<=? AND ends_at>? ORDER BY ends_at DESC LIMIT 1",
+                            (now, now))
+        return {"id": s["id"], "ends_at": s["ends_at"], "reason": s["reason"],
+                "all": s["rule_ids"] in ("", "[]")} if s else None
+
     def _insights_history(self, findings: List[Dict[str, Any]]) -> None:
         """Журнал появления и устранения проблем (уровни «проблема» и «внимание») — вкладка «История» анализа."""
         cur = {f["fid"]: f for f in findings if f["level"] in ("crit", "warn")}
@@ -447,4 +456,5 @@ class App:
                 "uptime": time.time() - self.started, "caps": {"stream": self.nginx.caps().stream_available,
                                                                "http3": self.nginx.caps().http3},
                 "backends_down": sum(1 for t in self.health.targets.values() if t.state == "down"),
-                "insights": self.insights.last["counts"]}
+                "insights": self.insights.last["counts"],
+                "silence": self._silence_brief()}

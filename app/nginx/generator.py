@@ -577,7 +577,7 @@ class Generator:
                 c.d("default", "off")
                 c.d("1", s.performance.static_expires)
         if s.type == "proxy" and s.cache.bypass_cookie_pattern and (
-                s.cache.enabled or any(l.enabled and l.cache == "on" for l in s.locations)):
+                s.cache.enabled or any(loc.enabled and loc.cache == "on" for loc in s.locations)):
             with c.block(f"map $http_cookie $nm_nocache_{sid}"):
                 c.d("default", 0)
                 c.d(quote("~*(" + s.cache.bypass_cookie_pattern + ")"), 1)
@@ -675,7 +675,7 @@ class Generator:
             if sec.conn_limit:
                 c.d("limit_conn", f"nm_cl_{sid}", sec.conn_limit)
                 c.d("limit_conn_status", 429)
-            if sec.rate_limit or any(l.enabled and l.rate_limit == "custom" for l in s.locations):
+            if sec.rate_limit or any(loc.enabled and loc.rate_limit == "custom" for loc in s.locations):
                 c.d("limit_req_status", sec.limit_status)
             self.access_rules(c, sec.access_mode == "allowlist" and sec.allow or [], sec.deny)
             if sec.basic_auth and sec.basic_auth_users:

@@ -2,18 +2,90 @@
 import { api } from '../api.js';
 import { h, mount, icon, badge, toast, modal, confirmDlg, table, tabs, fmtDate, fmtAgo, stateBadge, fmtNum } from '../ui.js';
 import { model, defaults, renderFields, errorsToMap, SCHEMA } from '../forms.js';
-import { can } from '../app.js';
+import { can, refreshState } from '../app.js';
+
+const DURS = [[30, '30 минут'], [60, '1 час'], [120, '2 часа'], [240, '4 часа'], [480, '8 часов'], [1440, '1 сутки'], [4320, '3 суток']];
+const fmtT = (ts) => new Date(ts * 1000).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
 
 export async function render(root) {
   let tab = 'rules';
   const box = h('div', {});
+  const silBox = h('div', {});
   mount(root,
     h('div', { class: 'page-head' }, h('div', {}, h('h1', {}, 'Оповещения'),
-      h('p', {}, 'Правила проверяются каждые 10 секунд. Срабатывание — когда условие выполняется дольше заданного времени; восстановление тоже сообщается. Каналы: Telegram, Slack, Discord, e-mail, произвольный webhook.'))),
-    tabs([{ id: 'rules', label: 'Правила' }, { id: 'channels', label: 'Каналы уведомлений' }, { id: 'events', label: 'История' }], tab, (t) => { tab = t; draw(); }),
+      h('p', {}, 'Правила проверяются каждые 10 секунд. Срабатывание — когда условие выполняется дольше заданного времени; восстановление тоже сообщается. Каналы: Telegram, Slack, Discord, e-mail, произвольный webhook.')),
+      can('operator') ? h('button', { class: 'btn', onclick: () => silenceDialog(loadSil) }, icon('bell'), 'Тишина…') : null),
+    silBox,
+    tabs([{ id: 'rules', label: 'Правила' }, { id: 'channels', label: 'Каналы уведомлений' }, { id: 'silences', label: 'Тишина' }, { id: 'events', label: 'История' }], tab, (t) => { tab = t; draw(); }),
     box);
-  const draw = () => ({ rules, channels, events }[tab])(box);
+  const draw = () => ({ rules, channels, events, silences: (b) => silences(b, loadSil) }[tab])(box);
+  async function loadSil() {
+    const list = await api('/alerts/silences');
+    const active = list.filter(s => s.state === 'active');
+    mount(silBox, active.map(s => h('div', { class: 'alert warn mb row', style: { justifyContent: 'space-between' } },
+      h('div', {}, h('b', {}, `Тишина до ${fmtT(s.ends_at)}`), ` — ${s.rule_ids.length ? `правил: ${s.rule_ids.length}` : 'все правила'}`,
+        s.reason ? ` · ${s.reason}` : '', h('div', { class: 'small' }, `Срабатывания записываются в историю, но уведомления не отправляются. Не отправлено: ${s.suppressed}.`)),
+      can('operator') ? h('button', { class: 'btn sm', onclick: async () => { await api(`/alerts/silences/${s.id}`, { method: 'DELETE' }); toast('Тишина завершена', 'good'); refreshState(); loadSil(); if (tab === 'silences') draw(); } }, 'Завершить') : null)));
+  }
+  loadSil();
   draw();
+}
+
+/** Диалог «Тишина»: не отправлять уведомления на время плановых работ (сейчас или по расписанию). */
+export async function silenceDialog(onDone) {
+  const rulesList = await api('/alerts/rules');
+  const dur = h('select', {}, DURS.map(([v, l]) => h('option', { value: v, selected: v === 60 }, l)), h('option', { value: 'custom' }, 'Свой срок…'));
+  const custom = h('input', { type: 'number', min: 5, value: 90, style: { display: 'none', width: '120px' } });
+  dur.addEventListener('change', () => { custom.style.display = dur.value === 'custom' ? '' : 'none'; });
+  const when = h('select', {}, h('option', { value: 'now' }, 'Сейчас'), h('option', { value: 'at' }, 'Запланировать…'));
+  const at = h('input', { type: 'datetime-local', style: { display: 'none' } });
+  when.addEventListener('change', () => { at.style.display = when.value === 'at' ? '' : 'none'; });
+  const scopeAll = h('input', { type: 'radio', name: 'scope', checked: true });
+  const scopeSel = h('input', { type: 'radio', name: 'scope' });
+  const boxes = rulesList.map(r => ({ id: r.id, el: h('input', { type: 'checkbox' }), name: r.data.name }));
+  const ruleBox = h('div', { class: 'col', style: { display: 'none', maxHeight: '180px', overflow: 'auto', paddingLeft: '22px' } },
+    boxes.map(b => h('label', { class: 'row small' }, b.el, b.name)));
+  scopeAll.addEventListener('change', () => { ruleBox.style.display = 'none'; });
+  scopeSel.addEventListener('change', () => { ruleBox.style.display = ''; });
+  const reason = h('input', { type: 'text', placeholder: 'Например: обновление базы данных' });
+  const err = h('div', {});
+  const m = modal({
+    title: 'Тишина оповещений', size: 'md',
+    body: h('div', { class: 'col' },
+      h('p', { class: 'muted small', style: { margin: 0 } }, 'На время работ уведомления в каналы не отправляются. Срабатывания всё равно видны в панели и записываются в историю — после окончания тишины вы увидите, что происходило.'),
+      h('div', { class: 'grid g2' },
+        h('div', { class: 'field' }, h('label', {}, 'Начало'), when, at),
+        h('div', { class: 'field' }, h('label', {}, 'Длительность'), h('div', { class: 'row' }, dur, custom, h('span', { class: 'muted small', style: { display: 'none' } }, 'мин')))),
+      h('div', { class: 'field' }, h('label', {}, 'Для каких правил'),
+        h('label', { class: 'row small' }, scopeAll, 'Все правила'), h('label', { class: 'row small' }, scopeSel, 'Только выбранные'), ruleBox),
+      h('div', { class: 'field' }, h('label', {}, 'Причина'), reason), err),
+    footer: [h('button', { class: 'btn', onclick: () => m.close() }, 'Отмена'), h('button', { class: 'btn primary', onclick: async () => {
+      const minutes = dur.value === 'custom' ? Number(custom.value) : Number(dur.value);
+      const starts_at = when.value === 'at' && at.value ? new Date(at.value).getTime() / 1000 : null;
+      const rule_ids = scopeSel.checked ? boxes.filter(b => b.el.checked).map(b => b.id) : [];
+      if (scopeSel.checked && !rule_ids.length) { mount(err, h('div', { class: 'alert bad' }, 'Выберите хотя бы одно правило')); return; }
+      try {
+        await api('/alerts/silences', { method: 'POST', silent: true, body: { minutes, starts_at, rule_ids, reason: reason.value } });
+        m.close(); toast(starts_at ? 'Тишина запланирована' : 'Тишина включена', 'good'); refreshState(); onDone && onDone();
+      } catch (e) { mount(err, h('div', { class: 'alert bad' }, e.data?.detail || e.message)); }
+    } }, 'Включить тишину')],
+  });
+}
+
+async function silences(box, reload) {
+  const list = await api('/alerts/silences');
+  const ST = { active: ['действует', 'warn'], planned: ['запланирована', 'info'], ended: ['завершена', ''] };
+  mount(box, h('div', { class: 'card' }, table([
+    { title: 'Период', render: (s) => h('span', { class: 'nowrap' }, `${fmtT(s.starts_at)} — ${fmtT(s.ends_at)}`) },
+    { title: 'Состояние', render: (s) => badge(...ST[s.state]) },
+    { title: 'Правила', render: (s) => s.rule_ids.length ? `выбранные (${s.rule_ids.length})` : 'все' },
+    { title: 'Причина', render: (s) => s.reason || h('span', { class: 'muted' }, '—') },
+    { title: 'Кто', render: (s) => s.username },
+    { title: 'Не отправлено', num: true, render: (s) => String(s.suppressed) },
+    { title: '', render: (s) => can('operator') && s.state !== 'ended' ? h('button', { class: 'btn sm', onclick: async () => {
+      await api(`/alerts/silences/${s.id}`, { method: 'DELETE' }); refreshState(); reload && reload(); silences(box, reload);
+    } }, s.state === 'planned' ? 'Отменить' : 'Завершить') : null },
+  ], list, { empty: 'Периодов тишины не было. Кнопка «Тишина…» вверху страницы отключает уведомления на время плановых работ.' })));
 }
 
 async function rules(box) {

@@ -1123,6 +1123,66 @@ async def test_channel(request: Request, body: Dict[str, Any] = Body(...), cid: 
     return {"ok": True}
 
 
+class SilenceBody(BaseModel):
+    minutes: int = 60
+    starts_at: Optional[float] = None      # None — сейчас; иначе плановые работы
+    rule_ids: List[int] = []               # пусто — все правила
+    reason: str = ""
+
+
+@router.get("/alerts/silences")
+async def silences_list(request: Request, user=Depends(viewer)):
+    now = time.time()
+    rows = nm(request).db.query("SELECT * FROM silences WHERE ends_at>? ORDER BY starts_at", (now - 7 * 86400,))
+    for r in rows:
+        r["rule_ids"] = json.loads(r["rule_ids"] or "[]")
+        r["state"] = "active" if r["starts_at"] <= now < r["ends_at"] else "planned" if r["starts_at"] > now else "ended"
+    return rows
+
+
+@router.post("/alerts/silences")
+async def silences_add(body: SilenceBody, request: Request, user=Depends(operator)):
+    if not 5 <= body.minutes <= 30 * 24 * 60:
+        raise HTTPException(400, "Длительность тишины: от 5 минут до 30 суток")
+    now = time.time()
+    start = body.starts_at or now
+    if start < now - 60 or start > now + 90 * 86400:
+        raise HTTPException(400, "Начало — сейчас или в ближайшие 90 дней")
+    app = nm(request)
+    known = {r["id"] for r in app.db.query("SELECT id FROM alert_rules")}
+    bad = [i for i in body.rule_ids if i not in known]
+    if bad:
+        raise HTTPException(400, f"Неизвестные правила: {bad}")
+    sid = app.db.execute("INSERT INTO silences(created_at, starts_at, ends_at, rule_ids, reason, username) "
+                         "VALUES(?,?,?,?,?,?)", (now, start, start + body.minutes * 60, json.dumps(body.rule_ids),
+                                                 body.reason.strip()[:300], user["username"]))
+    when = time.strftime("%d.%m %H:%M", time.localtime(start))
+    till = time.strftime("%d.%m %H:%M", time.localtime(start + body.minutes * 60))
+    scope = "все правила" if not body.rule_ids else f"правил: {len(body.rule_ids)}"
+    app.db.event("info", "alerts", f"Тишина оповещений {when} — {till} ({scope}), {user['username']}"
+                 + (f": {body.reason}" if body.reason else ""))
+    audit(request, user, "alerts_silenced", f"{when} — {till}", body.model_dump())
+    await app.broadcast({"type": "state"})
+    return {"id": sid}
+
+
+@router.delete("/alerts/silences/{sid}")
+async def silences_end(sid: int, request: Request, user=Depends(operator)):
+    app = nm(request)
+    row = app.db.one("SELECT * FROM silences WHERE id=?", (sid,))
+    if not row:
+        raise HTTPException(404, "Не найдено")
+    now = time.time()
+    if row["starts_at"] > now:
+        app.db.execute("DELETE FROM silences WHERE id=?", (sid,))
+    else:
+        app.db.execute("UPDATE silences SET ends_at=? WHERE id=?", (min(row["ends_at"], now), sid))
+    app.db.event("info", "alerts", f"Тишина оповещений завершена ({user['username']}); не отправлено уведомлений: "
+                                   f"{row['suppressed']}")
+    audit(request, user, "alerts_unsilenced", str(sid))
+    return {"ok": True}
+
+
 @router.get("/alerts/events")
 async def alert_events(request: Request, limit: int = 200, user=Depends(viewer)):
     return nm(request).db.query("SELECT * FROM alert_events ORDER BY id DESC LIMIT ?", (limit,))

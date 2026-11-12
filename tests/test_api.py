@@ -179,3 +179,45 @@ def test_report_preview(admin):
         r = admin.get("/api/reports/preview", params={"period": period}).json()
         assert r["title"].startswith("Отчёт") and "Запросов:" in r["text"] and "Сейчас:" in r["text"]
     assert admin.post("/api/reports/send", json={"period": "day", "channels": []}, headers=H).status_code == 400
+
+
+def test_silences(admin, client):
+    nmapp = client.app.state.nm
+    rules = admin.get("/api/alerts/rules").json()
+    assert rules, "должны быть правила по умолчанию"
+    rid = rules[0]["id"]
+    assert nmapp.alerts.silence_for(rid) is None
+    r = admin.post("/api/alerts/silences", json={"minutes": 30, "rule_ids": [rid], "reason": "работы"}, headers=H)
+    assert r.status_code == 200, r.text
+    sid = r.json()["id"]
+    assert nmapp.alerts.silence_for(rid)["id"] == sid
+    assert nmapp.alerts.silence_for(rid + 100000) is None          # другое правило не заглушено
+    assert admin.get("/api/state").json()["silence"]["id"] == sid
+    planned = admin.post("/api/alerts/silences", json={"minutes": 60, "starts_at": time.time() + 3600}, headers=H)
+    lst = admin.get("/api/alerts/silences").json()
+    assert {s["state"] for s in lst} == {"active", "planned"}
+    assert admin.post("/api/alerts/silences", json={"minutes": 1}, headers=H).status_code == 400
+    assert admin.post("/api/alerts/silences", json={"minutes": 30, "rule_ids": [999999]}, headers=H).status_code == 400
+    assert admin.delete(f"/api/alerts/silences/{sid}", headers=H).status_code == 200
+    assert admin.delete(f"/api/alerts/silences/{planned.json()['id']}", headers=H).status_code == 200
+    assert nmapp.alerts.silence_for(rid) is None
+    assert admin.get("/api/state").json()["silence"] is None
+
+
+def test_silence_blocks_notifications(client):
+    import asyncio
+    from app.models import AlertRule
+    nmapp = client.app.state.nm
+    sent = []
+    import app.services.alerts as A
+    orig = A.send
+    A.send = lambda *a, **k: sent.append(a)
+    try:
+        nmapp.db.execute("INSERT INTO silences(created_at, starts_at, ends_at, rule_ids, reason) VALUES(?,?,?,?,?)",
+                         (time.time(), time.time() - 1, time.time() + 600, "[]", "тест"))
+        rule = AlertRule(name="t", metric="error_5xx_rate", threshold=1)
+        res = asyncio.run(nmapp.alerts.notify(rule, "t", "x", "warning", None, 1))
+        assert res and "тишина" in res[0] and not sent
+    finally:
+        A.send = orig
+        nmapp.db.execute("UPDATE silences SET ends_at=?", (time.time() - 1,))

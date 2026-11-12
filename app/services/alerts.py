@@ -103,8 +103,23 @@ class AlertEngine:
                     continue
         return out
 
+    def silence_for(self, rule_id: Optional[int], now: Optional[float] = None) -> Optional[Dict[str, Any]]:
+        """Действующая «тишина», покрывающая правило (или все правила), либо None."""
+        now = now or time.time()
+        for s in self.db.query("SELECT * FROM silences WHERE starts_at<=? AND ends_at>? ORDER BY ends_at DESC",
+                               (now, now)):
+            ids = json.loads(s["rule_ids"] or "[]")
+            if not ids or (rule_id is not None and rule_id in ids):
+                return s
+        return None
+
     async def notify(self, rule: AlertRule, title: str, text: str, severity: str,
-                     extra: Optional[Dict[str, Any]] = None) -> List[str]:
+                     extra: Optional[Dict[str, Any]] = None, rule_id: Optional[int] = None) -> List[str]:
+        sil = self.silence_for(rule_id)
+        if sil:
+            self.db.execute("UPDATE silences SET suppressed=suppressed+1 WHERE id=?", (sil["id"],))
+            until = time.strftime("%d.%m %H:%M", time.localtime(sil["ends_at"]))
+            return [f"не отправлено: тишина до {until}" + (f" ({sil['reason']})" if sil["reason"] else "")]
         results = []
         for cid, ch in self.channels(rule.channels):
             for attempt in range(3):
@@ -154,14 +169,14 @@ class AlertEngine:
                     if rule.site != "*":
                         msg += f"\nСайт: {rule.site}"
                     res = await self.notify(rule, rule.name, msg, rule.severity,
-                                            {"metric": rule.metric, "value": value, "state": "firing"})
+                                            {"metric": rule.metric, "value": value, "state": "firing"}, rid)
                     st["last_notify"] = now
                     self._event(rid, rule, "firing", msg, value, res)
                 elif st["state"] == "firing" and rule.repeat_minutes and \
                         now - st["last_notify"] >= rule.repeat_minutes * 60:
                     msg = f"Всё ещё: {label}: {vtxt} {unit}" + (f"\n{detail}" if detail else "")
                     res = await self.notify(rule, rule.name, msg, rule.severity,
-                                            {"metric": rule.metric, "value": value, "state": "repeat"})
+                                            {"metric": rule.metric, "value": value, "state": "repeat"}, rid)
                     st["last_notify"] = now
                     self._event(rid, rule, "repeat", msg, value, res)
             else:
@@ -171,7 +186,7 @@ class AlertEngine:
                     res = []
                     if rule.notify_resolved:
                         res = await self.notify(rule, f"Восстановлено: {rule.name}", msg, "resolved",
-                                                {"metric": rule.metric, "value": value, "state": "resolved"})
+                                                {"metric": rule.metric, "value": value, "state": "resolved"}, rid)
                     self._event(rid, rule, "resolved", msg, value, res)
                 if st["state"] != "ok":
                     st.update(state="ok", since=now)

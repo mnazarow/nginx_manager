@@ -110,6 +110,8 @@ class StatsService:
             ("events", "ts", now - 90 * 86400),
             ("alert_events", "ts", now - 180 * 86400),
             ("sessions", "expires_at", now),
+            ("ban_offenses", "last_at", now - 30 * 86400),
+            ("silences", "ends_at", now - 30 * 86400),
         ]
         for table, col, cut in plan:
             with self.db.write_lock:

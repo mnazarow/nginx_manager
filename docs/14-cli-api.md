@@ -75,6 +75,7 @@ curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8088/api/sites
 | `GET /api/insights?from=&to=&site=` | Встроенный анализ за период: находки с причинами, действиями и данными ([18](18-insights.md)). |
 | `GET /api/insights/catalog`, `PUT /api/insights/thresholds` | Справочник показателей и сценариев; свои пороги `{"thresholds": {"p95": {"warn": 2000, "crit": 5000}}}`. |
 | `GET /api/reports/preview?period=day`, `POST /api/reports/send` | Предпросмотр и отправка регулярного отчёта. |
+| `GET /api/alerts/silences`, `POST /api/alerts/silences` `{"minutes": 120, "starts_at": null, "rule_ids": [], "reason": "…"}`, `DELETE /api/alerts/silences/{id}` | Тишина оповещений на время работ ([11](11-alerts.md#тишина-на-время-работ)). |
 | `GET /metrics` | Метрики Prometheus (вне `/api`; токен или IP из списка, см. [09](09-monitoring.md#метрики-prometheus)). |
 | `GET /api/config/versions`, `GET /api/config/versions/{id}`, `…/diff`, `POST …/rollback` | Версии. |
 | `GET/PUT /api/settings/global`, `GET/PUT /api/settings/panel` | Настройки. |
@@ -122,6 +123,12 @@ curl -s -H "$H" "$API/requests?status=502&limit=20" | jq '.items[] | {ts, host, 
 # Заблокировать адреса из файла на сутки (например, из списка вашей SIEM)
 jq -Rn '{nets: [inputs], minutes: 1440, reason: "SIEM"}' bad-ips.txt | \
   curl -s -H "$H" -H 'Content-Type: application/json' -X POST "$API/bans" -d @-
+
+# Тишина оповещений на время выкладки (в начале скрипта деплоя)
+SID=$(curl -s -H "$H" -H 'Content-Type: application/json' -X POST "$API/alerts/silences" \
+  -d '{"minutes": 30, "reason": "деплой"}' | jq .id)
+# … выкладка …
+curl -s -H "$H" -X DELETE "$API/alerts/silences/$SID"
 
 # Метрики Prometheus
 curl -s -H "$H" http://127.0.0.1:8088/metrics | grep '^nm_http_requests_total'
