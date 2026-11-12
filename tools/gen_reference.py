@@ -136,6 +136,7 @@ TAB_IMAGES = {
     ("site", "ssl"): "site-editor-ssl.png", ("site", "locations"): "site-editor-locations.png",
     ("site", "cache"): "site-editor-cache.png", ("site", "security"): "site-editor-security.png",
     ("global", "ssl"): "global-ssl.png", ("panel", "bans"): "settings-bans.png",
+    ("panel", "acme"): "settings-acme.png",
 }
 
 
@@ -203,7 +204,9 @@ def alert_metrics():
         "rps_low": "запросов в секунду за окно (условие «<», для обнаружения пропажи трафика)",
         "bandwidth_out": "исходящий трафик (байты ответов × 8 / окно), Мбит/с",
         "active_connections": "Active connections из stub_status",
-        "cert_expiry": "минимальное число дней до истечения среди используемых сертификатов",
+        "cert_expiry": "минимальное число дней до истечения среди используемых сертификатов; короткие (срок меньше "
+                       "30 дней) учитываются, только когда осталось меньше шестой части срока — то есть продление "
+                       "не случилось",
         "cpu": "загрузка CPU сервера (psutil), %", "memory": "используемая память, %",
         "disk": "максимум заполнения корневого раздела и раздела журналов, %",
         "error_log_rate": "записей уровня error/crit/alert/emerg в журнале nginx за окно, пересчитано в минуту",
@@ -276,7 +279,7 @@ API_GROUPS = [
     ("/api/docs", "Общее"),
     ("/api/sites", "Сайты"), ("/api/streams", "Потоки TCP/UDP"),
     ("/api/config", "Конфигурация и версии"), ("/api/settings", "Настройки"), ("/api/nginx", "Управление nginx"),
-    ("/api/certs", "Сертификаты"),
+    ("/api/certs", "Сертификаты"), ("/api/dns-accounts", "Сертификаты"),
     ("/api/stats", "Статистика"), ("/api/requests", "Журналы"), ("/api/errors", "Журналы"),
     ("/api/health", "Бэкенды"), ("/api/diagnostics", "Диагностика"), ("/api/collector", "Диагностика"),
     ("/api/insights", "Анализ и отчёты"), ("/api/reports", "Анализ и отчёты"),
@@ -335,6 +338,7 @@ BLOCKS = {
     "global": lambda: tabbed(M.GlobalSettings, M.GLOBAL_TABS, "global"),
     "panel": lambda: tabbed(M.PanelSettings, M.PANEL_TABS, "panel"),
     "certificate": lambda: plain(M.CertificateRequest, 3, "certificate"),
+    "dns_account": lambda: plain(M.DnsAccount, 3, "dns_account"),
     "alert_rule": lambda: plain(M.AlertRule, 3, "alert_rule"),
     "alert_channel": lambda: plain(M.AlertChannel, 3, "alert_channel"),
     "errors": error_categories,

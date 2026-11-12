@@ -21,6 +21,7 @@ def export_config(app, include_users: bool = False, include_certs: bool = True) 
         "streams": [{"id": r["id"], "data": json.loads(r["data"])} for r in db.query("SELECT * FROM streams")],
         "alert_rules": [{**json.loads(r["data"]), "_id": r["id"]} for r in db.query("SELECT * FROM alert_rules")],
         "alert_channels": [{"id": r["id"], "data": json.loads(r["data"])} for r in db.query("SELECT * FROM alert_channels")],
+        "dns_accounts": [{"id": r["id"], "data": json.loads(r["data"])} for r in db.query("SELECT * FROM dns_accounts")],
         "certificates": [],
     }
     for c in db.query("SELECT * FROM certificates"):
@@ -53,7 +54,7 @@ def import_config(app, data: Dict[str, Any], mode: str = "replace") -> Dict[str,
 
 
 def _import_config(app, data: Dict[str, Any], mode: str) -> Dict[str, Any]:
-    from ..models import AlertChannel, AlertRule, GlobalSettings, PanelSettings, Site, Stream
+    from ..models import AlertChannel, AlertRule, DnsAccount, GlobalSettings, PanelSettings, Site, Stream
     db = app.db
     now = time.time()
     stats = {"sites": 0, "streams": 0, "certificates": 0, "rules": 0, "channels": 0}
@@ -61,6 +62,7 @@ def _import_config(app, data: Dict[str, Any], mode: str) -> Dict[str, Any]:
     sites = [(s.get("id"), Site.model_validate(s["data"])) for s in data.get("sites", [])]
     streams = [(s.get("id"), Stream.model_validate(s["data"])) for s in data.get("streams", [])]
     glob = GlobalSettings.model_validate(data.get("global", {}))
+    dns = [(a.get("id"), DnsAccount.model_validate(a["data"])) for a in data.get("dns_accounts", [])]
     for u in data.get("users") or []:
         if u.get("role") not in ("viewer", "operator", "admin") or not str(u.get("username") or "").strip() \
                 or not str(u.get("password_hash") or "").startswith("scrypt$"):
@@ -68,9 +70,24 @@ def _import_config(app, data: Dict[str, Any], mode: str) -> Dict[str, Any]:
     cert_map: Dict[int, int] = {}
     with db.transaction() as c:
         if mode == "replace":
-            for t in ("sites", "streams", "alert_rules", "alert_channels"):
+            for t in ("sites", "streams", "alert_rules", "alert_channels", "dns_accounts"):
                 c.execute(f"DELETE FROM {t}")
+        dns_map: Dict[int, int] = {}
+        for aid, acc in dns:
+            body = json.dumps(acc.model_dump(), ensure_ascii=False)
+            if mode == "replace" and aid:
+                c.execute("INSERT INTO dns_accounts(id,name,provider,data,created_at,updated_at) VALUES(?,?,?,?,?,?)",
+                          (aid, acc.name, acc.provider, body, now, now))
+                dns_map[aid] = aid
+            else:
+                dns_map[aid or 0] = c.execute("INSERT INTO dns_accounts(name,provider,data,created_at,updated_at) "
+                                              "VALUES(?,?,?,?,?)", (acc.name, acc.provider, body, now, now)).lastrowid
+            stats["dns_accounts"] = stats.get("dns_accounts", 0) + 1
         for cert in data.get("certificates", []):
+            cdata = json.loads(cert.get("data") or "{}") if isinstance(cert.get("data"), str) else (cert.get("data") or {})
+            if cdata.get("dns_account_id") in dns_map:
+                cdata["dns_account_id"] = dns_map[cdata["dns_account_id"]]
+                cert = dict(cert, data=json.dumps(cdata, ensure_ascii=False))
             existing = c.execute("SELECT id FROM certificates WHERE name=? AND type=?",
                                  (cert["name"], cert["type"])).fetchone()
             if existing:

@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import re
 import secrets
 from typing import Any, Dict, List, Literal, Optional
 
@@ -1252,7 +1253,7 @@ class GlobalSettings(Model):
 #  Настройки самой панели
 # =============================================================================
 PANEL_TABS = [("stats", "Статистика и хранение"), ("network", "Сеть и внешний IP"), ("security", "Безопасность панели"),
-              ("bans", "Блокировки IP"), ("acme", "Let's Encrypt"), ("monitor", "Мониторинг"),
+              ("bans", "Блокировки IP"), ("acme", "Сертификаты (ACME)"), ("monitor", "Мониторинг"),
               ("reports", "Отчёты"), ("backup", "Резервные копии")]
 
 
@@ -1292,12 +1293,61 @@ class PanelSettings(Model):
     login_max_attempts: int = F(5, label="Неудачных входов до блокировки", tab="security", ge=3, le=100)
     login_lock_minutes: int = F(15, label="Блокировка на", unit="мин", tab="security", ge=1, le=1440)
     require_2fa_admin: bool = F(False, label="Требовать 2FA для администраторов", tab="security")
-    letsencrypt_email: str = F("", label="E-mail для Let's Encrypt", tab="acme",
+    acme_ca: Literal["letsencrypt", "zerossl", "google", "custom"] = F(
+        "letsencrypt", label="Центр сертификации", tab="acme",
+        labels={"letsencrypt": "Let's Encrypt", "zerossl": "ZeroSSL (нужен ключ EAB)",
+                "google": "Google Trust Services (нужен ключ EAB)", "custom": "Свой ACME-сервер (step-ca, Smallstep, корпоративный)"},
+        help="Новые сертификаты выпускаются здесь; выпущенные продлеваются там же, где выпущены")
+    acme_directory: str = F("", label="Адрес каталога ACME", tab="acme", show={"acme_ca": ["custom"]},
+                            ph="https://ca.internal:9000/acme/acme/directory")
+    acme_eab_kid: str = F("", label="EAB: идентификатор ключа (Key ID)", tab="acme",
+                          show={"acme_ca": ["zerossl", "google", "custom"]},
+                          help="External Account Binding — из личного кабинета центра сертификации")
+    acme_eab_hmac: str = F("", label="EAB: HMAC-ключ", tab="acme", ui="password",
+                           show={"acme_ca": ["zerossl", "google", "custom"]})
+    acme_ca_bundle: str = F("", label="Доверенный корневой сертификат ACME-сервера", tab="acme",
+                            show={"acme_ca": ["custom"]}, ph="/etc/ssl/internal-ca.pem",
+                            help="Путь к PEM-файлу, если ACME-сервер работает с сертификатом внутреннего центра")
+    letsencrypt_email: str = F("", label="E-mail для ACME", tab="acme",
                                help="Уведомления об истечении и восстановлении аккаунта")
-    letsencrypt_staging: bool = F(False, label="Тестовый сервер (staging)", tab="acme",
+    letsencrypt_staging: bool = F(False, label="Тестовый сервер Let's Encrypt (staging)", tab="acme",
+                                  show={"acme_ca": ["letsencrypt"]},
                                   help="Для отладки: лимиты выше, но сертификаты недоверенные")
     letsencrypt_key_type: Literal["ecdsa", "rsa"] = F("ecdsa", label="Тип ключа", tab="acme")
-    renew_days_before: int = F(30, label="Продлевать за", unit="дн", tab="acme", ge=5, le=60)
+    renew_days_before: int = F(30, label="Продлевать за", unit="дн", tab="acme", ge=5, le=60,
+                               help="Для коротких сертификатов — не позже, чем за треть срока действия")
+
+    @field_validator("acme_directory")
+    @classmethod
+    def _acme_dir(cls, v):
+        v = V.http_url(v)
+        if v and not v.startswith("https://"):
+            raise V.ValidationError("Адрес каталога ACME должен начинаться с https://")
+        return v
+
+    @field_validator("acme_eab_kid")
+    @classmethod
+    def _eab_kid(cls, v):
+        v = (v or "").strip()
+        if v and not re.match(r"^[\w.:=+/-]{1,200}$", v):
+            raise V.ValidationError("Key ID: только латинские буквы, цифры и символы . : = + / - _")
+        return v
+
+    @field_validator("acme_eab_hmac")
+    @classmethod
+    def _eab_hmac(cls, v):
+        v = (v or "").strip()
+        if v and not re.match(r"^[A-Za-z0-9_=+/-]{8,512}$", v):
+            raise V.ValidationError("HMAC-ключ — строка base64url без пробелов")
+        return v
+
+    @field_validator("acme_ca_bundle")
+    @classmethod
+    def _ca_bundle(cls, v):
+        v = (v or "").strip()
+        if v and (not v.startswith("/") or any(c.isspace() for c in v)):
+            raise V.ValidationError("Укажите абсолютный путь к PEM-файлу без пробелов")
+        return v
     auto_restart_nginx: bool = F(True, label="Автоматически запускать упавший nginx", tab="monitor",
                                  help="Сторож проверяет процесс каждые 10 секунд")
     auto_apply_failover: bool = F(True, label="Разрешить автопереключение бэкендов", tab="monitor",
@@ -1481,14 +1531,21 @@ class AlertChannel(Model):
 class CertificateRequest(Model):
     type: Literal["letsencrypt", "upload", "selfsigned", "path"] = F(
         "letsencrypt", label="Способ",
-        labels={"letsencrypt": "Выпустить Let's Encrypt (бесплатно, авто-продление)",
+        labels={"letsencrypt": "Выпустить по ACME — Let's Encrypt или другой центр (автопродление)",
                 "upload": "Загрузить свой (PEM)", "selfsigned": "Самоподписанный (для тестов)",
                 "path": "Файлы уже на сервере"})
     name: str = F("", label="Название", ph="example.com")
     domains: List[str] = F(factory=list, label="Домены", ui="lines", show={"type": ["letsencrypt", "selfsigned"]},
-                           help="Все домены должны указывать на этот сервер (A/AAAA-записи), порт 80 открыт")
+                           help="По одному на строку. При HTTP-проверке домены должны указывать на этот сервер; "
+                                "*.example.com — только с DNS-проверкой")
+    challenge: Literal["http", "dns"] = F(
+        "http", label="Проверка владения доменом", show={"type": ["letsencrypt"]},
+        labels={"http": "HTTP — файл на этом сервере (порт 80 должен быть открыт)",
+                "dns": "DNS — запись TXT у DNS-провайдера (wildcard, закрытые серверы)"})
+    dns_account_id: int = F(0, label="Учётная запись DNS", ui="dnsaccount", show={"type": ["letsencrypt"], "challenge": ["dns"]},
+                            help="Добавляется на вкладке «Учётные записи DNS» (администратор)")
     email: str = F("", label="E-mail", show={"type": ["letsencrypt"]}, help="Пусто — из настроек панели")
-    staging: bool = F(False, label="Тестовый сервер", show={"type": ["letsencrypt"]})
+    staging: bool = F(False, label="Тестовый сервер Let's Encrypt", show={"type": ["letsencrypt"]})
     key_type: Literal["ecdsa", "rsa"] = F("ecdsa", label="Тип ключа", show={"type": ["letsencrypt", "selfsigned"]})
     cert_pem: str = F("", label="Сертификат + цепочка (PEM)", ui="pemfile", show={"type": ["upload"]})
     key_pem: str = F("", label="Закрытый ключ (PEM)", ui="pemfile", show={"type": ["upload"]})
@@ -1500,11 +1557,127 @@ class CertificateRequest(Model):
     @classmethod
     def _d(cls, v): return _domains(v)
 
+    @model_validator(mode="after")
+    def _wildcard(self):
+        if self.type == "letsencrypt":
+            wild = [d for d in self.domains if d.startswith("*.")]
+            if wild and self.challenge != "dns":
+                raise V.ValidationError(f"{', '.join(wild)}: wildcard-сертификат выпускается только с DNS-проверкой — "
+                                        "выберите «DNS» и учётную запись DNS-провайдера")
+            if self.challenge == "dns" and not self.dns_account_id:
+                raise V.ValidationError("Выберите учётную запись DNS для DNS-проверки")
+        return self
+
+
+# =============================================================================
+#  Учётные записи DNS-провайдеров (DNS-проверка ACME)
+# =============================================================================
+DNS_PROVIDERS = {
+    "cloudflare": "Cloudflare", "digitalocean": "DigitalOcean", "linode": "Linode / Akamai", "ovh": "OVHcloud",
+    "route53": "Amazon Route 53", "google": "Google Cloud DNS",
+    "rfc2136": "Свой DNS-сервер (RFC 2136: BIND, PowerDNS, Knot, Windows DNS)",
+    "hook": "Свои скрипты (любой провайдер с API)",
+}
+DNS_SECRET_FIELDS = ("cf_api_token", "do_token", "linode_key", "ovh_application_secret", "ovh_consumer_key",
+                     "aws_secret_access_key", "google_json", "rfc_key_secret")
+
+
+class DnsAccount(Model):
+    name: str = F("", label="Название", ph="Cloudflare: example.com", min_length=1, max_length=100)
+    provider: Literal["cloudflare", "digitalocean", "linode", "ovh", "route53", "google", "rfc2136", "hook"] = F(
+        "cloudflare", label="DNS-провайдер", labels=DNS_PROVIDERS)
+    cf_api_token: str = F("", label="API-токен", ui="password", show={"provider": ["cloudflare"]},
+                          help="My Profile → API Tokens → Create Token → шаблон «Edit zone DNS» для нужных зон")
+    do_token: str = F("", label="Персональный токен", ui="password", show={"provider": ["digitalocean"]},
+                      help="API → Tokens → Generate New Token, права записи (Write)")
+    linode_key: str = F("", label="Personal Access Token", ui="password", show={"provider": ["linode"]},
+                        help="Права Domains: Read/Write")
+    ovh_endpoint: Literal["ovh-eu", "ovh-ca", "ovh-us", "kimsufi-eu", "soyoustart-eu"] = F(
+        "ovh-eu", label="Регион API", show={"provider": ["ovh"]})
+    ovh_application_key: str = F("", label="Application Key", show={"provider": ["ovh"]})
+    ovh_application_secret: str = F("", label="Application Secret", ui="password", show={"provider": ["ovh"]})
+    ovh_consumer_key: str = F("", label="Consumer Key", ui="password", show={"provider": ["ovh"]},
+                              help="Права: GET/PUT/POST/DELETE /domain/zone/*")
+    aws_access_key_id: str = F("", label="Access Key ID", show={"provider": ["route53"]},
+                               help="Пользователь IAM с правами route53:ListHostedZones, GetChange, ChangeResourceRecordSets")
+    aws_secret_access_key: str = F("", label="Secret Access Key", ui="password", show={"provider": ["route53"]})
+    google_json: str = F("", label="Ключ сервисного аккаунта (JSON)", ui="password", show={"provider": ["google"]},
+                         help="IAM → Service Accounts → Keys → Add key (JSON), роль DNS Administrator. Вставьте содержимое файла")
+    rfc_server: str = F("", label="DNS-сервер (IP)", show={"provider": ["rfc2136"]}, ph="192.0.2.53",
+                        help="Первичный (master) сервер зоны, принимающий динамические обновления")
+    rfc_port: int = F(53, label="Порт", show={"provider": ["rfc2136"]}, ge=1, le=65535)
+    rfc_key_name: str = F("", label="Имя ключа TSIG", show={"provider": ["rfc2136"]}, ph="acme-key")
+    rfc_key_secret: str = F("", label="Секрет ключа TSIG (base64)", ui="password", show={"provider": ["rfc2136"]},
+                            help="Создаётся: tsig-keygen -a hmac-sha512 acme-key")
+    rfc_algorithm: Literal["HMAC-SHA512", "HMAC-SHA384", "HMAC-SHA256", "HMAC-SHA224", "HMAC-SHA1", "HMAC-MD5"] = F(
+        "HMAC-SHA512", label="Алгоритм TSIG", show={"provider": ["rfc2136"]})
+    hook_auth: str = F("", label="Скрипт создания записи", show={"provider": ["hook"]}, ph="/usr/local/bin/dns-add.sh",
+                       help="certbot передаёт CERTBOT_DOMAIN и CERTBOT_VALIDATION: создайте TXT _acme-challenge.$CERTBOT_DOMAIN")
+    hook_cleanup: str = F("", label="Скрипт удаления записи", show={"provider": ["hook"]}, ph="/usr/local/bin/dns-del.sh")
+    propagation_seconds: int = F(0, label="Ожидание распространения записи", unit="с", ge=0, le=3600,
+                                 help="0 — по умолчанию для провайдера. Увеличьте, если проверка не находит запись")
+
+    @field_validator("rfc_server")
+    @classmethod
+    def _rfc_server(cls, v):
+        v = (v or "").strip()
+        if v:
+            import ipaddress
+            try:
+                ipaddress.ip_address(v)
+            except ValueError:
+                raise V.ValidationError("Укажите IP-адрес DNS-сервера (плагин RFC 2136 не принимает имя)")
+        return v
+
+    @field_validator("rfc_key_name", "ovh_application_key", "aws_access_key_id")
+    @classmethod
+    def _token_like(cls, v):
+        v = (v or "").strip()
+        if v and not re.match(r"^[\w.+=/-]{1,256}$", v):
+            raise V.ValidationError("Недопустимые символы")
+        return v
+
+    @field_validator("cf_api_token", "do_token", "linode_key", "ovh_application_secret", "ovh_consumer_key",
+                     "aws_secret_access_key", "rfc_key_secret")
+    @classmethod
+    def _secret_line(cls, v):
+        v = (v or "").strip()
+        if any(c in v for c in "\n\r\0") or (v and any(c.isspace() for c in v)):
+            raise V.ValidationError("Секрет — одна строка без пробелов")
+        return v
+
+    @field_validator("hook_auth", "hook_cleanup")
+    @classmethod
+    def _hook(cls, v):
+        v = (v or "").strip()
+        if v and (not v.startswith("/") or any(c.isspace() or c in "\"';&|$`<>" for c in v)):
+            raise V.ValidationError("Абсолютный путь к исполняемому файлу без пробелов и спецсимволов")
+        return v
+
+    @model_validator(mode="after")
+    def _required(self):
+        need = {"cloudflare": ["cf_api_token"], "digitalocean": ["do_token"], "linode": ["linode_key"],
+                "ovh": ["ovh_application_key", "ovh_application_secret", "ovh_consumer_key"],
+                "route53": ["aws_access_key_id", "aws_secret_access_key"], "google": ["google_json"],
+                "rfc2136": ["rfc_server", "rfc_key_name", "rfc_key_secret"], "hook": ["hook_auth"]}[self.provider]
+        missing = [k for k in need if not getattr(self, k)]
+        if missing:
+            labels = {k: f.json_schema_extra.get("label", k) for k, f in type(self).model_fields.items()}
+            raise V.ValidationError("Заполните: " + ", ".join(labels[k] for k in missing))
+        if self.provider == "google":
+            import json as _json
+            try:
+                d = _json.loads(self.google_json)
+                assert isinstance(d, dict) and d.get("type") == "service_account"
+            except Exception:
+                raise V.ValidationError("Ключ Google — JSON сервисного аккаунта (\"type\": \"service_account\")")
+        return self
+
 
 MODELS = {
     "site": Site, "stream": Stream, "global": GlobalSettings, "panel": PanelSettings,
     "alert_rule": AlertRule, "alert_channel": AlertChannel, "certificate": CertificateRequest,
-    "location": Location, "backend": Backend,
+    "location": Location, "backend": Backend, "dns_account": DnsAccount,
 }
 TABS = {"site": SITE_TABS, "global": GLOBAL_TABS, "panel": PANEL_TABS}
 

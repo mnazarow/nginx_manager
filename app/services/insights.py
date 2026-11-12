@@ -1105,15 +1105,16 @@ class Analyzer:
                                                                       f"ядрах ({load:.1f} на ядро)", None, load)
         # сертификаты
         try:
+            from .certs import expiry_level, fmt_left
             for c in app.certs.list():
                 if not c["used_by"]:
                     continue
                 if c["status"] in ("error", "missing", "expired"):
                     add("cert_error", "crit", "*", f"«{c['name']}»: {c.get('last_error') or c['status']}",
                         None, None, key_extra=str(c["id"]))
-                elif c["days_left"] is not None and c["days_left"] < 21:
-                    add("cert_expiring", "crit" if c["days_left"] < 7 else "warn", "*",
-                        f"«{c['name']}» истекает через {max(0, c['days_left']):.0f} дн. (используют: "
+                elif expiry_level(c):
+                    add("cert_expiring", expiry_level(c), "*",
+                        f"«{c['name']}» истекает через {fmt_left(c['days_left'])} (используют: "
                         f"{', '.join(c['used_by'][:3])})" + (f"; последняя ошибка: {c['last_error'][:160]}"
                                                             if c.get("last_error") else ""),
                         None, c["days_left"], key_extra=str(c["id"]))

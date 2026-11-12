@@ -224,10 +224,16 @@ class App:
                     (site == "*" or t.owner in (f"site:{site}", f"stream:{site}") or t.owner.startswith(f"loc:{site}:"))]
             return float(len(down)), "\n".join(f"{t.owner_name}: {t.address}:{t.port} — {t.last_error}" for t in down)
         if m == "cert_expiry":
+            from .services.certs import lifetime_days
             certs = [c for c in self.certs.list() if c["days_left"] is not None and c["used_by"]]
             if not certs:
                 return None, ""
-            c = min(certs, key=lambda x: x["days_left"])
+            # короткие сертификаты (меньше 30 дней) в «днях до истечения» почти всегда ниже порога — учитываем их,
+            # только когда продление явно не случилось (осталось меньше шестой части срока)
+            urgent = [c for c in certs if lifetime_days(c) >= 30 or c["days_left"] < lifetime_days(c) / 6]
+            if not urgent:
+                return round(max(c["days_left"] for c in certs), 1), ""
+            c = min(urgent, key=lambda x: x["days_left"])
             return round(c["days_left"], 1), f"Сертификат «{c['name']}» ({', '.join(c['domains'][:3])})"
         if m == "insights_crit":
             return float(self.insights.last["counts"].get("crit", 0)), "\n".join(
@@ -467,7 +473,7 @@ class App:
             if now - last_geo > 600:
                 last_geo = now
                 await self._guard("сети стран GeoIP", self.refresh_geo())
-            if now - last_cert > 6 * 3600:
+            if now - last_cert > 3600:  # ежечасно: сертификаты внутренних центров живут и сутки
                 last_cert = now
                 await self._guard("проверка сертификатов", asyncio.to_thread(self.certs.refresh_all))
                 await self._guard("продление сертификатов", self.certs.auto_renew(after=self.after_cert_issued))

@@ -489,7 +489,26 @@ D = {
                                           "Только для отладки.", ""),
     "PanelSettings.letsencrypt_key_type": ("ECDSA (P-256) — короче и быстрее рукопожатие; RSA 2048 — для очень старых "
                                            "клиентов.", "ECDSA.", "ecdsa"),
-    "PanelSettings.renew_days_before": ("За сколько дней до истечения продлевать сертификаты Let's Encrypt.", "30", "30"),
+    "PanelSettings.renew_days_before": ("За сколько дней до истечения продлевать ACME-сертификаты. Для коротких "
+                                        "сертификатов срок сокращается до трети срока действия: шестидневный "
+                                        "продлевается за 2 дня, 45-дневный — за 15.", "30", "30"),
+    "PanelSettings.acme_ca": ("Где выпускаются новые ACME-сертификаты. Let's Encrypt — бесплатно, без регистрации. "
+                              "ZeroSSL и Google Trust Services — бесплатные альтернативы (резерв на случай лимитов или "
+                              "сбоя Let's Encrypt), требуют ключ EAB из личного кабинета. Свой ACME-сервер — "
+                              "корпоративный центр (step-ca, Smallstep, Vault PKI, EJBCA) для внутренних доменов. "
+                              "Выпущенные сертификаты продлеваются в том центре, где выпущены.",
+                              "Let's Encrypt; второй центр держите в запасе.", "letsencrypt"),
+    "PanelSettings.acme_directory": ("Адрес каталога (directory) ACME-сервера — его показывает сам сервер, например "
+                                     "step-ca: https://ca.internal:9000/acme/<провайдер>/directory.", "",
+                                     "https://ca.internal:9000/acme/acme/directory"),
+    "PanelSettings.acme_eab_kid": ("External Account Binding: идентификатор ключа, привязывающий аккаунт ACME к "
+                                   "учётной записи у центра сертификации. ZeroSSL: Developer → EAB Credentials; "
+                                   "Google: gcloud publicca external-account-keys create.", "", ""),
+    "PanelSettings.acme_eab_hmac": ("Секрет EAB (base64url). Нужен один раз — при регистрации аккаунта; в интерфейсе "
+                                    "и API не показывается.", "", ""),
+    "PanelSettings.acme_ca_bundle": ("Корневой сертификат внутреннего центра, которым подписан TLS самого ACME-сервера "
+                                     "(передаётся certbot как REQUESTS_CA_BUNDLE). Не нужен для публичных центров.",
+                                     "", "/etc/step-ca/certs/root_ca.crt"),
     "PanelSettings.auto_restart_nginx": ("Сторож проверяет процесс каждые 10 с и запускает nginx (не более 5 раз за 10 "
                                          "минут).", "Включено.", ""),
     "PanelSettings.auto_apply_failover": ("Глобальное разрешение автопереключения бэкендов (включается ещё и в каждом "
@@ -537,6 +556,31 @@ D = {
                                    "невозможен.", "Включите и www, и основной домен.", "example.com www.example.com"),
     "CertificateRequest.email": ("E-mail аккаунта ACME (если отличается от общего в настройках).", "", "ops@example.com"),
     "CertificateRequest.staging": ("Тестовый сервер Let's Encrypt — для отладки без риска упереться в лимиты.", "", ""),
+    "CertificateRequest.challenge": ("Как центр сертификации проверяет, что домен ваш. HTTP: certbot кладёт файл в "
+                                     "/.well-known/acme-challenge/, центр скачивает его по http://домен/ — нужны A/AAAA "
+                                     "на этот сервер и открытый порт 80. DNS: certbot создаёт TXT-запись "
+                                     "_acme-challenge.домен через API DNS-провайдера — работает для wildcard "
+                                     "(*.example.com), закрытых серверов и доменов, ещё не переключённых на сервер.",
+                                     "HTTP для обычных сайтов; DNS — для wildcard и внутренних сервисов.", "http"),
+    "CertificateRequest.dns_account_id": ("Учётная запись DNS-провайдера, через которую создаётся TXT-запись. Одна "
+                                          "запись может обслуживать много сертификатов и зон.", "", ""),
+    "DnsAccount.name": ("Название для списка.", "Провайдер и зоны: «Cloudflare: example.com, example.org».",
+                        "Cloudflare: example.com"),
+    "DnsAccount.provider": ("Где размещены DNS-записи домена (кто указан в NS). Для каждого провайдера certbot нужен "
+                            "плагин — панель покажет, установлен ли он, и установит его кнопкой.", "", "cloudflare"),
+    "DnsAccount.cf_api_token": ("API-токен (не глобальный API-ключ!) с правами Zone → DNS → Edit и Zone → Zone → Read "
+                                "для нужных зон.", "Ограничьте токен конкретными зонами.", ""),
+    "DnsAccount.rfc_server": ("IP первичного DNS-сервера зоны. Динамические обновления (RFC 2136) поддерживают BIND, "
+                              "PowerDNS, Knot DNS, Windows DNS (с TSIG — через GSS не работает).", "", "192.0.2.53"),
+    "DnsAccount.rfc_key_secret": ("Секрет ключа TSIG в base64 (строка secret из вывода tsig-keygen).", "", ""),
+    "DnsAccount.hook_auth": ("Исполняемый файл, создающий TXT-запись _acme-challenge.$CERTBOT_DOMAIN со значением "
+                             "$CERTBOT_VALIDATION и дожидающийся её появления. Код возврата не 0 — ошибка выпуска.",
+                             "Используйте lexicon: lexicon <провайдер> create $CERTBOT_DOMAIN TXT --name "
+                             "_acme-challenge --content $CERTBOT_VALIDATION", "/usr/local/bin/dns-add.sh"),
+    "DnsAccount.propagation_seconds": ("Сколько ждать после создания записи, прежде чем просить центр сертификации "
+                                       "проверить её. По умолчанию: Cloudflare 10 с, DigitalOcean 10 с, Linode 120 с, "
+                                       "OVH 120 с, RFC 2136 60 с, Google 60 с; Route 53 ждёт подтверждения от AWS.",
+                                       "0; увеличьте при ошибке «No TXT record found».", "60"),
     # ------------------------------------------------------------------ PanelSettings: блокировки, метрики, отчёты
     "PanelSettings.ban_response": ("Как nginx отвечает адресам из списка блокировок. 444 закрывает соединение без "
                                    "ответа и не тратит трафик; 403 и 429 показывают страницу ошибки.",

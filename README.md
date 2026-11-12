@@ -11,7 +11,7 @@
 **Конфигурация в графическом виде**
 - Сайты: обратный прокси, перенаправление, статический сайт; несколько доменов, IDN (кириллические домены), wildcard и регулярные выражения; массовые действия.
 - Бэкенды: несколько серверов, веса, резервные (backup), max_fails/fail_timeout, max_conns, keepalive; 6 методов балансировки.
-- HTTPS: Let's Encrypt (автовыпуск и автопродление), загрузка своих сертификатов, самоподписанные, файлы на диске; HTTP/2, HTTP/3, HSTS, OCSP, профили TLS Mozilla.
+- HTTPS: бесплатные сертификаты по ACME — Let's Encrypt, ZeroSSL, Google Trust Services или свой центр (автовыпуск и автопродление); wildcard `*.example.com` через DNS-проверку (Cloudflare, DigitalOcean, Linode, OVH, Route 53, Google Cloud DNS, свой DNS-сервер RFC 2136, свои скрипты); загрузка своих сертификатов, самоподписанные, файлы на диске; HTTP/2, HTTP/3, HSTS, OCSP, профили TLS Mozilla.
 - Локации: разные пути → разные бэкенды, замена пути, статика, редиректы, ответы, запреты, свои лимиты и доступ; готовые шаблоны.
 - Проксирование: заголовки, WebSocket, таймауты, буферы, повтор на другом сервере, скрытие заголовков, https-бэкенды.
 - Кэширование: зоны кэша, время жизни по кодам, обход по cookie/заголовкам/шаблону, «устаревший кэш при падении бэкенда».
@@ -54,7 +54,7 @@
 ## Быстрый старт
 
 ```bash
-tar xzf nginx-manager-1.6.0.tar.gz && cd nginx-manager
+tar xzf nginx-manager-1.7.0.tar.gz && cd nginx-manager
 sudo ./install.sh
 ```
 
@@ -73,7 +73,7 @@ sudo ./install.sh
 | [04. Быстрый старт и сценарии](docs/04-quick-start.md) | Первый сайт пошагово, типовые конфигурации |
 | [05. Сайты — справочник параметров](docs/05-sites.md) | Каждый параметр сайта, локации, рекомендации, примеры |
 | [06. TCP/UDP-потоки](docs/06-streams.md) | Проксирование БД и других сервисов |
-| [07. Сертификаты](docs/07-certificates.md) | Let's Encrypt, свои сертификаты, wildcard |
+| [07. Сертификаты](docs/07-certificates.md) | ACME (Let's Encrypt и другие центры), HTTP- и DNS-проверка, wildcard, DNS-провайдеры, свои сертификаты |
 | [08. Глобальные настройки nginx](docs/08-global-settings.md) | Каждый параметр, настройка под нагрузку |
 | [09. Мониторинг и аналитика](docs/09-monitoring.md) | Метрики и как они считаются, журналы, GeoIP, Prometheus |
 | [10. Диагностика](docs/10-diagnostics.md) | Все проверки, исправления, категории ошибок nginx |
@@ -97,6 +97,7 @@ sudo ./install.sh
 python3 -m pytest -q tests/        # автотесты (нужны nginx, pytest, httpx и зависимости из requirements.txt)
 python3 tools/gen_reference.py     # обновить справочники параметров, метрик, сценариев и API в docs/
 ruff check . && shellcheck -x *.sh packaging/*.sh
+python3 tools/acme_e2e.py --help   # сквозной выпуск сертификатов на стенде (ACME-сервер Pebble + DNS-сервер BIND)
 ```
 
 Справочники в документации генерируются из кода; тест `test_docs_generated_blocks_up_to_date` не даст забыть их
@@ -109,7 +110,8 @@ app/            серверная часть (Python): модели, генер
 web/            веб-панель (HTML/CSS/JS без сборки), библиотеки Chart.js, marked, qrcode
 docs/           документация (Markdown) и иллюстрации
 packaging/      systemd-юнит, logrotate, nmctl, общие функции скриптов
-tools/          демо-бэкенд, генератор нагрузки, демо-данные и демо-база GeoIP, скриншоты, генератор справочника
+tools/          демо-бэкенд, генератор нагрузки, демо-данные и демо-база GeoIP, скриншоты, генератор справочника,
+                сквозной тест выпуска сертификатов (acme_e2e.py: Pebble + BIND)
 tests/          автотесты: ядро, генератор (фаззинг с nginx -t), все маршруты API (права, фаззинг), импорт nginx,
                 сборщик статистики, оповещения, сертификаты, nmctl, веб-панель (python3 -m pytest -q tests/)
 install.sh      установка        update.sh   обновление        uninstall.sh   удаление

@@ -16,7 +16,8 @@ const A = {
   alerts_silenced: 'тишина оповещений', alerts_unsilenced: 'тишина завершена', report_sent: 'отправлен отчёт',
   ip_banned: 'IP заблокирован', ip_unbanned: 'IP разблокирован', bans_cleared: 'блокировки сняты', geo_rebuild: 'пересборка сетей стран',
   insight_muted: 'скрыт тип подсказок', insight_thresholds: 'пороги анализа', backup_created: 'создана резервная копия', backup_deleted: 'удалена резервная копия',
-  cli_allowlist_clear: 'консоль: снято ограничение доступа по IP',
+  cli_allowlist_clear: 'консоль: снято ограничение доступа по IP', dns_account_created: 'создана учётная запись DNS',
+  dns_account_updated: 'изменена учётная запись DNS', dns_account_deleted: 'удалена учётная запись DNS',
 };
 
 // действие, которого нет в словаре: управление nginx и команды консоли — по шаблону, остальное — как есть

@@ -81,7 +81,7 @@ def describe(model: type) -> List[Dict[str, Any]]:
 DOC_PAGES = {
     "site": "05-sites.md", "location": "05-sites.md", "backend": "05-sites.md", "stream": "06-streams.md",
     "certificate": "07-certificates.md", "global": "08-global-settings.md", "alert_rule": "11-alerts.md",
-    "alert_channel": "11-alerts.md", "panel": "13-panel-settings.md",
+    "alert_channel": "11-alerts.md", "panel": "13-panel-settings.md", "dns_account": "07-certificates.md",
 }
 # Элементы списков, у которых в справочнике свой раздел (остальные описаны таблицей внутри поля-списка)
 ITEM_KINDS = {"Location": "location", "Backend": "backend"}

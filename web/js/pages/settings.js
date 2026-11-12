@@ -25,7 +25,7 @@ export async function render(root, c) {
     if (tab === 'security') form.appendChild(h('div', { class: 'alert warn mt' }, 'Если вы потеряете доступ из-за списка IP — выполните на сервере: ', h('code', {}, 'nmctl allowlist clear'), '.'));
   };
   mount(root,
-    h('div', { class: 'page-head' }, h('div', {}, h('h1', {}, 'Настройки панели'), h('p', {}, 'Хранение статистики, сеть, безопасность доступа, Let\'s Encrypt, мониторинг и резервное копирование.')),
+    h('div', { class: 'page-head' }, h('div', {}, h('h1', {}, 'Настройки панели'), h('p', {}, 'Хранение статистики, сеть, безопасность доступа, сертификаты (ACME), мониторинг и резервное копирование.')),
       h('button', { class: 'btn primary', onclick: async () => {
         try {
           const r = await api('/settings/panel', { method: 'PUT', body: obj }); errors = {}; draw();

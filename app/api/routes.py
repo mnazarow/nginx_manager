@@ -13,8 +13,8 @@ from pydantic import BaseModel
 
 from ..auth import COOKIE, ROLE_LABELS, ROLES, admin, operator, viewer
 from ..config import DOCS_DIR, VERSION, settings
-from ..models import (CLOUDFLARE_IPS, AlertChannel, AlertRule, CertificateRequest, GlobalSettings, PanelSettings,
-                      Site, Stream)
+from ..models import (CLOUDFLARE_IPS, DNS_PROVIDERS, DNS_SECRET_FIELDS, AlertChannel, AlertRule, CertificateRequest,
+                      DnsAccount, GlobalSettings, PanelSettings, Site, Stream)
 from ..nginx.generator import State, slug
 from ..schema import full_schema
 from ..utils import apr1, totp_secret, totp_verify, verify_password
@@ -756,8 +756,11 @@ async def put_global(request: Request, body: Dict[str, Any] = Body(...), apply: 
 
 @router.get("/settings/panel")
 async def get_panel(request: Request, user=Depends(viewer)):
-    """Настройки панели (секреты каналов не возвращаются)."""
-    return nm(request).panel().model_dump()
+    """Настройки панели (секреты — HMAC-ключ EAB — не возвращаются)."""
+    d = nm(request).panel().model_dump()
+    if d.get("acme_eab_hmac"):
+        d["acme_eab_hmac"] = MASK
+    return d
 
 
 @router.put("/settings/panel")
@@ -765,6 +768,8 @@ async def put_panel(request: Request, body: Dict[str, Any] = Body(...), user=Dep
     """Изменить настройки панели (только администратор)."""
     app = nm(request)
     old = app.panel()
+    if body.get("acme_eab_hmac") == MASK:  # секрет не менялся
+        body["acme_eab_hmac"] = old.acme_eab_hmac
     p = PanelSettings.model_validate(body)
     ip = user.get("ip", "")
     if p.require_2fa_admin and not old.require_2fa_admin and not user.get("totp_enabled"):
@@ -814,8 +819,19 @@ async def nginx_action(action: str, request: Request, user=Depends(operator)):
 async def certs(request: Request, user=Depends(viewer)):
     """Сертификаты: домены, срок действия, статус, где используются, ход выпуска."""
     app = nm(request)
-    return {"items": app.certs.list(), "certbot": bool(app.certs.certbot()),
-            "email": app.panel().letsencrypt_email, "webroot": str(settings.acme_webroot)}
+    from ..services import acme
+    p = app.panel()
+    server = acme.directory_for(p)
+    items = app.certs.list()
+    for c in items:
+        if c["type"] == "letsencrypt":
+            srv = c["data"].get("server") or acme.CA_DIRECTORIES[
+                "letsencrypt-staging" if c["data"].get("staging") else "letsencrypt"]
+            c["ca"] = acme.ca_title(srv)
+            c["data"].pop("eab", None)
+    return {"items": items, "certbot": bool(app.certs.certbot()), "email": p.letsencrypt_email,
+            "webroot": str(settings.acme_webroot), "ca": acme.ca_title(server) if server else "не настроен",
+            "renew_days": p.renew_days_before}
 
 
 @router.post("/certs")
@@ -848,6 +864,100 @@ async def delete_cert(cid: int, request: Request, user=Depends(operator)):
     await asyncio.to_thread(app.certs.delete, cid)
     audit(request, user, "cert_deleted", str(cid))
     return {"ok": True}
+
+
+# =============================================================================
+#  Учётные записи DNS (DNS-проверка ACME)
+# =============================================================================
+def _mask_dns(d: Dict[str, Any]) -> Dict[str, Any]:
+    d = dict(d)
+    for k in DNS_SECRET_FIELDS:
+        if d.get(k):
+            d[k] = MASK
+    return d
+
+
+def _dns_from(app, body: Dict[str, Any], aid: Optional[int] = None) -> DnsAccount:
+    if aid:
+        old = app.db.one("SELECT data FROM dns_accounts WHERE id=?", (aid,))
+        if not old:
+            raise HTTPException(404, "Учётная запись не найдена")
+        od = json.loads(old["data"])
+        for k in DNS_SECRET_FIELDS:
+            if body.get(k) == MASK:
+                body[k] = od.get(k, "")
+    return DnsAccount.model_validate(body)
+
+
+@router.get("/dns-accounts")
+async def dns_accounts(request: Request, user=Depends(viewer)):
+    """Учётные записи DNS-провайдеров (секреты не возвращаются): провайдер, где используется, установлен ли плагин certbot."""
+    from ..services import acme
+    app = nm(request)
+    usage = app.certs.dns_accounts_usage()
+    plugins = await asyncio.to_thread(acme.installed_plugins)
+    out = []
+    for r in app.db.query("SELECT * FROM dns_accounts ORDER BY name"):
+        d = json.loads(r["data"])
+        auth = acme.PLUGINS[d["provider"]]["auth"]
+        out.append({"id": r["id"], "data": _mask_dns(d), "provider_title": DNS_PROVIDERS[d["provider"]],
+                    "used_by": usage.get(r["id"], []),
+                    "plugin": True if d["provider"] == "hook" else (None if plugins is None else auth in plugins),
+                    "package": acme.PLUGINS[d["provider"]].get("pkg", "")})
+    return {"items": out, "certbot": plugins is not None}
+
+
+@router.post("/dns-accounts")
+async def create_dns_account(request: Request, body: Dict[str, Any] = Body(...), user=Depends(admin)):
+    """Создать учётную запись DNS (модель DnsAccount; только администратор — в ней секреты)."""
+    app = nm(request)
+    acc = _dns_from(app, body)
+    now = time.time()
+    aid = app.db.execute("INSERT INTO dns_accounts(name,provider,data,created_at,updated_at) VALUES(?,?,?,?,?)",
+                         (acc.name, acc.provider, json.dumps(acc.model_dump(), ensure_ascii=False), now, now))
+    audit(request, user, "dns_account_created", acc.name, {"provider": acc.provider})
+    return {"id": aid}
+
+
+@router.put("/dns-accounts/{aid}")
+async def update_dns_account(aid: int, request: Request, body: Dict[str, Any] = Body(...), user=Depends(admin)):
+    """Изменить учётную запись DNS. Секрет «••••••••» — оставить прежний; файлы учётных данных для продления
+    переписываются сразу."""
+    app = nm(request)
+    acc = _dns_from(app, body, aid)
+    app.db.execute("UPDATE dns_accounts SET name=?, provider=?, data=?, updated_at=? WHERE id=?",
+                   (acc.name, acc.provider, json.dumps(acc.model_dump(), ensure_ascii=False), time.time(), aid))
+    await asyncio.to_thread(app.certs.sync_dns_credentials, aid)
+    audit(request, user, "dns_account_updated", acc.name, {"provider": acc.provider})
+    return {"id": aid}
+
+
+@router.delete("/dns-accounts/{aid}")
+async def delete_dns_account(aid: int, request: Request, user=Depends(admin)):
+    """Удалить учётную запись DNS (нельзя, пока по ней продлеваются сертификаты)."""
+    from ..services import acme
+    app = nm(request)
+    used = app.certs.dns_accounts_usage().get(aid)
+    if used:
+        raise HTTPException(400, f"Учётная запись используется сертификатами: {', '.join(used[:5])}. "
+                                 "Удалите их или выпустите заново с другой учётной записью")
+    r = app.db.one("SELECT name FROM dns_accounts WHERE id=?", (aid,))
+    if not r:
+        raise HTTPException(404, "Учётная запись не найдена")
+    app.db.execute("DELETE FROM dns_accounts WHERE id=?", (aid,))
+    acme.remove_credentials(aid)
+    audit(request, user, "dns_account_deleted", r["name"])
+    return {"ok": True}
+
+
+@router.post("/dns-accounts/{aid}/check")
+async def check_dns_account(aid: int, request: Request, user=Depends(operator)):
+    """Проверить учётную запись без выпуска: установлен ли плагин certbot, существуют ли скрипты."""
+    from ..services import acme
+    acc = nm(request).certs.dns_account(aid)
+    if not acc:
+        raise HTTPException(404, "Учётная запись не найдена")
+    return await asyncio.to_thread(acme.check_account, acc)
 
 
 @router.post("/certs/selftest")

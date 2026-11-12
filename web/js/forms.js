@@ -141,6 +141,7 @@ function widget(f, obj, ctx, p) {
     }
     case 'int': case 'float': {
       if (f.ui === 'certificate') return certSelect(f, obj, ctx);
+      if (f.ui === 'dnsaccount') return dnsAccountSelect(f, obj, ctx);
       const inp = h('input', { type: 'number', value: v ?? '', min: f.min, max: f.max, step: f.type === 'float' ? 'any' : 1, class: invalid,
         placeholder: f.ph || '', oninput: (e) => { const s = e.target.value; set(s === '' ? (f.nullable ? null : f.default) : (f.type === 'int' ? parseInt(s, 10) : parseFloat(s))); } });
       return inp;
@@ -240,6 +241,16 @@ function certSelect(f, obj, ctx) {
       `${c.name} — ${(c.domains || []).slice(0, 3).join(', ')}${c.status !== 'valid' ? ' [' + c.status + ']' : c.days_left != null ? ` (${Math.floor(c.days_left)} дн.)` : ''}`)));
   return h('div', { class: 'row nowrap' }, sel, ctx.onNewCert ? h('button', { class: 'btn', type: 'button', title: 'Выпустить новый',
     onclick: () => ctx.onNewCert((id) => { obj[f.key] = id; changed(ctx, true); }) }, icon('plus')) : null);
+}
+
+// учётная запись DNS-провайдера для DNS-проверки ACME (список — ctx.dnsAccounts из /api/dns-accounts)
+function dnsAccountSelect(f, obj, ctx) {
+  const list = ctx.dnsAccounts || [];
+  if (!list.length) return h('div', { class: 'help' }, 'Учётных записей DNS нет — администратор добавляет их на странице «Сертификаты» → «Учётные записи DNS».');
+  if (!obj[f.key] || !list.some(a => a.id === obj[f.key])) obj[f.key] = list[0].id;
+  return h('select', { onchange: (e) => { obj[f.key] = +e.target.value; changed(ctx); } },
+    list.map(a => h('option', { value: a.id, selected: a.id === obj[f.key] },
+      `${a.data.name} — ${a.provider_title}${a.plugin === false ? ' (плагин certbot не установлен)' : ''}`)));
 }
 
 function arrayTable(f, obj, ctx, p) {

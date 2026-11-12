@@ -536,7 +536,7 @@ class Diagnostics:
         await asyncio.to_thread(self.app.certs.refresh_all)
         certs = self.app.certs.list()
         state = self.app.nginx.load_state()
-        from .certs import domain_covered
+        from .certs import domain_covered, expiry_level, fmt_left
         for c in certs:
             name = f"Сертификат «{c['name']}»"
             if c["status"] == "pending":
@@ -553,14 +553,14 @@ class Diagnostics:
             elif days < 0:
                 res.append(R(f"cert_{c['id']}", g, name, FAIL, "Срок действия истёк",
                              fix="renew_cert", fix_label="Продлить", fix_args={"id": c["id"]}))
-            elif days < 7:
-                res.append(R(f"cert_{c['id']}", g, name, FAIL, f"Истекает через {days:.1f} дн.",
+            elif expiry_level(c) == "crit":
+                res.append(R(f"cert_{c['id']}", g, name, FAIL, f"Истекает через {fmt_left(days)}",
                              fix="renew_cert", fix_label="Продлить", fix_args={"id": c["id"]}))
-            elif days < 21:
-                res.append(R(f"cert_{c['id']}", g, name, WARN, f"Истекает через {days:.0f} дн.",
+            elif expiry_level(c) == "warn":
+                res.append(R(f"cert_{c['id']}", g, name, WARN, f"Истекает через {fmt_left(days)}",
                              fix="renew_cert", fix_label="Продлить", fix_args={"id": c["id"]},
-                             hint="Let's Encrypt продлевается автоматически за 30 дней. Если не продлился — "
-                                  "смотрите ошибку на странице «Сертификаты»."))
+                             hint="ACME-сертификаты продлеваются автоматически (за 30 дней, короткие — за треть "
+                                  "срока). Если не продлился — смотрите ошибку на странице «Сертификаты»."))
             else:
                 res.append(R(f"cert_{c['id']}", g, name, OK, f"Действителен ещё {days:.0f} дн. "
                                                             f"({', '.join(c['domains'][:4])})"))
@@ -579,15 +579,50 @@ class Diagnostics:
                 res.append(R(f"cert_site_{sid}", g, f"HTTPS сайта «{s.name}»", WARN,
                              f"Сертификат не покрывает: {', '.join(missing)}",
                              hint="Выпустите сертификат, включающий все домены сайта, иначе браузеры покажут ошибку."))
+        dns_used = self.app.certs.dns_accounts_usage()
         if any(c["type"] == "letsencrypt" for c in certs):
             if not self.app.certs.certbot():
                 res.append(R("certbot", g, "certbot", FAIL, "Не установлен", fix="install_certbot",
                              fix_label="Установить certbot"))
+            elif (cb := await asyncio.to_thread(run, [self.app.certs.certbot() or "certbot", "--version"], 60))[0] != 0:
+                out = cb[1]
+                res.append(R("certbot", g, "certbot", FAIL, "Установлен, но не запускается — сертификаты не продлеваются",
+                             hint="Ошибка: " + ([ln.strip() for ln in out.strip().splitlines()
+                                                 if ln.strip(" ^~")] or ["—"])[-1][:300] +
+                                  ". Частая причина — certbot из пакета запускается не тем Python (после замены "
+                                  "python3 через update-alternatives или pip). Переустановите: apt install --reinstall "
+                                  "certbot python3-certbot (dnf reinstall certbot)."))
             else:
                 active = await asyncio.to_thread(self.app.certs.certbot_timer_active)
                 res.append(R("certbot", g, "Автопродление certbot", OK if active else INFO,
                              "таймер certbot активен" if active else
                              "системный таймер не найден — продлением занимается Nginx Manager (ежедневно)"))
+        if dns_used and self.app.certs.certbot():
+            from . import acme
+            plugins = await asyncio.to_thread(acme.installed_plugins, True)
+            for aid, names in dns_used.items():
+                acc = self.app.certs.dns_account(aid)
+                if not acc:
+                    res.append(R(f"dns_account_{aid}", g, "Учётная запись DNS", FAIL,
+                                 f"Удалена, но по ней продлеваются: {', '.join(names[:5])}",
+                                 hint="Выпустите эти сертификаты заново с другой учётной записью DNS."))
+                    continue
+                if acc.provider == "hook" or plugins is None:
+                    continue
+                auth = acme.PLUGINS[acc.provider]["auth"]
+                if auth not in plugins:
+                    res.append(R(f"dns_plugin_{acc.provider}", g, f"Плагин certbot {auth}", FAIL,
+                                 f"Не установлен — не продлятся: {', '.join(names[:5])}",
+                                 fix="install_dns_plugin", fix_label="Установить плагин",
+                                 fix_args={"provider": acc.provider}))
+        panel = self.app.panel()
+        if panel.acme_ca == "custom" and not panel.acme_directory:
+            res.append(R("acme_directory", g, "Центр сертификации", WARN, "Выбран свой ACME-сервер, но адрес не указан",
+                         hint="Настройки панели → «Сертификаты (ACME)» → «Адрес каталога ACME»."))
+        elif panel.acme_ca in ("zerossl", "google") and not (panel.acme_eab_kid and panel.acme_eab_hmac):
+            res.append(R("acme_eab", g, "Центр сертификации", WARN, "Не указан ключ EAB — новые сертификаты не выпустятся",
+                         hint="Получите Key ID и HMAC-ключ в личном кабинете центра сертификации и укажите их в "
+                              "настройках панели."))
         webroot = settings.acme_webroot / ".well-known" / "acme-challenge"
         if not webroot.is_dir():
             res.append(R("acme_webroot", g, "Каталог ACME", FAIL, f"{webroot} не существует", fix="fix_webroot",
@@ -965,6 +1000,21 @@ class Diagnostics:
             return {"ok": True, "output": "Каталог создан, права исправлены"}
         if action == "install_certbot":
             return await self._pkg_install(["certbot"])
+        if action == "install_dns_plugin":
+            from . import acme
+            provider = str((args or {}).get("provider", ""))
+            if provider not in acme.PLUGINS or provider == "hook":
+                raise ValueError("Неизвестный DNS-провайдер")
+            cmd = acme.install_command(provider)
+            if not cmd:
+                return {"ok": False, "output": "Пакетный менеджер не найден — установите плагин вручную: "
+                                               + acme.PLUGINS[provider]["pkg"]}
+            code, out = await asyncio.to_thread(run, cmd, 600, None)
+            acme.installed_plugins(refresh=True)
+            hint = ""
+            if code != 0 and which("dnf"):
+                hint = "\nНа RHEL-системах плагины есть в EPEL: dnf install epel-release"
+            return {"ok": code == 0, "output": out[-4000:] + hint}
         if action == "install_stream":
             if which("apt-get"):
                 return await self._pkg_install(["libnginx-mod-stream"])

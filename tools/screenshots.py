@@ -21,7 +21,8 @@ PAGES = [
     ("bans", "#/bans", 2500), ("settings-bans", "#/settings?tab=bans", 1500),
     ("settings-reports", "#/settings?tab=reports", 1500), ("insights-thresholds", "#/insights?tab=thresholds", 3000),
     ("geo-tab", "#/bans?tab=countries", 3000), ("analytics-sla", "#/analytics?view=sla", 3000),
-    ("analytics-heatmap", "#/analytics?view=heatmap", 3000),
+    ("analytics-heatmap", "#/analytics?view=heatmap", 3000), ("certs-dns", "#/certs?tab=dns", 2000),
+    ("settings-acme", "#/settings?tab=acme", 1500),
 ]
 SCENES = {"geo-site", "sites-bulk"}  # снимки с действиями: --only geo-site,sites-bulk или --extras
 
@@ -36,6 +37,9 @@ async def main(a):
         page = await ctx.new_page()
         page.on("console", lambda m: errors.append(f"[console.{m.type}] {m.text}") if m.type in ("error",) else None)
         page.on("pageerror", lambda e: errors.append(f"[pageerror] {e}"))
+        # адрес ответа с ошибкой (в консоли браузера его нет); 401 до входа — норма
+        page.on("response", lambda r: errors.append(f"[http {r.status}] {r.request.method} {r.url}")
+                if r.status >= 400 and r.status != 401 else None)
         await page.goto(a.url + "/")
         await page.add_init_script(f"localStorage.setItem('nm-theme', '{a.theme}')")
         await page.wait_for_selector("input[autocomplete=username]")
@@ -110,10 +114,24 @@ async def extras(page, a):
     await page.keyboard.press("Escape")
     await page.goto(f"{a.url}/#/certs")
     await page.wait_for_timeout(1200)
-    await page.click("text=Добавить сертификат")
-    await page.wait_for_timeout(600)
+    await page.click(".page-head >> text=Добавить сертификат")
+    await page.wait_for_timeout(800)
+    # wildcard с DNS-проверкой — самый показательный вариант (нужна хотя бы одна учётная запись DNS)
+    await page.evaluate("""() => { const s = document.querySelector('[data-path="challenge"] select');
+        if (s) { s.value = '1'; s.dispatchEvent(new Event('change', {bubbles: true})); } }""")
+    await page.wait_for_timeout(400)
+    await page.fill('[data-path="domains"] textarea', "*.example.com\nexample.com")
+    await page.fill('[data-path="name"] input', "example.com (wildcard)")
+    await page.wait_for_timeout(400)
     await page.screenshot(path=f"{a.out}/cert-dialog.png")
     print("cert-dialog: ok")
+    await page.keyboard.press("Escape")
+    await page.goto(f"{a.url}/#/certs?tab=dns")
+    await page.wait_for_timeout(1500)
+    await page.click(".page-head >> text=Добавить учётную запись")
+    await page.wait_for_timeout(600)
+    await page.screenshot(path=f"{a.out}/dns-account-dialog.png")
+    print("dns-account-dialog: ok")
     await page.keyboard.press("Escape")
     # изменение для диалога применения: меняем таймаут чтения сайта 3 через API страницы
     await page.evaluate("""async () => {

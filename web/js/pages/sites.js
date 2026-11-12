@@ -152,10 +152,11 @@ async function wizard() {
       type === 'redirect' ? h('div', { class: 'field' }, h('label', {}, 'Перенаправлять на'), h('input', { type: 'text', value: st.redirect, oninput: (e) => { st.redirect = e.target.value; } })) : null,
       type === 'static' ? h('div', { class: 'help' }, 'Каталог с файлами укажете в редакторе (по умолчанию /var/www/site).') : null,
       h('div', { class: 'field' }, h('label', {}, 'HTTPS'), h('select', { onchange: (e) => { st.https = e.target.value; draw(); } },
-        [['none', 'Пока без HTTPS'], ['le', 'Выпустить сертификат Let\'s Encrypt сейчас'], ['existing', 'Выбрать имеющийся сертификат']].map(([v, l]) => h('option', { value: v, selected: st.https === v }, l)))),
+        [['none', 'Пока без HTTPS'], ['le', 'Выпустить бесплатный сертификат сейчас (ACME, HTTP-проверка)'], ['existing', 'Выбрать имеющийся сертификат']].map(([v, l]) => h('option', { value: v, selected: st.https === v }, l)))),
       st.https === 'existing' ? h('div', { class: 'field' }, h('label', {}, 'Сертификат'), h('select', { onchange: (e) => { st.cert = e.target.value; } },
         h('option', { value: '' }, '—'), certs.map(c => h('option', { value: c.id, selected: String(c.id) === st.cert }, `${c.name} (${c.domains.join(', ')})`)))) : null,
-      st.https === 'le' ? h('div', { class: 'alert' }, 'Сайт будет создан и применён сразу (для проверки домена Let\'s Encrypt обращается к нему по HTTP), затем запустится выпуск сертификата. HTTPS включится автоматически после выпуска.') : null));
+      st.https === 'le' ? h('div', { class: 'alert' }, 'Сайт будет создан и применён сразу (для проверки домена центр сертификации обращается к нему по HTTP), затем запустится выпуск сертификата. HTTPS включится автоматически после выпуска.',
+        /(^|\s)\*\./.test(st.domains) ? h('div', { class: 'status-5 mt' }, 'Wildcard (*.example.com) так не выпустить: нужна DNS-проверка. Выпустите сертификат на странице «Сертификаты» и выберите «Выбрать имеющийся сертификат».') : null) : null));
   };
   draw();
   const go = async (openEditor) => {
@@ -174,14 +175,20 @@ async function wizard() {
     if (site.type === 'redirect') site.redirect.url = st.redirect;
     site.locations = (site.locations || []).map(l => ({ ...defaults(model('location')), ...l, id: Math.random().toString(16).slice(2, 10) }));
     if (st.https === 'existing' && st.cert) { site.ssl.enabled = true; site.ssl.certificate_id = +st.cert; }
+    if (st.https === 'le' && site.domains.some(d => d.startsWith('*.'))) {
+      toast('Wildcard-домен требует DNS-проверки: выпустите сертификат на странице «Сертификаты» и выберите его здесь.', 'bad');
+      return;
+    }
     try {
       const r = await api('/sites', { method: 'POST', body: site, query: { apply: st.https === 'le' ? 1 : '' } });
       m.close();
       if (st.https === 'le') {
-        const c = await api('/certs', { method: 'POST', body: { type: 'letsencrypt', domains: site.domains, name: site.domains[0] } });
+        // регулярные выражения и «.example.com» в сертификат не попадают
+        const certDomains = site.domains.filter(d => !d.startsWith('~') && !d.startsWith('.'));
+        const c = await api('/certs', { method: 'POST', body: { type: 'letsencrypt', domains: certDomains, name: certDomains[0] } });
         site.ssl.enabled = true; site.ssl.certificate_id = c.id;
         await api(`/sites/${r.id}`, { method: 'PUT', body: site });
-        toast('Сайт создан. Выпуск сертификата запущен — следите за ходом на странице «Сертификаты». После выпуска примените конфигурацию.', 'info', 'Let\'s Encrypt', 9000);
+        toast('Сайт создан. Выпуск сертификата запущен — следите за ходом на странице «Сертификаты». После выпуска примените конфигурацию.', 'info', 'Сертификат', 9000);
       }
       refreshState();
       if (openEditor) location.hash = `#/sites?edit=${r.id}`;

@@ -305,6 +305,17 @@ SCHEMA: List[str] = [
     );
     CREATE INDEX IF NOT EXISTS idx_silences_end ON silences(ends_at)
     """,
+    # ---- v4: учётные записи DNS-провайдеров (DNS-проверка ACME, wildcard) ------
+    """
+    CREATE TABLE IF NOT EXISTS dns_accounts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        data TEXT NOT NULL,
+        created_at REAL NOT NULL,
+        updated_at REAL NOT NULL
+    )
+    """,
 ]
 
 

@@ -1,4 +1,5 @@
-"""Сертификаты: Let's Encrypt (certbot, HTTP-01 webroot), загрузка своих, самоподписанные, файлы на диске."""
+"""Сертификаты: ACME через certbot (HTTP-01 webroot или DNS-01 через плагины), загрузка своих, самоподписанные,
+файлы на диске."""
 from __future__ import annotations
 
 import asyncio
@@ -17,7 +18,8 @@ from typing import Any, Dict, List, Optional
 
 from ..config import settings
 from ..db import Database
-from ..models import CertificateRequest
+from ..models import CertificateRequest, DnsAccount
+from . import acme
 from ..utils import atomic_write, run, spawn, which
 
 log = logging.getLogger("nm.certs")
@@ -268,6 +270,29 @@ class CertificateService:
             except OSError:
                 pass
 
+    # ------------------------------------------------------------------
+    #  Учётные записи DNS
+    # ------------------------------------------------------------------
+    def dns_account(self, aid: int) -> Optional[DnsAccount]:
+        r = self.db.one("SELECT data FROM dns_accounts WHERE id=?", (aid,))
+        return DnsAccount.model_validate(json.loads(r["data"])) if r else None
+
+    def dns_accounts_usage(self) -> Dict[int, List[str]]:
+        """Какие сертификаты используют каждую учётную запись DNS."""
+        out: Dict[int, List[str]] = {}
+        for r in self.db.query("SELECT name, data FROM certificates WHERE type='letsencrypt'"):
+            d = json.loads(r["data"] or "{}")
+            if d.get("challenge") == "dns" and d.get("dns_account_id"):
+                out.setdefault(int(d["dns_account_id"]), []).append(r["name"])
+        return out
+
+    def sync_dns_credentials(self, aid: int) -> None:
+        """Переписать файл учётных данных после изменения записи — на него ссылается продление certbot."""
+        acc = self.dns_account(aid)
+        if acc and aid in self.dns_accounts_usage():
+            acme.write_credentials(aid, acc)
+
+    # ------------------------------------------------------------------
     async def issue_letsencrypt(self, req: CertificateRequest, username: str,
                                 after: Optional[Any] = None) -> int:
         if not self.certbot():
@@ -275,14 +300,34 @@ class CertificateService:
         if not req.domains:
             raise ValueError("Укажите домены")
         panel = self.get_panel()
+        server = acme.directory_for(panel, req.staging)
+        if not server:
+            raise ValueError("Укажите адрес каталога ACME в настройках панели (вкладка «Сертификаты (ACME)»)")
+        if panel.acme_ca in ("zerossl", "google") and not (panel.acme_eab_kid and panel.acme_eab_hmac):
+            raise ValueError(f"{acme.CA_TITLES[panel.acme_ca]} требует ключ EAB — укажите Key ID и HMAC-ключ в "
+                             "настройках панели (вкладка «Сертификаты (ACME)»)")
+        if req.challenge == "dns":
+            acc = self.dns_account(req.dns_account_id)
+            if not acc:
+                raise ValueError("Учётная запись DNS не найдена")
+            if acc.provider != "hook":
+                ready = await asyncio.to_thread(acme.plugin_ready, acc.provider)
+                if ready is None:
+                    raise ValueError("certbot не запускается — подробности в «Диагностике»")
+                if not ready:
+                    raise ValueError(f"Не установлен плагин certbot для {acc.provider}: установите "
+                                     f"{acme.PLUGINS[acc.provider]['pkg']} (кнопка «Установить плагин» на вкладке "
+                                     "«Учётные записи DNS»)")
         email = req.email or panel.letsencrypt_email
         now = time.time()
         name = req.name.strip() or req.domains[0]
         cid = self.db.execute(
             "INSERT INTO certificates(name,type,domains,status,data,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
             (name, "letsencrypt", json.dumps(req.domains), "pending",
-             json.dumps({"key_type": req.key_type, "staging": req.staging or panel.letsencrypt_staging,
-                         "email": email, "cert_name": f"nm-{secrets.token_hex(3)}"}), now, now))
+             json.dumps({"key_type": req.key_type, "staging": server == acme.CA_DIRECTORIES["letsencrypt-staging"],
+                         "email": email, "cert_name": f"nm-{secrets.token_hex(3)}", "server": server,
+                         "challenge": req.challenge,
+                         "dns_account_id": req.dns_account_id if req.challenge == "dns" else 0}), now, now))
         spawn(self._run_certbot(cid, after), name=f"certbot-{cid}")
         return cid
 
@@ -299,31 +344,42 @@ class CertificateService:
             job["log"].append(f"{time.strftime('%H:%M:%S')} {msg}")
 
         try:
-            step("Проверка доступности доменов по HTTP (самотест)...")
-            for d in domains:
-                st = await asyncio.to_thread(self.http01_selftest, d)
-                if st.get("local") is False:
-                    step(f"✗ {d}: {st.get('error')}")
-                elif st.get("remote") is False:
-                    step(f"⚠ {d}: {st.get('error')}. DNS: {', '.join(st.get('dns', [])) or '—'}")
-                else:
-                    step(f"✓ {d}: проверка пройдена (DNS: {', '.join(st.get('dns', []))})")
-            cmd = [self.certbot() or "certbot", "certonly", "--webroot", "-w", str(settings.acme_webroot),
-                   "--cert-name", cert_name, "--non-interactive", "--agree-tos", "--keep-until-expiring",
-                   "--deploy-hook", "nginx -s reload"]
-            if renew:
-                cmd.append("--force-renewal")
-            if data.get("email"):
-                cmd += ["-m", data["email"]]
+            panel = self.get_panel()
+            # сертификат продлевается в том же центре, где выпущен (старые записи — Let's Encrypt)
+            server = data.get("server") or acme.CA_DIRECTORIES[
+                "letsencrypt-staging" if data.get("staging") else "letsencrypt"]
+            challenge = data.get("challenge") or "http"
+            env: Dict[str, str] = {}
+            dns_args: List[str] = []
+            if challenge == "dns":
+                aid = int(data.get("dns_account_id") or 0)
+                acc = self.dns_account(aid)
+                if not acc:
+                    raise RuntimeError("Учётная запись DNS удалена — выберите другую и выпустите сертификат заново")
+                dns_args, env = await asyncio.to_thread(acme.write_credentials, aid, acc)
+                step(f"DNS-проверка: TXT-записи _acme-challenge создаёт «{acc.name}» ({acc.provider})")
             else:
-                cmd.append("--register-unsafely-without-email")
-            if data.get("staging"):
-                cmd.append("--staging")
-            cmd += ["--key-type", data.get("key_type", "ecdsa")]
-            for d in domains:
-                cmd += ["-d", d]
-            step("Запуск: " + " ".join(cmd))
-            code, out = await asyncio.to_thread(run, cmd, 300)
+                step("Проверка доступности доменов по HTTP (самотест)...")
+                for d in domains:
+                    st = await asyncio.to_thread(self.http01_selftest, d)
+                    if st.get("local") is False:
+                        step(f"✗ {d}: {st.get('error')}")
+                    elif st.get("remote") is False:
+                        step(f"⚠ {d}: {st.get('error')}. DNS: {', '.join(st.get('dns', [])) or '—'}")
+                    else:
+                        step(f"✓ {d}: проверка пройдена (DNS: {', '.join(st.get('dns', []))})")
+            eab = None
+            if panel.acme_eab_kid and panel.acme_eab_hmac and server == acme.directory_for(panel):
+                eab = (panel.acme_eab_kid, panel.acme_eab_hmac)
+            if panel.acme_ca == "custom" and server == panel.acme_directory and panel.acme_ca_bundle:
+                env["REQUESTS_CA_BUNDLE"] = panel.acme_ca_bundle
+            cmd = acme.certbot_command(self.certbot() or "certbot", cert_name=cert_name, domains=domains,
+                                       server=server, email=data.get("email", ""),
+                                       key_type=data.get("key_type", "ecdsa"), challenge=challenge,
+                                       webroot=str(settings.acme_webroot), dns_args=dns_args, eab=eab, renew=renew)
+            step(f"Центр сертификации: {acme.ca_title(server)}")
+            step("Запуск: " + acme.redact(cmd))
+            code, out = await asyncio.to_thread(run, cmd, 600 if challenge == "dns" else 300, None, env)
             for line in out.strip().splitlines()[-40:]:
                 step(line)
             if code != 0:
@@ -367,10 +423,17 @@ class CertificateService:
     async def auto_renew(self, after=None) -> List[int]:
         days = self.get_panel().renew_days_before
         out = []
-        for r in self.db.query("SELECT id, not_after, type, status FROM certificates WHERE type='letsencrypt'"):
-            if r["id"] in self.jobs and self.jobs[r["id"]].get("state") == "running":
+        for r in self.db.query("SELECT id, not_before, not_after, type, status FROM certificates "
+                               "WHERE type='letsencrypt'"):
+            job = self.jobs.get(r["id"]) or {}
+            if job.get("state") == "running":
                 continue
-            if r["not_after"] and r["not_after"] - time.time() < days * 86400:
+            # после неудачи — пауза (6 ч, для коротких сертификатов меньше), чтобы не упираться в лимиты центра
+            # на неудачные проверки; кнопка «Продлить» работает всегда
+            backoff = min(6 * 3600.0, lifetime_days(r) * 86400 / 12)
+            if job.get("state") == "error" and time.time() - job.get("finished", 0) < backoff:
+                continue
+            if r["not_after"] and r["not_after"] - time.time() < renew_threshold(r["not_before"], r["not_after"], days):
                 out.append(r["id"])
                 await self._run_certbot(r["id"], after, renew=True)
         return out
@@ -407,8 +470,65 @@ class CertificateService:
         return False
 
 
+def lifetime_days(c: Dict[str, Any]) -> float:
+    """Срок действия сертификата в днях (90, если неизвестен)."""
+    nb, na = c.get("not_before"), c.get("not_after")
+    return (na - nb) / 86400 if nb and na and na > nb else 90.0
+
+
+def expiry_level(c: Dict[str, Any]) -> Optional[str]:
+    """«crit» / «warn» / None по оставшемуся сроку. Пороги 7 и 21 день — для обычных 90-дневных сертификатов; для
+    коротких (ACME-профили на 6–45 дней, step-ca на сутки) — та же доля срока, иначе предупреждение висело бы всегда."""
+    days = c.get("days_left")
+    if days is None:
+        return None
+    life = lifetime_days(c)
+    if days < min(7.0, life * 0.08):
+        return "crit"
+    if days < min(21.0, life * 0.23):
+        return "warn"
+    return None
+
+
+def fmt_left(days: float) -> str:
+    """Оставшийся срок для сообщений: часы для коротких сертификатов, дни — для обычных."""
+    if days < 2:
+        return f"{max(0.0, days) * 24:.0f} ч"
+    return f"{days:.0f} дн."
+
+
+def renew_threshold(not_before: Optional[float], not_after: Optional[float], days: int) -> float:
+    """За сколько секунд до истечения продлевать: настройка «Продлевать за N дней», но не позже трети срока
+    действия — иначе короткие сертификаты (6–45 дней) продлевались бы при каждой проверке."""
+    limit = days * 86400.0
+    if not_before and not_after and not_after > not_before:
+        limit = min(limit, (not_after - not_before) / 3)
+    return limit
+
+
 def certbot_hint(out: str) -> str:
     rules = [
+        # DNS-проверка и подключение к центру сертификации — раньше общих правил
+        (r"No TXT record found|Incorrect TXT record|NXDOMAIN looking up TXT",
+         "Центр сертификации не увидел TXT-запись _acme-challenge: увеличьте «Ожидание распространения записи» в "
+         "учётной записи DNS или проверьте, что зона обслуживается этим провайдером (NS-записи домена)."),
+        (r"Invalid access token|Authentication error|9109|10000|403 Forbidden.*api\.cloudflare",
+         "DNS-провайдер отклонил учётные данные: проверьте токен и его права на изменение DNS-записей зоны."),
+        (r"Unable to determine zone|zone.*not found|Could not find zone|No zone found|"
+         r"Unable to find a Route53 hosted zone",
+         "Зона домена не найдена у DNS-провайдера: домен обслуживается другим провайдером, или у токена нет "
+         "доступа к этой зоне."),
+        (r"REFUSED|NOTAUTH|BADKEY|BADSIG|BADTIME",
+         "DNS-сервер отклонил динамическое обновление (RFC 2136): проверьте имя и секрет ключа TSIG, алгоритм, "
+         "политику update-policy зоны и синхронизацию времени (BADTIME)."),
+        (r"manual-auth-hook|hook command .* returned error|Hook '--manual-auth-hook'",
+         "Скрипт создания DNS-записи завершился с ошибкой — запустите его вручную с переменными CERTBOT_DOMAIN и "
+         "CERTBOT_VALIDATION."),
+        (r"externalAccountRequired|external account|EAB",
+         "Центр сертификации требует привязку аккаунта (EAB): укажите Key ID и HMAC-ключ в настройках панели."),
+        (r"CERTIFICATE_VERIFY_FAILED|certificate verify failed",
+         "Не удаётся проверить TLS-сертификат ACME-сервера: укажите его корневой сертификат в настройках панели "
+         "(«Доверенный корневой сертификат ACME-сервера»)."),
         (r"too many certificates|rateLimited|too many failed authorizations",
          "Превышен лимит Let's Encrypt. Подождите (лимиты сбрасываются в течение недели) или используйте "
          "тестовый сервер (staging) для отладки."),
