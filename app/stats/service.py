@@ -273,6 +273,8 @@ class StatsService:
         cache = data.get("cache") or {}
         cacheable = sum(cache.values())
         err = data.get("err") or {}
+        blk = data.get("blk") or {}
+        blocked = sum(blk.values())
         return {
             "source": source, "requests": n, "rps": n / span if span else 0, "bytes_out": t["bout"],
             "bytes_in": t["bin"], "status": {f"{i}xx": t[f"s{i}"] for i in range(1, 6)},
@@ -289,6 +291,9 @@ class StatsService:
             "errors": {k: {"count": v, **CATEGORY_INFO.get(k, CATEGORY_INFO["other"])} for k, v in
                        sorted(err.items(), key=lambda x: -x[1])},
             "upstream_status": data.get("ustatus", {}),
+            # отклонено блокировками (по IP и по странам) — это тоже ответы 4xx, но не ошибки сайта
+            "blocked": {"ban": blk.get("ban", 0), "geo": blk.get("geo", 0), "codes": data.get("blkc") or {}},
+            "err4_pct_clean": (t["s4"] - blocked) / (n - blocked) * 100 if n > blocked else 0,
         }
 
     def tops(self, start: float, end: float, site: str, kind: str, limit: int = 50) -> List[Dict[str, Any]]:

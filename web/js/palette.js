@@ -28,6 +28,7 @@ function staticItems() {
   A('Применить конфигурацию', 'check', () => applyDialog(), 'operator', 'apply reload');
   A('Запустить диагностику', 'stethoscope', () => { location.hash = '#/diagnostics'; }, 'viewer', 'проверка');
   A('Заблокировать IP-адрес', 'ban', () => import('./pages/bans.js').then(m => m.banDialog('')), 'operator', 'бан блокировка');
+  A('Доступ по странам (GeoIP)', 'shield', () => { location.hash = '#/bans?tab=countries'; }, 'viewer', 'страны гео geoip geo блокировка страны');
   A('Тишина оповещений', 'bell', () => import('./pages/alerts.js').then(m => m.silenceDialog()), 'operator', 'mute плановые работы');
   A('Выпустить сертификат', 'cert', () => { location.hash = '#/certs'; }, 'operator', "let's encrypt ssl https");
   A('Справка по этой странице', 'book', () => openPageHelp(ctx.route, ctx.params), 'viewer', 'помощь f1 help');

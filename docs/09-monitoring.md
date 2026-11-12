@@ -107,7 +107,10 @@ restart, start, stop, переоткрыть журналы), сведения �
 3. Перезапустите сервис или сохраните «Настройки панели» — база подхватится. Состояние — в «Сервер → Сборщик
    статистики» и в Диагностике.
 
-Обновляйте базу ежемесячно (например, cron + `geoipupdate` для MaxMind).
+Обновляйте базу ежемесячно (например, cron + `geoipupdate` для MaxMind). Панель сама замечает новую версию
+файла в течение 10 минут.
+
+Эта же база используется для **ограничения доступа к сайтам по странам** ([17](17-bans.md#доступ-по-странам)).
 
 ## Метрики Prometheus
 
@@ -147,6 +150,7 @@ scrape_configs:
 | `nm_http_received_bytes_total`, `nm_http_sent_bytes_total` | counter | `site_id`, `site` | Трафик |
 | `nm_http_cache_responses_total` | counter | `site_id`, `site`, `cache_status` | HIT, MISS, EXPIRED, STALE… |
 | `nm_http_banned_requests_total` | counter | `site_id`, `site` | Отклонено запросов с заблокированных IP |
+| `nm_http_geo_blocked_requests_total` | counter | `site_id`, `site` | Отклонено запросов правилами доступа по странам ([17](17-bans.md#доступ-по-странам)) |
 | `nm_backend_up` | gauge | `owner`, `name`, `backend`, `backup` | 1/0 по активной проверке бэкенда, NaN — ещё не проверялся |
 | `nm_backend_check_latency_seconds` | gauge | то же | Время ответа на последнюю проверку |
 | `nm_certificate_expiry_days` | gauge | `id`, `name`, `domain`, `used` | Дней до истечения сертификата |

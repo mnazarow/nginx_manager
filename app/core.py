@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -413,9 +414,31 @@ class App:
                       + ("" if len(ok) == len(res) else "; ошибки: " + "; ".join(
                           f"{r.get('name', r['id'])}: {r.get('error')}" for r in res if not r["ok"])))
 
+    async def refresh_geo(self, force: bool = False) -> None:
+        """База GeoIP заменена на новую — перечитать её и пересобрать сети стран для nginx."""
+        g = self.stats.geoip
+        try:
+            mt = os.path.getmtime(g.path) if g.path else 0.0
+        except OSError:
+            mt = 0.0
+        if g.path and mt and mt != getattr(g, "mtime", mt):
+            self.stats.reload_geoip()
+            self.db.event("info", "geoip", "База GeoIP обновлена — перечитана", {"path": g.path})
+        g.mtime = mt
+        async with self.nginx.lock:
+            res = await asyncio.to_thread(self.nginx.refresh_geo, force)
+        if res is not None:
+            ok, out = res
+            st = self.nginx.geo_stats
+            if ok:
+                self.db.event("info", "geoip", f"Сети стран обновлены: {st.get('nets', 0)} сетей "
+                              f"({', '.join(sorted(st.get('countries', {})))})", st)
+            else:
+                self.db.event("error", "geoip", "Не удалось обновить сети стран в nginx", {"output": out[-2000:]})
+
     async def periodic(self) -> None:
         await asyncio.sleep(20)
-        last_diag = last_cert = 0.0
+        last_diag = last_cert = last_geo = 0.0
         while True:
             now = time.time()
             p = self.panel()
@@ -430,6 +453,9 @@ class App:
                 if now - last_diag > p.diagnostics_interval:
                     last_diag = now
                     await self.diag.run_all()
+                if now - last_geo > 600:
+                    last_geo = now
+                    await self.refresh_geo()
                 if now - last_cert > 6 * 3600:
                     last_cert = now
                     await asyncio.to_thread(self.certs.refresh_all)

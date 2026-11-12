@@ -13,7 +13,7 @@ import re
 import shutil
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import psutil
 
@@ -21,6 +21,7 @@ from ..config import settings
 from ..db import Database
 from ..models import GlobalSettings, PanelSettings, Site, Stream
 from ..utils import atomic_write, has_systemd, run, sha256, which
+from ..services import geoblock
 from .generator import MARKER, CertInfo, ConfigError, Generator, NginxCaps, Paths, State
 
 log = logging.getLogger("nm.nginx")
@@ -45,6 +46,9 @@ class NginxManager:
         self._caps_ts = 0.0
         self._last_test: Tuple[float, bool, str] = (0.0, True, "")
         self.binary = settings.nginx_bin or which("nginx") or "/usr/sbin/nginx"
+        # путь к базе GeoIP (mmdb) или None: та же база, что и для статистики (ищется и при запуске из nmctl)
+        self.geo_source: Callable[[], Optional[str]] = self._find_geo_db
+        self.geo_stats: Dict[str, Any] = {}
 
     # =====================================================================
     #  Возможности nginx
@@ -152,7 +156,65 @@ class NginxManager:
                      acme_webroot=str(settings.acme_webroot), log_dir=str(settings.log_dir),
                      cache_dir=str(settings.cache_dir), stub_status_port=settings.stub_status_port,
                      panel_port=settings.bind_port, data_dir=str(settings.data_dir),
-                     bans_file=str(settings.bans_file))
+                     bans_file=str(settings.bans_file),
+                     geo_file=str(settings.geo_file) if self.geo_db() else "")
+
+    # =====================================================================
+    #  Доступ по странам: файл сетей из базы GeoIP
+    # =====================================================================
+    def _find_geo_db(self) -> Optional[str]:
+        panel = PanelSettings.model_validate(self.db.kv_get("panel_settings", {}))
+        return geoblock.find_db(panel.geoip_path, str(settings.geoip_dir))
+
+    def geo_db(self) -> Optional[str]:
+        """Путь к базе GeoIP, если её можно использовать для блокировки по странам."""
+        try:
+            return self.geo_source() or None
+        except Exception:  # pragma: no cover
+            return None
+
+    def geo_status(self) -> Dict[str, Any]:
+        h = geoblock.read_header(str(settings.geo_file))
+        return {"db": self.geo_db(), "file": str(settings.geo_file),
+                "countries": sorted(geoblock.header_countries(h)), "nets": int(h.get("nets") or 0),
+                "built": float(h.get("built") or 0), "db_mtime": int(h.get("mtime") or 0),
+                "last_build": self.geo_stats}
+
+    def prepare_geo(self, state: State) -> None:
+        """Перед применением: в файле стран должны быть все страны из правил (лишние не мешают)."""
+        want = geoblock.referenced(s for _, s in state.sites)
+        db = self.geo_db()
+        if not want or not db:
+            return
+        cur = geoblock.read_header(str(settings.geo_file))
+        if cur.get("db") == db:
+            want = want | geoblock.header_countries(cur)
+        if not geoblock.needs_rebuild(str(settings.geo_file), db, want):
+            return
+        try:
+            text, stats = geoblock.build(db, want)
+        except Exception as e:
+            raise ApplyError(f"Не удалось подготовить сети стран из базы GeoIP: {e}")
+        atomic_write(settings.geo_file, text, mode=0o644)
+        self.geo_stats = stats
+        log.info("файл стран пересобран: %s сетей, %s с", stats["nets"], stats["seconds"])
+
+    def refresh_geo(self, force: bool = False) -> Optional[Tuple[bool, str]]:
+        """Периодически: база GeoIP обновилась или страны больше не нужны — пересобрать и перечитать nginx."""
+        last = self.last_applied()
+        db = self.geo_db()
+        if not last or not db:
+            return None
+        try:
+            st = State.from_json(json.loads(last["state"]))
+        except Exception:  # pragma: no cover
+            return None
+        want = geoblock.referenced(s for _, s in st.sites)
+        if not force and not geoblock.needs_rebuild(str(settings.geo_file), db, want):
+            return None
+        text, stats = geoblock.build(db, want)
+        self.geo_stats = stats
+        return self.write_side_file(settings.geo_file, text)
 
     def render(self, state: State, include_root: Optional[str] = None) -> Tuple[Dict[str, str], List[str]]:
         gen = Generator(state, self.caps(), self.paths(include_root or str(settings.live_dir)))
@@ -182,7 +244,21 @@ class NginxManager:
         changed = sorted(k for k in set(files) | set(old) if files.get(k) != old.get(k))
         return {"pending": bool(changed), "changed": changed, "warnings": warnings, "version": last["id"]}
 
+    @staticmethod
+    def masked(files: Dict[str, str]) -> Dict[str, str]:
+        """Файлы для показа в панели: хеши паролей Basic Auth заменены отпечатком (видно, что пароль сменился)."""
+        out = dict(files)
+        for name, text in files.items():
+            if name.startswith("auth/") and name.endswith(".htpasswd"):
+                lines = []
+                for ln in text.splitlines():
+                    user, _, h = ln.partition(":")
+                    lines.append(f"{user}:<хеш скрыт {sha256(h)[:8]}>" if h else ln)
+                out[name] = "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+        return out
+
     def diff(self, old: Dict[str, str], new: Dict[str, str]) -> List[Dict[str, Any]]:
+        old, new = self.masked(old), self.masked(new)
         out = []
         for name in sorted(set(old) | set(new)):
             a, b = old.get(name), new.get(name)
@@ -216,7 +292,10 @@ class NginxManager:
     def write_bans(self, content: str) -> Tuple[bool, str]:
         """Обновить файл блокировок (geo $nm_banned) и перечитать nginx. При ошибке проверки — вернуть прежний файл.
         Версия конфигурации не создаётся: список блокировок живёт отдельно от настроек сайтов."""
-        path = settings.bans_file
+        return self.write_side_file(settings.bans_file, content)
+
+    def write_side_file(self, path: Path, content: str) -> Tuple[bool, str]:
+        """Файл вне версий (блокировки, сети стран): запись → nginx -t → reload; при ошибке — прежний файл."""
         path.parent.mkdir(parents=True, exist_ok=True)
         old = path.read_text() if path.exists() else None
         if old == content:
@@ -403,6 +482,7 @@ class NginxManager:
         caps = self.caps(refresh=True)
         tag = time.strftime("%Y%m%d-%H%M%S") + f"-{int(t0 * 1000) % 1000:03d}"
         vdir = settings.versions_dir / tag
+        self.prepare_geo(state)
         try:
             staged_files, warnings = self.render(state, include_root=str(vdir))
             live_files, _ = self.render(state, include_root=str(settings.live_dir))

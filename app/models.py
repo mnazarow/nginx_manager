@@ -174,9 +174,14 @@ class BasicAuthUser(Model):
     @field_validator("username")
     @classmethod
     def _u(cls, v):
-        if not v or ":" in v or any(c.isspace() for c in v):
-            raise V.ValidationError("Имя пользователя не должно содержать пробелы и двоеточия")
+        if not v or ":" in v or any(c.isspace() or ord(c) < 32 for c in v) or len(v) > 64:
+            raise V.ValidationError("Имя пользователя не должно содержать пробелы и двоеточия (до 64 символов)")
         return v
+
+    @field_validator("password_hash")
+    @classmethod
+    def _h(cls, v):
+        return V.htpasswd_hash(v)
 
 
 # =============================================================================
@@ -440,6 +445,21 @@ class SecuritySettings(Model):
                          show={"access_mode": ["allowlist"]}, ph="203.0.113.0/24", directive="allow")
     deny: List[str] = F(factory=list, label="Чёрный список IP/подсетей", ui="lines", directive="deny",
                         ph="198.51.100.7")
+    geo_mode: Literal["off", "deny", "allow"] = F(
+        "off", label="Доступ по странам", directive="geo $nm_cc + map",
+        labels={"off": "Без ограничений", "deny": "Запретить выбранные страны",
+                "allow": "Разрешить только выбранные страны"},
+        help="Страна определяется по базе GeoIP (Настройки панели → Статистика)")
+    geo_countries: List[str] = F(factory=list, label="Страны", ui="countries", show={"geo_mode": ["deny", "allow"]},
+                                 help="Начните вводить название или код страны")
+    geo_allow_private: bool = F(True, label="Пускать локальные сети", show={"geo_mode": ["allow"]},
+                                help="10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8 и т.п. — у них нет страны")
+    geo_exceptions: List[str] = F(factory=list, label="Исключения (IP и подсети)", ui="lines",
+                                  show={"geo_mode": ["deny", "allow"]}, ph="203.0.113.10",
+                                  help="Эти адреса пропускаются независимо от страны")
+    geo_status: Literal[403, 444, 451] = F(403, label="Ответ заблокированным", show={"geo_mode": ["deny", "allow"]},
+                                           labels={"403": "403 Forbidden", "444": "444 — закрыть соединение",
+                                                   "451": "451 Unavailable For Legal Reasons"})
     basic_auth: bool = F(False, label="Защита паролем (Basic Auth)", directive="auth_basic",
                          doc="Браузер запросит логин и пароль. Пароли хранятся в виде APR1-MD5-хеша. "
                              "Используйте только вместе с HTTPS — иначе пароль передаётся открыто.")
@@ -493,9 +513,32 @@ class SecuritySettings(Model):
     csp_report_only: bool = F(False, label="CSP только отчёт (Report-Only)", show={"security_headers": [True]},
                               adv=True)
 
-    @field_validator("allow", "deny")
+    @field_validator("allow", "deny", "geo_exceptions")
     @classmethod
     def _ips(cls, v): return [V.cidr(x) for x in v if x.strip()]
+
+    @field_validator("geo_countries")
+    @classmethod
+    def _cc(cls, v):
+        from .services.geoblock import COUNTRY_SET
+        out = []
+        for x in v:
+            x = x.strip().upper()
+            if not x:
+                continue
+            if x not in COUNTRY_SET:
+                raise V.ValidationError(f"«{x}» — неизвестный код страны (ISO 3166-1, например RU, DE, US)")
+            if x not in out:
+                out.append(x)
+        return out
+
+    @model_validator(mode="after")
+    def _geo(self):
+        if self.geo_mode != "off" and not self.geo_countries:
+            raise V.ValidationError("Доступ по странам: выберите хотя бы одну страну или отключите ограничение")
+        if any(x == "all" for x in self.geo_exceptions):
+            raise V.ValidationError("Исключения по странам: укажите конкретные адреса или подсети, а не all")
+        return self
 
     @field_validator("rate")
     @classmethod

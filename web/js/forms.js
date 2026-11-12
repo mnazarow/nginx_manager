@@ -1,5 +1,5 @@
 // Генерация форм по схеме моделей сервера (/api/schema): поля, подсказки, условия видимости, вложенные списки.
-import { h, mount, icon, badge, pickFile, toast } from './ui.js';
+import { h, mount, icon, badge, pickFile, toast, countryName } from './ui.js';
 import { openHelp } from './help.js';
 
 export let SCHEMA = null;
@@ -64,7 +64,7 @@ export function renderFields(container, fields, obj, ctx, path = '') {
     }
     if (f.type === 'array' && f.ui === 'locations') { blocks.push(locationsEditor(f, obj, ctx, p)); continue; }
     if (f.type === 'array') { blocks.push(field(f, arrayTable(f, obj, ctx, p), true, ctx, p)); continue; }
-    const wide = ['code', 'textarea', 'lines', 'pemfile'].includes(f.ui) || f.type === 'multiselect';
+    const wide = ['code', 'textarea', 'lines', 'pemfile', 'countries'].includes(f.ui) || f.type === 'multiselect';
     const w = widget(f, obj, ctx, p);
     const el = field(f, w, wide && !['tags'].includes(f.ui), ctx, p);
     grid.appendChild(el);
@@ -80,6 +80,48 @@ function field(f, w, wide, ctx, p) {
     f.type === 'bool' ? null : labelEl(f), w,
     f.help && f.type !== 'bool' ? h('div', { class: 'help' }, f.help) : null,
     err ? h('div', { class: 'err' }, err) : null);
+}
+
+/** Выбор стран: выбранные — метками, добавление поиском по названию или коду, быстрые группы. */
+function countriesInput(f, obj, set, invalid) {
+  const all = (SCHEMA.countries || []).map(c => ({ c, n: countryName(c) })).sort((a, b) => a.n.localeCompare(b.n, 'ru'));
+  const cur = () => obj[f.key] || [];
+  const chips = h('div', { class: 'chips' });
+  const list = h('div', { class: 'cc-list', role: 'listbox', hidden: true });
+  const input = h('input', { type: 'text', class: invalid, placeholder: 'Название или код страны, например «Германия» или DE',
+    autocomplete: 'off', spellcheck: false, 'aria-label': 'Добавить страну' });
+  let items = [], sel = 0;
+  const update = (arr) => { set(arr); drawChips(); drawList(); };
+  const add = (c) => { if (!cur().includes(c)) update([...cur(), c]); input.value = ''; drawList(); input.focus(); };
+  const drawChips = () => mount(chips, cur().length
+    ? cur().map(c => h('span', { class: 'chip on', title: 'Убрать', onclick: () => update(cur().filter(x => x !== c)) },
+      h('b', {}, c), ' ', countryName(c), ' ×'))
+    : h('span', { class: 'muted small' }, 'Страны не выбраны'));
+  const drawList = () => {
+    const q = input.value.trim().toLowerCase();
+    // сначала точный код, затем названия, начинающиеся с запроса, затем содержащие его
+    const rank = (x) => x.c.toLowerCase() === q ? 0 : x.n.toLowerCase().startsWith(q) ? 1 : x.c.toLowerCase().startsWith(q) ? 2 : 3;
+    items = q ? all.filter(x => !cur().includes(x.c) && (x.c.toLowerCase().startsWith(q) || x.n.toLowerCase().includes(q)))
+      .sort((a, b) => rank(a) - rank(b)).slice(0, 8) : [];
+    sel = Math.min(sel, Math.max(0, items.length - 1));
+    list.hidden = !items.length;
+    mount(list, items.map((x, i) => h('div', { class: 'cc-item' + (i === sel ? ' on' : ''), role: 'option',
+      onmousedown: (e) => { e.preventDefault(); add(x.c); } }, h('b', {}, x.c), ' ', x.n)));
+  };
+  input.addEventListener('input', () => { sel = 0; drawList(); });
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); sel = (sel + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % Math.max(1, items.length); drawList(); }
+    else if (e.key === 'Enter') { e.preventDefault(); if (items[sel]) add(items[sel].c); }
+    else if (e.key === 'Escape') { list.hidden = true; }
+    else if (e.key === 'Backspace' && !input.value && cur().length) update(cur().slice(0, -1));
+  });
+  input.addEventListener('blur', () => setTimeout(() => { list.hidden = true; }, 150));
+  const groups = SCHEMA.country_groups || {};
+  drawChips();
+  return h('div', { class: 'col cc-input' }, chips, h('div', { class: 'cc-search' }, input, list),
+    h('div', { class: 'row' },
+      groups.eu ? h('button', { class: 'btn sm', type: 'button', onclick: () => update([...new Set([...cur(), ...groups.eu])]) }, 'Добавить Евросоюз (27)') : null,
+      cur().length ? h('button', { class: 'btn sm ghost', type: 'button', onclick: () => update([]) }, 'Очистить') : null));
 }
 
 function changed(ctx, rerender) {
@@ -131,6 +173,7 @@ function widget(f, obj, ctx, p) {
       return h('input', { type: 'text', value: (v || []).join(', '), oninput: (e) => set(e.target.value.split(/[\s,]+/).filter(Boolean).map(Number)) });
     }
     case 'list': {
+      if (f.ui === 'countries') return countriesInput(f, obj, set, invalid);
       if (f.ui === 'tags') {
         return h('input', { type: 'text', value: (v || []).join(', '), placeholder: 'метка1, метка2',
           oninput: (e) => set(e.target.value.split(',').map(s => s.trim()).filter(Boolean)) });

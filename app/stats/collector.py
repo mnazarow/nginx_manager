@@ -179,7 +179,7 @@ class Sec:
 class Minute:
     __slots__ = ("req", "bout", "bin", "s", "rt_sum", "rt_max", "urt_sum", "urt_n", "hist", "codes", "methods",
                  "proto", "tls", "cache", "err", "ips", "bots", "slow", "static", "tops", "top_bytes", "slow_sum",
-                 "ustatus")
+                 "ustatus", "blk", "blkc")
 
     def __init__(self) -> None:
         self.req = self.bout = self.bin = self.urt_n = self.bots = self.slow = self.static = 0
@@ -197,25 +197,32 @@ class Minute:
         self.tops: Dict[str, Counter] = {k: Counter() for k in TOP_KINDS}
         self.top_bytes: Dict[str, Counter] = {"uri": Counter(), "ip": Counter(), "host": Counter()}
         self.slow_sum: Counter = Counter()
+        self.blk: Counter = Counter()  # отклонено блокировками: ban — по IP, geo — по странам
+        self.blkc: Counter = Counter()  # коды ответов отклонённых блокировками (403, 444, 451…)
 
     def data(self) -> Dict[str, Any]:
-        return {"codes": dict(self.codes), "hist": self.hist, "methods": dict(self.methods),
-                "proto": dict(self.proto), "tls": dict(self.tls), "cache": dict(self.cache), "err": dict(self.err),
-                "bots": self.bots, "slow": self.slow, "static": self.static, "ustatus": dict(self.ustatus)}
+        d = {"codes": dict(self.codes), "hist": self.hist, "methods": dict(self.methods),
+             "proto": dict(self.proto), "tls": dict(self.tls), "cache": dict(self.cache), "err": dict(self.err),
+             "bots": self.bots, "slow": self.slow, "static": self.static, "ustatus": dict(self.ustatus)}
+        if self.blk:
+            d["blk"] = dict(self.blk)
+            d["blkc"] = dict(self.blkc)
+        return d
 
 
 class Totals:
     """Накопительные счётчики сайта с момента запуска панели (counter-метрики Prometheus)."""
-    __slots__ = ("req", "s", "bin", "bout", "rt_sum", "hist", "cache", "banned")
+    __slots__ = ("req", "s", "bin", "bout", "rt_sum", "hist", "cache", "banned", "geo")
 
     def __init__(self) -> None:
-        self.req = self.bin = self.bout = self.banned = 0
+        self.req = self.bin = self.bout = self.banned = self.geo = 0
         self.s = [0] * 6
         self.rt_sum = 0.0
         self.hist = [0] * NB
         self.cache: Counter = Counter()
 
-    def add(self, cls: int, bin_: int, bout: int, rt: float, hb: int, cache: str, banned: bool) -> None:
+    def add(self, cls: int, bin_: int, bout: int, rt: float, hb: int, cache: str, banned: bool,
+            geo: bool = False) -> None:
         self.req += 1
         self.s[cls] += 1
         self.bin += bin_
@@ -226,6 +233,8 @@ class Totals:
             self.cache[cache] += 1
         if banned:
             self.banned += 1
+        elif geo:
+            self.geo += 1
 
 
 def merge_data(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]:
@@ -291,6 +300,7 @@ class Aggregator:
         self.detector = None  # BanDetector (раздел «Блокировки»), подключается ядром
         # накопительные счётчики с момента запуска (для /metrics в формате Prometheus)
         self.totals: Dict[str, Totals] = {}
+        self.geo_hits: Counter = Counter()  # (сайт, страна) -> отклонено по странам с запуска панели
 
     # ------------------------------------------------------------------
     def _sec(self, ts: int) -> Optional[Dict[str, Sec]]:
@@ -333,12 +343,16 @@ class Aggregator:
         r["country"] = country
         r["bot"] = is_bot
         keys = (site, "*") if site != "*" else ("*",)
-        if self.detector is not None and site != "panel":
+        geo_blocked = r.get("geo_blocked", False) and not r["banned"]
+        if geo_blocked:
+            # уже отклонён правилом по странам — не нарушитель для автоблокировки
+            self.geo_hits[(site, country or "--")] += 1
+        elif self.detector is not None and site != "panel":
             self.detector.observe(r["ip"], ts, status, r["uri"], site, is_bot, r["banned"], country, r["host"])
         tot = self.totals.get(site)
         if tot is None:
             tot = self.totals[site] = Totals()
-        tot.add(cls, r["bin"], r["bout"], rt, hb, r["cache"], r["banned"])
+        tot.add(cls, r["bin"], r["bout"], rt, hb, r["cache"], r["banned"], geo_blocked)
         sb = self._sec(sec_ts)
         if sb is not None:
             for k in keys:
@@ -388,6 +402,12 @@ class Aggregator:
                 m.ips.add(r["ip"])
             if is_bot:
                 m.bots += 1
+            if r["banned"]:
+                m.blk["ban"] += 1
+                m.blkc[str(status)] += 1
+            elif geo_blocked:
+                m.blk["geo"] += 1
+                m.blkc[str(status)] += 1
             if r["static"]:
                 m.static += 1
             t = m.tops

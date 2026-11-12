@@ -63,6 +63,7 @@ curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8088/api/sites
 | `GET/POST /api/sites`, `GET/PUT/DELETE /api/sites/{id}` | Сайты. `?apply=1` — применить сразу. |
 | `POST /api/sites/{id}/toggle` | Включить/выключить. |
 | `POST /api/sites/{id}/maintenance` `{"enabled": true}` | Режим обслуживания (применяется сразу). |
+| `POST /api/sites/bulk` `{"ids": [1, 2], "action": "disable", "apply": false}` | Одно действие над несколькими сайтами: `enable`, `disable`, `maintenance_on`, `maintenance_off` (применяются сразу), `tag_add`/`tag_remove` (с `"tag"`), `delete`. Ответ: сколько сайтов изменено. |
 | `POST /api/sites/preview?sid=ID&test=1` | Сгенерировать конфигурацию черновика и проверить `nginx -t`. |
 | `GET/POST /api/streams`, `PUT/DELETE /api/streams/{id}` | Потоки. |
 | `GET /api/certs`, `POST /api/certs`, `POST /api/certs/{id}/renew`, `DELETE /api/certs/{id}` | Сертификаты. |
@@ -72,6 +73,7 @@ curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8088/api/sites
 | `GET /api/bans` | Блокировки IP, подозрительные адреса, статистика ([17](17-bans.md)). |
 | `POST /api/bans` `{"nets": ["203.0.113.7"], "minutes": 1440, "reason": "…"}` | Заблокировать (`minutes: null` — бессрочно). |
 | `DELETE /api/bans/{id}`, `POST /api/bans/clear` `{"source": "auto"}` | Разблокировать один адрес / снять все автоматические. |
+| `GET /api/geo`, `POST /api/geo/rebuild` | Доступ по странам: база GeoIP, файл сетей, сайты с правилами, отклонённые запросы; пересобрать сети сейчас ([17](17-bans.md#доступ-по-странам)). |
 | `GET /api/insights?from=&to=&site=` | Встроенный анализ за период: находки с причинами, действиями и данными ([18](18-insights.md)). |
 | `GET /api/insights/catalog`, `PUT /api/insights/thresholds` | Справочник показателей и сценариев; свои пороги `{"thresholds": {"p95": {"warn": 2000, "crit": 5000}}}`. |
 | `GET /api/reports/preview?period=day`, `POST /api/reports/send` | Предпросмотр и отправка регулярного отчёта. |
@@ -109,6 +111,8 @@ curl -s -H "$H" -H 'Content-Type: application/json' -X POST "$API/sites?apply=1"
 curl -s -H "$H" -H 'Content-Type: application/json' -X POST "$API/sites/3/maintenance" -d '{"enabled": true}'
 ./deploy.sh
 curl -s -H "$H" -H 'Content-Type: application/json' -X POST "$API/sites/3/maintenance" -d '{"enabled": false}'
+# обслуживание сразу для всех сайтов клиента (ids — из GET /api/sites, отфильтрованных по метке)
+curl -s -H "$H" -H 'Content-Type: application/json' -X POST "$API/sites/bulk" -d '{"ids": [3, 7, 9], "action": "maintenance_on"}'
 
 # Вывести бэкенд из балансировки (down) и применить
 curl -s -H "$H" "$API/sites/3" | jq '.data | .backends[1].down = true' \

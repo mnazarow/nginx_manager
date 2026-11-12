@@ -80,7 +80,7 @@ export async function render(root) {
     const rows = [
       ['rps', sum.rps, fmtNum(sum.rps, 2) + ' rps', n],
       ['err5', sum.err5_pct, fmtPct(sum.err5_pct, 2), n],
-      ['err4', sum.err4_pct, fmtPct(sum.err4_pct, 1), n],
+      ['err4', sum.err4_pct_clean ?? sum.err4_pct, fmtPct(sum.err4_pct_clean ?? sum.err4_pct, 1), n],
       ['p95', sum.p95, fmtMs(sum.p95), n],
       ['rt_avg', sum.rt_avg, fmtMs(sum.rt_avg), n],
       ['urt_avg', sum.urt_avg, sum.urt_avg ? fmtMs(sum.urt_avg) : '—', n],

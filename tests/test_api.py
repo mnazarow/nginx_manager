@@ -80,6 +80,26 @@ def test_site_crud_preview_and_validation(admin):
     assert admin.get(f"/api/sites/{sid}").status_code == 404
 
 
+def test_basic_auth_hashes_not_exposed(admin):
+    site = dict(SITE, name="Закрытый", domains=["secret.example.com"],
+                security={"basic_auth": True, "basic_auth_users": [{"username": "boss", "password": "Secret-1"}]})
+    r = admin.post("/api/sites", json=site, headers=H)
+    assert r.status_code == 200, r.text
+    sid = r.json()["id"]
+    got = admin.get(f"/api/sites/{sid}").json()["data"]
+    user = got["security"]["basic_auth_users"][0]
+    assert user["password_hash"] == "" and user["password"] == ""
+    # сохранение без пароля сохраняет прежний хеш
+    assert admin.put(f"/api/sites/{sid}", json=got, headers=H).status_code == 200
+    diff = admin.get("/api/config/pending").json()["diff"]
+    htp = [d for d in diff if d["file"].endswith(".htpasswd")]
+    assert htp and "$apr1$" not in htp[0]["diff"] and "boss:<хеш скрыт" in htp[0]["diff"]
+    # хеш с переводом строки (дописать пользователя в htpasswd) отклоняется
+    got["security"]["basic_auth_users"][0]["password_hash"] = "$apr1$x$y\nevil:$apr1$a$b"
+    assert admin.put(f"/api/sites/{sid}", json=got, headers=H).status_code == 422
+    assert admin.delete(f"/api/sites/{sid}", headers=H).status_code == 200
+
+
 def test_roles_and_tokens(admin, client):
     r = admin.post("/api/users", json={"username": "viewer1", "password": "Viewer-Pass1", "role": "viewer"}, headers=H)
     assert r.status_code == 200, r.text
@@ -88,6 +108,7 @@ def test_roles_and_tokens(admin, client):
     assert v.get("/api/sites").status_code == 200
     assert v.post("/api/sites", json=SITE, headers=H).status_code == 403
     assert v.get("/api/users").status_code == 403
+    assert v.post("/api/certs/selftest", json={"domain": "x.test"}, headers=H).status_code == 403
     tok = admin.post("/api/auth/tokens", json={"name": "ci", "role": "viewer"}, headers=H).json()
     token = tok.get("token")
     assert token and token.startswith("nm_")
@@ -221,3 +242,44 @@ def test_silence_blocks_notifications(client):
     finally:
         A.send = orig
         nmapp.db.execute("UPDATE silences SET ends_at=?", (time.time() - 1,))
+
+
+def test_sites_bulk(admin):
+    ids = []
+    for i in range(3):
+        r = admin.post("/api/sites", json=dict(SITE, name=f"Пакет {i}", domains=[f"bulk{i}.example.com"]), headers=H)
+        assert r.status_code == 200, r.text
+        ids.append(r.json()["id"])
+    r = admin.post("/api/sites/bulk", json={"ids": ids, "action": "disable"}, headers=H).json()
+    assert r["changed"] == 3 and r["applied"] is None
+    rows = {s["id"]: s for s in admin.get("/api/sites").json()}
+    assert not any(rows[i]["enabled"] for i in ids)
+    assert admin.post("/api/sites/bulk", json={"ids": ids, "action": "disable"}, headers=H).json()["changed"] == 0
+    r = admin.post("/api/sites/bulk", json={"ids": ids[:2], "action": "tag_add", "tag": "прод"}, headers=H).json()
+    assert r["changed"] == 2
+    rows = {s["id"]: s for s in admin.get("/api/sites").json()}
+    assert rows[ids[0]]["tags"] == ["прод"] and rows[ids[2]]["tags"] == []
+    assert admin.post("/api/sites/bulk", json={"ids": ids, "action": "tag_add"}, headers=H).status_code == 400
+    assert admin.post("/api/sites/bulk", json={"ids": ids, "action": "explode"}, headers=H).status_code == 400
+    assert admin.post("/api/sites/bulk", json={"ids": ids, "action": "tag_remove", "tag": "прод"}, headers=H).json()["changed"] == 2
+    r = admin.post("/api/sites/bulk", json={"ids": ids, "action": "delete"}, headers=H).json()
+    assert r["changed"] == 3
+    assert all(admin.get(f"/api/sites/{i}").status_code == 404 for i in ids)
+
+
+def test_geo_status_and_site_rules(admin):
+    site = dict(SITE, name="Гео", domains=["geo.example.com"],
+                security={"geo_mode": "allow", "geo_countries": ["ru", "KZ"], "geo_exceptions": ["198.51.100.0/24"]})
+    r = admin.post("/api/sites", json=site, headers=H)
+    assert r.status_code == 200, r.text
+    sid = r.json()["id"]
+    assert admin.get(f"/api/sites/{sid}").json()["data"]["security"]["geo_countries"] == ["RU", "KZ"]
+    g = admin.get("/api/geo").json()
+    assert any(s["id"] == sid and s["mode"] == "allow" for s in g["sites"]) and "db" in g and "blocked" in g
+    row = next(s for s in admin.get("/api/sites").json() if s["id"] == sid)
+    assert row["geo"] == {"mode": "allow", "countries": ["RU", "KZ"]}
+    bad = dict(site, security={"geo_mode": "deny", "geo_countries": []})
+    assert admin.put(f"/api/sites/{sid}", json=bad, headers=H).status_code == 422
+    schema = admin.get("/api/schema").json()
+    assert "RU" in schema["countries"] and len(schema["country_groups"]["eu"]) == 27
+    assert admin.delete(f"/api/sites/{sid}", headers=H).status_code == 200

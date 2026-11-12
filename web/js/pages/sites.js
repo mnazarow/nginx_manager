@@ -1,7 +1,7 @@
 // Сайты: список, мастер создания, полный редактор с предпросмотром конфигурации.
 import { api, showError } from '../api.js';
-import { h, mount, icon, badge, toast, modal, confirmDlg, table, tabs, loading, codeBlock, debounce, fmtNum, fmtBps, fmtPct, fmtMs,
-  fmtAgo, empty, SITE_TYPES, copyBtn } from '../ui.js';
+import { h, mount, icon, badge, toast, modal, confirmDlg, promptDlg, table, tabs, loading, codeBlock, debounce, fmtNum, fmtBps, fmtPct, fmtMs,
+  fmtAgo, empty, SITE_TYPES, copyBtn, countryName } from '../ui.js';
 import { model, defaults, renderFields, errorsToMap, SCHEMA } from '../forms.js';
 import { ctx, can, refreshState, applyDialog, applyErrorView } from '../app.js';
 import { certDialog } from './certs.js';
@@ -15,7 +15,9 @@ export async function render(root) {
 async function list(root) {
   const sites = await api('/sites');
   let q = '', tag = '';
+  const sel = new Set();
   const box = h('div', {});
+  const bar = h('div', {});
   const tags = [...new Set(sites.flatMap(s => s.tags))].sort();
   const search = h('input', { type: 'search', placeholder: 'Поиск по названию, домену, бэкенду…', oninput: (e) => { q = e.target.value.toLowerCase(); draw(); } });
   const tagSel = h('select', { onchange: (e) => { tag = e.target.value; draw(); } }, h('option', { value: '' }, 'Все метки'), tags.map(t => h('option', { value: t }, t)));
@@ -25,17 +27,57 @@ async function list(root) {
       can('operator') ? h('div', { class: 'row' }, h('button', { class: 'btn', onclick: () => importDialog() }, icon('import'), 'Импорт из nginx'),
         h('button', { class: 'btn primary', onclick: () => wizard() }, icon('plus'), 'Добавить сайт')) : null),
     h('div', { class: 'toolbar' }, search, tags.length ? tagSel : null, h('span', { class: 'muted small' }, `Всего: ${sites.length}`)),
-    h('div', { class: 'card' }, box));
+    bar, h('div', { class: 'card' }, box));
+
+  // ---- массовые действия
+  const names = () => sites.filter(s => sel.has(s.id)).map(s => s.name);
+  async function bulk(action, extra = {}) {
+    try {
+      const r = await api('/sites/bulk', { method: 'POST', body: { ids: [...sel], action, ...extra } });
+      const applied = r.applied ? ' и применено' : r.changed && !action.startsWith('maintenance') ? ' — примените конфигурацию' : '';
+      toast(r.changed ? `Изменено сайтов: ${r.changed}${applied}` : 'Изменений нет — у выбранных сайтов уже так', r.changed ? 'good' : 'info');
+      sel.clear(); refreshState(); render(root);
+    } catch { render(root); /* ошибку уже показал api() */ }
+  }
+  function drawBar() {
+    if (!sel.size) { mount(bar); return; }
+    const selTags = [...new Set(sites.filter(s => sel.has(s.id)).flatMap(s => s.tags))].sort();
+    mount(bar, h('div', { class: 'bulk-bar' },
+      h('b', {}, `Выбрано: ${sel.size}`),
+      h('button', { class: 'btn sm', onclick: () => bulk('enable') }, 'Включить'),
+      h('button', { class: 'btn sm', onclick: () => bulk('disable') }, 'Выключить'),
+      h('button', { class: 'btn sm', onclick: async () => {
+        if (await confirmDlg(`Включить режим обслуживания для ${sel.size} сайт(ов)?\n${names().join(', ')}\n\nКонфигурация будет применена сразу: посетители увидят страницу «Ведутся технические работы».`, { ok: 'Включить обслуживание' })) bulk('maintenance_on');
+      } }, 'Обслуживание: вкл'),
+      h('button', { class: 'btn sm', onclick: () => bulk('maintenance_off') }, 'Обслуживание: выкл'),
+      h('button', { class: 'btn sm', onclick: async () => { const t = await promptDlg('Добавить метку', `Метка для ${sel.size} сайт(ов)`, '', { placeholder: 'прод, клиент-А, staging…' }); if (t && t.trim()) bulk('tag_add', { tag: t.trim() }); } }, 'Добавить метку'),
+      selTags.length ? h('select', { class: 'sm', onchange: (e) => { if (e.target.value) bulk('tag_remove', { tag: e.target.value }); } },
+        h('option', { value: '' }, 'Убрать метку…'), selTags.map(t => h('option', { value: t }, t))) : null,
+      h('button', { class: 'btn sm danger', onclick: async () => {
+        if (await confirmDlg(`Удалить ${sel.size} сайт(ов)?\n${names().join(', ')}\n\nКонфигурация будет удалена после применения. Версии конфигурации позволяют откатиться.`, { danger: true, ok: 'Удалить' })) bulk('delete');
+      } }, icon('trash'), 'Удалить'),
+      h('button', { class: 'btn sm ghost', onclick: () => { sel.clear(); draw(); } }, 'Снять выделение')));
+  }
+
   function draw() {
     const rows = sites.filter(s => (!tag || s.tags.includes(tag)) &&
       (!q || (s.name + ' ' + s.domains.join(' ') + ' ' + s.backends.join(' ')).toLowerCase().includes(q)));
+    drawBar();
+    const allOn = rows.length > 0 && rows.every(s => sel.has(s.id));
+    const pick = can('operator') ? [{ width: '32px', title: h('input', { type: 'checkbox', checked: allOn, title: 'Выбрать все показанные', 'aria-label': 'Выбрать все',
+      onchange: (e) => { rows.forEach(s => e.target.checked ? sel.add(s.id) : sel.delete(s.id)); draw(); } }),
+    render: (s) => h('input', { type: 'checkbox', checked: sel.has(s.id), 'aria-label': `Выбрать ${s.name}`,
+      onchange: (e) => { e.target.checked ? sel.add(s.id) : sel.delete(s.id); draw(); } }) }] : [];
     mount(box, sites.length ? table([
+      ...pick,
       { title: 'Сайт', render: (s) => h('div', {}, h('b', {}, s.name), ' ', s.tags.map(t => h('span', { class: 'tag' }, t)),
         h('div', { class: 'muted small' }, s.domains.slice(0, 4).join(', ') + (s.domains.length > 4 ? ` +${s.domains.length - 4}` : ''))) },
       { title: 'Тип', render: (s) => SITE_TYPES[s.type] || s.type },
       { title: 'Состояние', render: (s) => h('div', { class: 'row', style: { gap: '4px' } },
         s.enabled ? badge('включён', 'good') : badge('выключен'), s.ssl ? badge('HTTPS', 'info') : badge('HTTP', 'outline'),
-        s.maintenance ? badge('обслуживание', 'warn') : null, s.cache ? badge('кэш', 'outline') : null) },
+        s.maintenance ? badge('обслуживание', 'warn') : null, s.cache ? badge('кэш', 'outline') : null,
+        s.geo && s.geo.mode !== 'off' ? h('span', { title: (s.geo.mode === 'deny' ? 'Запрещены: ' : 'Только: ') + s.geo.countries.map(c => `${c} ${countryName(c)}`).join(', ') },
+          badge(s.geo.mode === 'deny' ? 'запрет стран' : 'только страны', 'outline')) : null) },
       { title: 'Бэкенды', render: (s) => s.type !== 'proxy' ? h('span', { class: 'muted' }, '—') : h('div', { class: 'col', style: { gap: '2px' } },
         (s.health.length ? s.health : s.backends.map(b => ({ addr: b, state: 'unknown' }))).slice(0, 4).map(t => h('div', { class: 'row nowrap small', style: { gap: '6px' }, title: t.error || '' },
           h('span', { class: 'dot ' + (t.state === 'up' ? 'good' : t.state === 'down' ? 'bad' : '') }), h('code', {}, t.addr),
@@ -54,7 +96,7 @@ async function list(root) {
           if (!await confirmDlg(`Удалить сайт «${s.name}»?\nКонфигурация будет удалена после применения.`, { danger: true, ok: 'Удалить' })) return;
           await api(`/sites/${s.id}`, { method: 'DELETE' }); toast('Сайт удалён — примените конфигурацию', 'info'); refreshState(); render(root);
         } }, icon('trash')) : null) },
-    ], rows, { onRow: (s) => { location.hash = `#/sites?edit=${s.id}`; }, empty: 'Ничего не найдено' })
+    ], rows, { onRow: (s) => { location.hash = `#/sites?edit=${s.id}`; }, empty: 'Ничего не найдено', rowClass: (s) => sel.has(s.id) ? 'selected' : '' })
       : empty('Сайтов пока нет', 'Добавьте первый сайт — укажите домен и адрес приложения, остальное настроится по умолчанию.',
         can('operator') ? h('button', { class: 'btn primary', onclick: () => wizard() }, icon('plus'), 'Добавить сайт') : null, 'sites'));
   }

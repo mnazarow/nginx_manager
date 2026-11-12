@@ -102,6 +102,7 @@ class Paths:
     panel_port: int
     data_dir: str
     bans_file: str = ""      # список блокировок для geo $nm_banned (пусто — блокировки не подключаются)
+    geo_file: str = ""       # сети стран для geo $nm_cc (пусто — базы GeoIP нет, правила по странам не действуют)
 
 
 class ConfigError(Exception):
@@ -277,6 +278,20 @@ class Generator:
             c.d("default", "0")
             if self.p.bans_file:
                 c.d("include", self.p.bans_file)
+        c.comment("1 — запрос отклонён правилом доступа по странам (поле gb журнала доступа)")
+        with c.block("map $nm_site $nm_gb"):
+            c.d("default", "0")
+            for gsid in self.geo_sites():
+                c.d(f'"{gsid}"', f"$nm_geo_{gsid}")
+        if self.geo_sites():
+            c.comment("Доступ по странам: сети выбранных стран из базы GeoIP (файл пересобирает панель)")
+            with c.block("geo $nm_cc"):
+                c.d("default", "--")
+                c.d("include", self.p.geo_file)
+            c.comment("Проверки Let's Encrypt приходят из разных стран — их не ограничиваем")
+            with c.block("map $uri $nm_acme"):
+                c.d("default", "0")
+                c.d('"~^/\\.well-known/acme-challenge/"', "1")
         c.line()
         c.d("sendfile", onoff(g.sendfile))
         c.d("tcp_nopush", onoff(g.tcp_nopush))
@@ -572,6 +587,7 @@ class Generator:
                 c.d("default", 1)
                 for ip in s.maintenance.allow:
                     c.d(ip, 0)
+        self.geo_vars(c, sid, s)
         if s.performance.static_expires and s.type == "proxy":
             with c.block(f"map $nm_static $nm_exp_{sid}"):
                 c.d("default", "off")
@@ -602,6 +618,7 @@ class Generator:
                 c.d("server_name", " ".join(s.domains))
                 c.d("set", "$nm_site", f'"{sid}"')
                 self.ban_check(c)
+                self.geo_check(c, sid, s)
                 if not s.performance.access_log:
                     c.d("access_log", "off")
                 self.acme_location(c)
@@ -617,6 +634,46 @@ class Generator:
         return c.text()
 
     # ------------------------------------------------------------------
+    def geo_sites(self) -> List[int]:
+        """Сайты, для которых действует доступ по странам (нужна база GeoIP)."""
+        if not self.p.geo_file:
+            return []
+        return [sid for sid, s in self.st.sites if s.enabled and s.security.geo_mode != "off"
+                and s.security.geo_countries]
+
+    def geo_vars(self, c: Conf, sid: int, s: Site) -> None:
+        """Переменная $nm_geo_<id>: 1 — отклонить запрос (уровень http, в начале файла сайта)."""
+        sec = s.security
+        if sec.geo_mode == "off":
+            return
+        if not self.p.geo_file:
+            self.warnings.append(f"Сайт «{s.name}»: доступ по странам не действует — нет базы GeoIP "
+                                 "(Настройки панели → Статистика)")
+            return
+        ex = bool(sec.geo_exceptions)
+        if ex:
+            with c.block(f"geo $nm_geo_ex_{sid}"):
+                c.d("default", "0")
+                for net in sec.geo_exceptions:
+                    c.d(net, "1")
+        key = f'"$nm_acme$nm_geo_ex_{sid}:$nm_cc"' if ex else '"$nm_acme:$nm_cc"'
+        pre = "00:" if ex else "0:"
+        deny = sec.geo_mode == "deny"
+        with c.block(f"map {key} $nm_geo_{sid}"):
+            c.d("default", "0" if deny else "1")
+            c.d('"~^1"', "0")  # проверка Let's Encrypt
+            if ex:
+                c.d('"~^01"', "0")  # исключение по IP
+            for cc in sec.geo_countries:
+                c.d(f'"{pre}{cc}"', "1" if deny else "0")
+            if not deny and sec.geo_allow_private:
+                c.d(f'"{pre}LAN"', "0")
+
+    def geo_check(self, c: Conf, sid: int, s: Site) -> None:
+        if sid in self.geo_sites():
+            with c.block(f"if ($nm_geo_{sid})"):
+                c.d("return", s.security.geo_status)
+
     def ban_check(self, c: Conf) -> None:
         """Отклонить запрос с заблокированного IP до выбора location (раздел «Блокировки»)."""
         with c.block("if ($nm_banned)"):
@@ -642,6 +699,7 @@ class Generator:
             c.d("server_name", " ".join(s.domains))
             c.d("set", "$nm_site", f'"{sid}"')
             self.ban_check(c)
+            self.geo_check(c, sid, s)
             c.line()
             if https:
                 c.d("ssl_certificate", cert.cert_path)
@@ -1049,7 +1107,7 @@ LOG_FORMAT_HTTP = r"""log_format nm_json escape=json '{'
     '"ua":"$upstream_addr","us":"$upstream_status","urt":"$upstream_response_time",'
     '"uct":"$upstream_connect_time","uht":"$upstream_header_time",'
     '"ref":"$http_referer","agent":"$http_user_agent","cache":"$upstream_cache_status",'
-    '"sch":"$scheme","tls":"$ssl_protocol","rid":"$request_id","cr":"$connection_requests","bn":"$nm_banned"'
+    '"sch":"$scheme","tls":"$ssl_protocol","rid":"$request_id","cr":"$connection_requests","bn":"$nm_banned","gb":"$nm_gb"'
     '}';"""
 
 LOG_FORMAT_STREAM = r"""log_format nm_stream escape=json '{'

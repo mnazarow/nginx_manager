@@ -129,6 +129,14 @@ export function fmtDur(s) {
   if (m) return `${m} мин`;
   return `${s} с`;
 }
+let regionNames = null;
+/** Название страны по-русски по коду ISO (RU → Россия); LAN — локальная сеть. */
+export function countryName(cc) {
+  if (!cc || cc === '--') return '';
+  if (cc === 'LAN') return 'локальная сеть';
+  try { regionNames = regionNames || new Intl.DisplayNames(['ru'], { type: 'region' }); return regionNames.of(cc) || cc; } catch { return cc; }
+}
+export function countryTag(cc) { return cc ? h('span', { class: 'tag', title: countryName(cc) }, cc) : null; }
 export function statusClass(code) { return 'status-' + String(code)[0]; }
 
 // ---------- Уведомления ----------

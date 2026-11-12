@@ -183,8 +183,11 @@ async def state(request: Request, user=Depends(viewer)):
 
 @router.get("/schema")
 async def schema(user=Depends(viewer)):
+    from ..services.geoblock import COUNTRY_CODES, EU
     s = full_schema()
     s["cloudflare_ips"] = CLOUDFLARE_IPS
+    s["countries"] = list(COUNTRY_CODES)
+    s["country_groups"] = {"eu": list(EU)}
     return s
 
 
@@ -219,7 +222,9 @@ def _site_row(app, r: Dict[str, Any], live: Dict[str, Any], health: Dict[str, Li
             "health": hs, "tags": d.get("tags", []), "maintenance": (d.get("maintenance") or {}).get("enabled"),
             "cache": (d.get("cache") or {}).get("enabled"), "rps": lv.get("rps", 0), "bps": lv.get("bps", 0),
             "err5_pct": lv.get("err5_pct", 0), "rt_avg": lv.get("rt_avg", 0), "updated_at": r["updated_at"],
-            "locations": len(d.get("locations", []))}
+            "locations": len(d.get("locations", [])),
+            "geo": {"mode": (d.get("security") or {}).get("geo_mode", "off"),
+                    "countries": (d.get("security") or {}).get("geo_countries", [])}}
 
 
 @router.get("/sites")
@@ -241,7 +246,13 @@ async def get_site(sid: int, request: Request, user=Depends(viewer)):
     data = json.loads(r["data"])
     for u in (data.get("security") or {}).get("basic_auth_users", []):
         u["password"] = ""
+        u["password_hash"] = ""  # хранится только на сервере; при сохранении без пароля берётся прежний
     return {"id": r["id"], "data": data, "created_at": r["created_at"], "updated_at": r["updated_at"]}
+
+
+def app_nginx_masked(files: Dict[str, str]) -> Dict[str, str]:
+    from ..nginx.manager import NginxManager
+    return NginxManager.masked(files)
 
 
 def _prepare_site(app, data: Dict[str, Any], sid: Optional[int] = None) -> Site:
@@ -329,6 +340,66 @@ async def site_maintenance(sid: int, request: Request, enabled: bool = Body(...,
     audit(request, user, "maintenance_on" if enabled else "maintenance_off", r["name"])
     res = await app.apply(user["username"], f"Обслуживание «{r['name']}»: {'вкл' if enabled else 'выкл'}")
     return {"ok": True, "applied": res}
+
+
+class BulkBody(BaseModel):
+    ids: List[int]
+    action: str
+    tag: str = ""
+    apply: bool = False
+
+
+BULK_ACTIONS = {"enable": "включены", "disable": "выключены", "maintenance_on": "переведены в обслуживание",
+                "maintenance_off": "выведены из обслуживания", "delete": "удалены", "tag_add": "метка добавлена",
+                "tag_remove": "метка убрана"}
+
+
+@router.post("/sites/bulk")
+async def sites_bulk(body: BulkBody, request: Request, user=Depends(operator)):
+    """Одно действие над несколькими сайтами. Обслуживание применяется сразу, остальное — по флагу apply."""
+    app = nm(request)
+    if body.action not in BULK_ACTIONS:
+        raise HTTPException(400, "Неизвестное действие")
+    ids = sorted({int(i) for i in body.ids})[:1000]
+    if not ids:
+        raise HTTPException(400, "Не выбраны сайты")
+    tag = body.tag.strip()[:40]
+    if body.action.startswith("tag_") and (not tag or any(c in tag for c in "\r\n\0")):
+        raise HTTPException(400, "Укажите метку")
+    rows = app.db.query(f"SELECT * FROM sites WHERE id IN ({','.join('?' * len(ids))})", ids)
+    if not rows:
+        raise HTTPException(404, "Сайты не найдены")
+    changed: List[str] = []
+    now = time.time()
+    for r in rows:
+        if body.action == "delete":
+            app.db.execute("DELETE FROM sites WHERE id=?", (r["id"],))
+            changed.append(r["name"])
+            continue
+        d = json.loads(r["data"])
+        before = json.dumps(d, sort_keys=True)
+        if body.action in ("enable", "disable"):
+            d["enabled"] = body.action == "enable"
+        elif body.action.startswith("maintenance_"):
+            d.setdefault("maintenance", {})["enabled"] = body.action == "maintenance_on"
+        elif body.action == "tag_add":
+            d["tags"] = list(dict.fromkeys(list(d.get("tags") or []) + [tag]))
+        else:
+            d["tags"] = [t for t in d.get("tags") or [] if t != tag]
+        if json.dumps(d, sort_keys=True) == before:
+            continue
+        site = Site.model_validate(d)
+        app.db.execute("UPDATE sites SET enabled=?, data=?, updated_at=? WHERE id=?",
+                       (int(site.enabled), json.dumps(d, ensure_ascii=False), now, r["id"]))
+        changed.append(r["name"])
+    audit(request, user, "sites_bulk", body.action, {"ids": ids, "sites": changed, "tag": tag or None})
+    if changed:
+        app.touch()
+    need_apply = bool(changed) and (body.apply or body.action.startswith("maintenance_"))
+    res = await _maybe_apply(app, user, need_apply,
+                             f"Массово ({len(changed)}): {BULK_ACTIONS[body.action]} — " + ", ".join(changed[:5])
+                             + ("…" if len(changed) > 5 else ""))
+    return {"changed": len(changed), "sites": changed, "applied": res}
 
 
 @router.post("/sites/{sid}/clone")
@@ -540,7 +611,7 @@ async def version(vid: int, request: Request, user=Depends(viewer)):
     r = nm(request).db.one("SELECT * FROM config_versions WHERE id=?", (vid,))
     if not r:
         raise HTTPException(404, "Версия не найдена")
-    r["files"] = json.loads(r["files"])
+    r["files"] = app_nginx_masked(json.loads(r["files"]))
     st = json.loads(r["state"])
     r["state_summary"] = {"sites": [{"id": s["id"], "name": s["data"]["name"], "enabled": s["data"].get("enabled")}
                                     for s in st.get("sites", [])],
@@ -583,7 +654,7 @@ async def rollback(vid: int, request: Request, user=Depends(operator)):
 @router.get("/config/files")
 async def config_files(request: Request, user=Depends(viewer)):
     last = nm(request).nginx.last_applied()
-    return json.loads(last["files"]) if last else {}
+    return app_nginx_masked(json.loads(last["files"])) if last else {}
 
 
 @router.get("/config/dump", response_class=PlainTextResponse)
@@ -692,7 +763,7 @@ async def delete_cert(cid: int, request: Request, user=Depends(operator)):
 
 
 @router.post("/certs/selftest")
-async def cert_selftest(request: Request, domain: str = Body(..., embed=True), user=Depends(viewer)):
+async def cert_selftest(request: Request, domain: str = Body(..., embed=True), user=Depends(operator)):
     from ..validators import domain as vd
     return await asyncio.to_thread(nm(request).certs.http01_selftest, vd(domain))
 
@@ -983,6 +1054,53 @@ async def bans_remove(ban_id: int, request: Request, user=Depends(operator)):
     app.db.event("info", "bans", f"Разблокирован {row['net']} ({user['username']})")
     ok, out = await app.bans.sync(force=True)
     return {"ok": ok, "output": out if not ok else ""}
+
+
+@router.get("/geo")
+async def geo_status(request: Request, user=Depends(viewer)):
+    """Доступ по странам: база GeoIP, файл сетей, сайты с правилами."""
+    app = nm(request)
+    g = app.stats.geoip
+    st = app.nginx.geo_status()
+    applied = app.last_applied_state()
+    live = {sid for sid, s in applied.sites if s.security.geo_mode != "off"} if applied else set()
+    sites = []
+    for r in app.db.query("SELECT id, name, enabled, data FROM sites ORDER BY name COLLATE NOCASE"):
+        sec = (json.loads(r["data"]).get("security") or {})
+        if sec.get("geo_mode", "off") == "off":
+            continue
+        sites.append({"id": r["id"], "name": r["name"], "enabled": bool(r["enabled"]), "mode": sec["geo_mode"],
+                      "countries": sec.get("geo_countries", []), "status": sec.get("geo_status", 403),
+                      "exceptions": len(sec.get("geo_exceptions", [])), "applied": r["id"] in live})
+    import importlib.util
+    has_pkg = importlib.util.find_spec("maxminddb") is not None
+    hits = app.stats.agg.geo_hits
+    by_country: Dict[str, int] = {}
+    by_site: Dict[str, int] = {}
+    for (site, cc), n in hits.items():
+        by_country[cc] = by_country.get(cc, 0) + n
+        by_site[site] = by_site.get(site, 0) + n
+    now = time.time()
+
+    def day_blocked(sid: int) -> int:
+        return int(app.stats.summary(now - 86400, now, str(sid), exact_uniq=False)["blocked"]["geo"])
+    for s in sites:
+        s["blocked"] = by_site.get(str(s["id"]), 0)
+        s["blocked_24h"] = await asyncio.to_thread(day_blocked, s["id"])
+    return {"db": {"path": g.path, "loaded": g.reader is not None, "error": g.error, "package": has_pkg,
+                   "mtime": g.mtime or None},
+            "file": st, "sites": sites, "active": bool(st["db"]),
+            "blocked": {"total": sum(by_country.values()), "since": app.stats.started,
+                        "countries": sorted(([k, v] for k, v in by_country.items()), key=lambda x: -x[1])[:30]}}
+
+
+@router.post("/geo/rebuild")
+async def geo_rebuild(request: Request, user=Depends(operator)):
+    app = nm(request)
+    app.stats.reload_geoip()
+    await app.refresh_geo(force=True)
+    audit(request, user, "geo_rebuild")
+    return await geo_status(request, user)
 
 
 @router.post("/bans/clear")

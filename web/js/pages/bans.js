@@ -1,7 +1,7 @@
 // Блокировки IP: ручные и автоматические (поиск уязвимостей, подбор паролей, флуд), подозрительные адреса.
 import { api } from '../api.js';
-import { h, mount, icon, badge, toast, modal, confirmDlg, table, tabs, kpi, fmtAgo, fmtDur, fmtInt, fmtDate, empty, downloadText, debounce } from '../ui.js';
-import { can } from '../app.js';
+import { h, mount, icon, badge, toast, modal, confirmDlg, table, tabs, kpi, fmtAgo, fmtDur, fmtInt, fmtDate, empty, downloadText, debounce, countryTag, countryName } from '../ui.js';
+import { can, ctx } from '../app.js';
 
 const DURATIONS = [[15, '15 минут'], [60, '1 час'], [360, '6 часов'], [1440, '1 сутки'], [10080, '7 суток'], [43200, '30 суток'], [null, 'Бессрочно']];
 const RULE_KIND = { scan: 'bad', auth: 'bad', default: 'warn', e4xx: 'warn', flood: 'warn', manual: 'outline' };
@@ -50,8 +50,44 @@ export function banDialog(ip = '', { reason = '', onDone } = {}) {
   setTimeout(() => ta.focus(), 50);
 }
 
+const GEO_MODE = { deny: ['Запрещены выбранные', 'bad'], allow: ['Только выбранные', 'warn'] };
+
+/** Вкладка «Страны»: база GeoIP, файл сетей, сайты с ограничениями по странам. */
+function geoTab(box, g, reload) {
+  const db = g.db, f = g.file;
+  const dbState = db.loaded
+    ? h('div', {}, badge('подключена', 'good'), ' ', h('code', {}, db.path), db.mtime ? h('span', { class: 'muted small' }, ` · обновлена ${fmtAgo(db.mtime)}`) : null)
+    : h('div', {}, badge('нет', 'bad'), ' ', h('span', {}, !db.package ? 'Не установлен пакет maxminddb: sudo ./update.sh --with-geoip (или pip install maxminddb в окружении панели).' : (db.error || 'База не найдена') + '. Положите GeoLite2-Country.mmdb или dbip-country-lite.mmdb в /var/lib/nginx-manager/geoip/.'));
+  const used = g.sites.length;
+  const bl = g.blocked || { total: 0, countries: [] };
+  mount(box, h('div', { class: 'col' },
+    !db.loaded && used ? h('div', { class: 'alert bad' }, h('b', {}, 'Ограничения по странам не действуют. '), `У ${used} сайт(ов) заданы правила, но базы GeoIP нет — nginx пропускает всех. Подключите базу и примените конфигурацию.`) : null,
+    h('div', { class: 'grid g2' },
+      h('div', { class: 'card' }, h('div', { class: 'card-body' }, h('div', { class: 'muted small mb' }, 'База GeoIP'), dbState,
+        h('div', { class: 'muted small mt' }, 'Та же база, что и для статистики по странам. Обновляйте её раз в месяц: панель заметит новую версию в течение 10 минут и пересоберёт сети без перерыва в работе.'))),
+      h('div', { class: 'card' }, h('div', { class: 'card-body' }, h('div', { class: 'muted small mb' }, 'Сети стран в nginx'),
+        f.countries.length ? h('div', {}, h('div', { class: 'chips' }, f.countries.map(c => h('span', { class: 'chip', title: countryName(c) }, c))),
+          h('div', { class: 'muted small mt' }, `${fmtInt(f.nets)} сетей · собрано ${f.built ? fmtAgo(f.built) : '—'}${f.last_build?.seconds != null ? ` за ${f.last_build.seconds} с` : ''}`))
+          : h('div', { class: 'muted' }, 'Пока не нужны — ни у одного применённого сайта нет правил по странам.'),
+        can('operator') && db.loaded ? h('button', { class: 'btn sm mt', onclick: async () => { const r = await api('/geo/rebuild', { method: 'POST' }); toast(`Сети стран пересобраны: ${fmtInt(r.file.nets)}`, 'good'); reload(); } }, 'Пересобрать сейчас') : null))),
+    used ? h('div', { class: 'card' }, h('div', { class: 'card-body' },
+      h('div', { class: 'row between mb' }, h('div', { class: 'muted small' }, `Отклонено по странам с запуска панели ${fmtDate(bl.since)}`), h('b', {}, fmtInt(bl.total))),
+      bl.countries.length ? h('div', { class: 'chips' }, bl.countries.map(([c, n]) => h('span', { class: 'chip', title: countryName(c) || 'страна не определена' }, h('b', {}, c === '--' ? '??' : c), ' ', countryName(c), ' · ', fmtInt(n))))
+        : h('div', { class: 'muted small' }, 'Запросов из ограниченных стран пока не было.'))) : null,
+    used ? table([
+      { title: 'Сайт', render: (s) => h('a', { href: `#/sites?edit=${s.id}&tab=security` }, s.name, !s.enabled ? h('span', { class: 'muted small' }, ' (выключен)') : null) },
+      { title: 'Режим', render: (s) => badge(GEO_MODE[s.mode][0], GEO_MODE[s.mode][1]) },
+      { title: 'Страны', render: (s) => h('div', { class: 'chips' }, s.countries.slice(0, 12).map(c => h('span', { class: 'chip', title: countryName(c) }, c)), s.countries.length > 12 ? h('span', { class: 'muted small' }, `ещё ${s.countries.length - 12}`) : null) },
+      { title: 'Ответ', render: (s) => h('code', {}, s.status) },
+      { title: 'Исключений', num: true, render: (s) => fmtInt(s.exceptions) },
+      { title: 'Отклонено за 24 ч', num: true, render: (s) => fmtInt(s.blocked_24h ?? s.blocked ?? 0) },
+      { title: 'Действует', render: (s) => s.applied && db.loaded ? badge('да', 'good') : badge(db.loaded ? 'не применено' : 'нет базы', 'warn') },
+    ], g.sites) : empty('Ограничений по странам нет', 'Настраивается в карточке сайта: вкладка «Безопасность» → «Доступ по странам». Можно запретить отдельные страны или разрешить доступ только из выбранных.', null, 'shield')));
+}
+
 export async function render(root) {
-  let tab = 'active', q = '', timer = null, data = null;
+  let tab = ['active', 'suspicious', 'offenders', 'countries', 'history'].includes(ctx.params.tab) ? ctx.params.tab : 'active';
+  let q = '', timer = null, data = null;
   const head = h('div', {});
   const kpis = h('div', { class: 'grid g4 mb' });
   const tabBar = h('div', {});
@@ -83,9 +119,10 @@ export async function render(root) {
       { id: 'active', label: 'Активные', badge: r.items.length || null },
       { id: 'suspicious', label: 'Подозрительные', badge: r.suspicious.length || null, badgeKind: st.autoban_enabled ? '' : 'warn' },
       { id: 'offenders', label: 'Нарушители сейчас', badge: r.offenders.length || null },
+      { id: 'countries', label: 'Страны' },
       { id: 'history', label: 'История' },
-    ], tab, (t) => { tab = t; draw(); }));
-    mount(tools, h('div', { class: 'row mb', style: { justifyContent: 'space-between' } }, search,
+    ], tab, (t) => { tab = t; ctx.params.tab = t; history.replaceState(null, '', '#/bans' + (t === 'active' ? '' : '?tab=' + t)); draw(); }));
+    mount(tools, tab === 'countries' ? null : h('div', { class: 'row mb', style: { justifyContent: 'space-between' } }, search,
       h('div', { class: 'row' },
         tab === 'active' && r.items.length ? h('button', { class: 'btn sm', onclick: () => downloadText('banned-ips.txt', r.items.map(b => b.net).join('\n') + '\n', 'text/plain') }, icon('download'), 'Экспорт списка') : null,
         tab === 'active' && can('admin') && s.auto ? h('button', { class: 'btn sm', onclick: async () => {
@@ -96,7 +133,7 @@ export async function render(root) {
     if (tab === 'active') {
       const rows = r.items.filter(b => match(b.net, b.reason, b.username, b.country, b.rule_title));
       mount(box, rows.length ? table([
-        { title: 'Адрес', render: (b) => h('div', {}, h('code', {}, b.net), b.country ? h('span', { class: 'tag', style: { marginLeft: '6px' } }, b.country) : null) },
+        { title: 'Адрес', render: (b) => h('div', {}, h('code', {}, b.net), b.country ? h('span', { style: { marginLeft: '6px' } }, countryTag(b.country)) : null) },
         { title: 'Причина', render: (b) => h('div', { style: { maxWidth: '420px' } }, badge(b.rule_title || b.rule || 'вручную', RULE_KIND[b.rule] || 'outline'), ' ',
           h('span', {}, (b.reason || '').replace((b.rule_title || '') + ': ', '')),
           b.details?.sample ? h('div', { class: 'muted small ellipsis', title: b.details.sample }, h('code', {}, b.details.sample)) : null) },
@@ -116,7 +153,7 @@ export async function render(root) {
     } else if (tab === 'suspicious') {
       const rows = r.suspicious.filter(x => match(x.ip, x.title, x.sample, x.host, x.country));
       mount(box, rows.length ? table([
-        { title: 'Адрес', render: (x) => h('div', {}, h('code', {}, x.ip), x.country ? h('span', { class: 'tag', style: { marginLeft: '6px' } }, x.country) : null) },
+        { title: 'Адрес', render: (x) => h('div', {}, h('code', {}, x.ip), x.country ? h('span', { style: { marginLeft: '6px' } }, countryTag(x.country)) : null) },
         { title: 'Правило', render: (x) => badge(x.title, RULE_KIND[x.rule] || '') },
         { title: 'Показатели за окно', render: (x) => h('span', { class: 'small' }, `запросов ${x.requests} · 4xx ${x.e4xx} · 401 ${x.e401} · зондов ${x.scan} · по IP ${x.default}`) },
         { title: 'Пример запроса', render: (x) => h('div', { class: 'ellipsis small', style: { maxWidth: '360px' }, title: x.sample }, x.host ? h('span', { class: 'muted' }, x.host) : null, h('code', {}, x.sample || '—')) },
@@ -137,6 +174,9 @@ export async function render(root) {
           { title: 'Последний подозрительный запрос', render: (x) => h('code', { class: 'small ellipsis', style: { maxWidth: '320px', display: 'inline-block' }, title: x.sample }, x.sample || '—') },
           { title: '', render: (x) => can('operator') ? h('button', { class: 'btn sm', onclick: () => banDialog(x.ip, { onDone: load }) }, icon('ban')) : null },
         ], rows) : empty('Нарушителей нет', 'В текущем окне нет адресов с заметным числом ошибок или зондирований.', null, 'shield')));
+    } else if (tab === 'countries') {
+      if (!box.querySelector('.col')) mount(box, h('div', {}, 'Загрузка…'));
+      api('/geo').then(g => { if (tab === 'countries') geoTab(box, g, draw); });
     } else {
       mount(box, h('div', {}, 'Загрузка…'));
       api('/events', { query: { source: 'bans', limit: 300 } }).then(ev => {

@@ -87,6 +87,7 @@ def parse_access(line: str) -> Optional[Dict[str, Any]]:
         "rid": d.get("rid", ""),
         "static": bool(STATIC_RE.search(path)),
         "banned": d.get("bn") == "1",
+        "geo_blocked": d.get("gb") == "1",
     }
 
 
@@ -301,13 +302,12 @@ class GeoIP:
         self.reader = None
         self.path = ""
         self.error = ""
+        self.mtime = 0.0  # время изменения загруженной базы (обновление базы перечитывается)
 
     def load(self, path: str, fallback_dir: str) -> None:
         import os
-        cands = [path] if path else []
-        cands += [os.path.join(fallback_dir, f) for f in ("GeoLite2-Country.mmdb", "dbip-country-lite.mmdb",
-                                                          "dbip-country.mmdb", "GeoLite2-City.mmdb")]
-        cands += ["/usr/share/GeoIP/GeoLite2-Country.mmdb", "/var/lib/GeoIP/GeoLite2-Country.mmdb"]
+        from ..services.geoblock import candidates
+        cands = candidates(path, fallback_dir)
         try:
             import maxminddb  # type: ignore
         except ImportError:
@@ -318,6 +318,7 @@ class GeoIP:
                 try:
                     self.reader = maxminddb.open_database(c)
                     self.path = c
+                    self.mtime = os.path.getmtime(c)
                     self.error = ""
                     self._lookup.cache_clear()
                     return

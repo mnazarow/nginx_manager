@@ -87,7 +87,7 @@ def render(app) -> str:
                  [({}, st["requests"])])
 
     # ---- по сайтам (журнал доступа)
-    req, by_cls, bin_, bout, banned, cache = [], [], [], [], [], []
+    req, by_cls, bin_, bout, banned, geo, cache = [], [], [], [], [], [], []
     hist_samples: List[Tuple[str, Dict[str, Any], float]] = []
     for sid, t in sorted(agg.totals.items()):
         lb = {"site_id": sid, "site": names.get(sid, f"#{sid}")}
@@ -98,6 +98,7 @@ def render(app) -> str:
         bin_.append((lb, t.bin))
         bout.append((lb, t.bout))
         banned.append((lb, t.banned))
+        geo.append((lb, t.geo))
         for k, n in t.cache.items():
             cache.append(({**lb, "cache_status": k}, n))
         acc = 0
@@ -113,6 +114,7 @@ def render(app) -> str:
     o.metric("nm_http_sent_bytes_total", "counter", "Отправлено байт (ответы целиком)", bout)
     o.metric("nm_http_cache_responses_total", "counter", "Ответов по статусу кэша ($upstream_cache_status)", cache)
     o.metric("nm_http_banned_requests_total", "counter", "Отклонено запросов с заблокированных IP", banned)
+    o.metric("nm_http_geo_blocked_requests_total", "counter", "Отклонено запросов правилами доступа по странам", geo)
     o.metric("nm_http_request_duration_seconds", "histogram", "Время обработки запроса ($request_time)", [],
              hist_samples)
 

@@ -20,9 +20,9 @@
 
 ```bash
 # 1. Скопируйте архив на сервер и распакуйте
-scp nginx-manager-1.3.0.tar.gz root@server:/root/
+scp nginx-manager-1.4.0.tar.gz root@server:/root/
 ssh root@server
-tar xzf nginx-manager-1.3.0.tar.gz && cd nginx-manager
+tar xzf nginx-manager-1.4.0.tar.gz && cd nginx-manager
 
 # 2. Запустите установку
 sudo ./install.sh
@@ -162,10 +162,10 @@ sudo ./install.sh --wheels /root/nginx-manager/wheels
 ## Обновление
 
 ```bash
-tar xzf nginx-manager-1.3.0.tar.gz
+tar xzf nginx-manager-1.4.0.tar.gz
 sudo ./nginx-manager/update.sh --yes
 # или из архива напрямую:
-sudo /opt/nginx-manager/update.sh --archive /root/nginx-manager-1.3.0.tar.gz
+sudo /opt/nginx-manager/update.sh --archive /root/nginx-manager-1.4.0.tar.gz
 ```
 
 Порядок работы `update.sh`:
@@ -189,6 +189,7 @@ sudo /opt/nginx-manager/update.sh --archive /root/nginx-manager-1.3.0.tar.gz
 | `--wheels DIR` | Офлайн-установка зависимостей. |
 | `--no-backup` | Не делать резервных копий (не рекомендуется). |
 | `--no-apply` | Не переприменять конфигурацию nginx. |
+| `--with-geoip` | Установить пакет `maxminddb` (статистика и доступ по странам), если его ещё нет. Уже установленный пакет обновляется всегда. |
 | `--force` | Обновить на ту же или более старую версию. |
 | `-y`, `--yes` | Без вопросов. |
 

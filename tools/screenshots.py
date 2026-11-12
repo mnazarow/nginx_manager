@@ -20,7 +20,9 @@ PAGES = [
     ("backup", "#/backup", 1500), ("profile", "#/profile", 1500), ("docs", "#/docs", 2000),
     ("bans", "#/bans", 2500), ("settings-bans", "#/settings?tab=bans", 1500),
     ("settings-reports", "#/settings?tab=reports", 1500), ("insights-thresholds", "#/insights?tab=thresholds", 3000),
+    ("geo-tab", "#/bans?tab=countries", 3000),
 ]
+SCENES = {"geo-site", "sites-bulk"}  # снимки с действиями: --only geo-site,sites-bulk или --extras
 
 
 async def main(a):
@@ -50,12 +52,36 @@ async def main(a):
             before = len(errors)
             await page.screenshot(path=f"{a.out}/{name}.png", full_page=a.full)
             print(f"{name}: ok" + (f" ({len(errors) - before} ошибок)" if len(errors) > before else ""), flush=True)
+        if a.extras or (only and only & SCENES):
+            await scenes(page, a, None if a.extras else only)
         if a.extras:
             await extras(page, a)
         await browser.close()
     if errors:
         print("\n".join(errors[:50]))
     return 1 if errors else 0
+
+
+async def scenes(page, a, only):
+    """Доступ по странам в карточке сайта (с подсказкой поиска) и массовые действия в списке сайтов."""
+    if not only or "geo-site" in only:
+        await page.goto(f"{a.url}/#/sites?edit=1&tab=security")
+        await page.wait_for_timeout(2500)
+        await page.evaluate("""() => { const el = document.querySelector('[data-path="security.geo_mode"]');
+            el.scrollIntoView({block: 'start'}); window.scrollBy(0, -90); }""")
+        await page.fill(".cc-search input", "ка")
+        await page.wait_for_timeout(900)
+        await page.screenshot(path=f"{a.out}/geo-site.png")
+        await page.fill(".cc-search input", "")
+        print("geo-site: ok")
+    if not only or "sites-bulk" in only:
+        await page.goto(f"{a.url}/#/sites")
+        await page.wait_for_timeout(2000)
+        await page.click("table.t tbody tr:nth-child(1) input[type=checkbox]")
+        await page.click("table.t tbody tr:nth-child(5) input[type=checkbox]")
+        await page.wait_for_timeout(500)
+        await page.screenshot(path=f"{a.out}/sites-bulk.png")
+        print("sites-bulk: ok")
 
 
 async def extras(page, a):

@@ -189,5 +189,6 @@ export function helpFor(route, params = {}) {
   let sec = heading ? slugify(heading) : '';
   if (route === '/sites' && params.edit && params.tab && TAB_HEADINGS.sites[params.tab]) sec = slugify(TAB_HEADINGS.sites[params.tab]);
   else if (route === '/sites' && params.edit) sec = slugify(TAB_HEADINGS.sites.main);
+  else if (route === '/bans' && params.tab === 'countries') sec = slugify('Доступ по странам');
   return { page, sec, tab: (route === '/global' || route === '/settings') ? params.tab || '' : '' };
 }

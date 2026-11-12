@@ -225,7 +225,7 @@ table.t { width: 100%; border-collapse: collapse; font-size: 13px; }
 .t tr:last-child td { border-bottom: 0; }
 .t tbody tr:hover td { background: var(--surface-2); }
 .t tr.clickable { cursor: pointer; }
-.t td.num, .t th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.t td.num, .t th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .t .bar-cell { position: relative; }
 .t .bar-cell .bar { position: absolute; left: 0; top: 4px; bottom: 4px; background: var(--accent-wash); border-radius: 0 4px 4px 0; z-index: 0; }
 .t .bar-cell span { position: relative; z-index: 1; }
@@ -261,6 +261,14 @@ select { padding-right: 28px; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip { padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line-2); font-size: 12.5px; cursor: pointer; user-select: none; background: var(--surface); }
 .chip.on { background: var(--accent-wash); border-color: var(--accent); color: var(--accent-ink); font-weight: 500; }
+.cc-input { gap: 8px; }
+.cc-search { position: relative; max-width: 460px; }
+.cc-search input { width: 100%; }
+.cc-list { position: absolute; z-index: 30; left: 0; right: 0; top: calc(100% + 4px); background: var(--surface); border: 1px solid var(--line-2);
+  border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.12); padding: 4px; max-height: 280px; overflow: auto; }
+.cc-item { padding: 6px 10px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+.cc-item b { display: inline-block; min-width: 28px; font-family: var(--mono); font-weight: 600; color: var(--muted); }
+.cc-item.on, .cc-item:hover { background: var(--accent-wash); }
 fieldset.group { border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px 16px; margin: 0; min-width: 0; }
 fieldset.group > legend { padding: 0 6px; font-weight: 600; font-size: 13px; }
 .subgroup { border-top: 1px dashed transparent; }
@@ -324,6 +332,11 @@ pre.code .errline { background: color-mix(in srgb, var(--critical) 22%, transpar
 .kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; font-size: 13px; }
 .kv dt { color: var(--ink-2); } .kv dd { margin: 0; word-break: break-word; }
 .toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+.bulk-bar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; padding: 8px 12px;
+  border: 1px solid var(--accent); background: var(--accent-wash); border-radius: 10px; position: sticky; top: 64px; z-index: 5; }
+.bulk-bar b { margin-right: 6px; }
+.bulk-bar select.sm { height: 26px; font-size: 12px; width: auto; }
+table.t tr.selected td { background: var(--accent-wash); }
 .toolbar input[type=search], .toolbar input[type=text] { width: 220px; }
 .toolbar select { width: auto; min-width: 140px; }
 .chart-box { position: relative; height: 240px; }

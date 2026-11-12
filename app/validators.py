@@ -18,7 +18,7 @@ COOKIE_RE = re.compile(r"^[A-Za-z0-9_]{1,64}$")
 NAME_RE = re.compile(r"^[\w .:@()+\-]{1,100}$", re.UNICODE)
 ZONE_RE = re.compile(r"^[a-z][a-z0-9_]{0,30}$")
 NGX_VAR_EXPR_RE = re.compile(r"^[\w$:/.\-]+$")
-FORBIDDEN_CHARS = set(";{}\n\r\0`")
+FORBIDDEN_CHARS = set(";{}\n\r\0`\\")
 
 
 class ValidationError(ValueError):
@@ -33,8 +33,8 @@ def no_ctrl(v: str, field: str = "значение") -> str:
 
 def safe_token(v: str, field: str = "значение") -> str:
     """Строка без пробелов и спецсимволов конфигурации nginx."""
-    if not v or any(c in FORBIDDEN_CHARS or c.isspace() or c in "\"'" for c in v):
-        raise ValidationError(f"{field}: недопустимые символы (пробелы, ; {{ }} кавычки)")
+    if not v or v.startswith("#") or any(c in FORBIDDEN_CHARS or c.isspace() or c in "\"'" for c in v):
+        raise ValidationError(f"{field}: недопустимые символы (пробелы, ; {{ }} кавычки, \\)")
     return v
 
 
@@ -197,9 +197,20 @@ def quote_multiline(v: str) -> str:
 
 
 def quote_if_needed(v: str) -> str:
-    if v and not any(c.isspace() or c in ";{}\"'#" for c in v):
+    if v and not any(c.isspace() or c in ";{}\"'#\\" for c in v):
         return v
-    return '"' + v.replace('"', '\\"') + '"'
+    return quote(v)
+
+
+HTPASSWD_HASH_RE = re.compile(r"^[A-Za-z0-9./$={}+_-]{1,255}$")
+
+
+def htpasswd_hash(v: str) -> str:
+    """Хеш пароля для файла htpasswd: одна строка без пробелов и двоеточий ($apr1$, $2y$, {SHA}, crypt)."""
+    v = (v or "").strip()
+    if v and not HTPASSWD_HASH_RE.match(v):
+        raise ValidationError("некорректный хеш пароля (ожидается $apr1$…, $2y$…, {SHA}… или crypt)")
+    return v
 
 
 def port(v: Optional[int]) -> Optional[int]:

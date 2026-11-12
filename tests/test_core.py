@@ -342,3 +342,151 @@ def test_prune_backups():
     assert len(list(d.glob("code-*.tar.gz"))) == 2 and len(list(d.glob("nginx.conf-*"))) == 4
     assert len(list(d.glob("*-manual.db"))) == 8  # ручные копии не удаляются
     assert sorted(p.name for p in d.glob("code-*"))[-1] == "code-1.0.7-20260107.tar.gz" and removed
+
+
+# ---------------------------------------------------------------- обновление со старых версий
+def test_upgrade_from_v1_schema_and_old_site_json():
+    """База версии 1.0.0 (только первая схема) обновляется до текущей; старый JSON сайта читается."""
+    import json
+    import sqlite3
+    from app.db import SCHEMA, Database
+    path = TMP / "upgrade-v1.db"
+    c = sqlite3.connect(str(path))
+    c.executescript("BEGIN;" + SCHEMA[0] + "; PRAGMA user_version=1; COMMIT;")
+    old_site = {"name": "Старый", "domains": ["old.test"], "type": "proxy",
+                "backends": [{"address": "127.0.0.1", "port": 9001}],
+                "security": {"basic_auth": True, "basic_auth_users": [{"username": "boss", "password": "",
+                                                                         "password_hash": apr1("x")}]}}
+    c.execute("INSERT INTO sites(name, enabled, data, created_at, updated_at) VALUES(?,?,?,?,?)",
+              ("Старый", 1, json.dumps(old_site), 0, 0))
+    c.commit()
+    c.close()
+    db = Database(path)
+    assert db.schema_version == len(SCHEMA)
+    tables = {r["name"] for r in db.query("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert {"bans", "ban_offenses", "silences", "sites"} <= tables
+    site = Site.model_validate(json.loads(db.one("SELECT data FROM sites")["data"]))
+    assert site.domains == ["old.test"] and site.security.basic_auth_users[0].username == "boss"
+    db.close()
+
+
+# ---------------------------------------------------------------- доступ по странам
+DATA = ROOT / "tests" / "data"
+
+
+def geo_state():
+    deny = Site(name="Deny", domains=["deny.test"], backends=[Backend(port=9001)],
+                security=SecuritySettings(geo_mode="deny", geo_countries=["CN", "ru"], geo_exceptions=["203.0.113.7"],
+                                          geo_status=444))
+    allow = Site(name="Allow", domains=["allow.test"], backends=[Backend(port=9002)],
+                 security=SecuritySettings(geo_mode="allow", geo_countries=["RU"]))
+    off = Site(name="Off", domains=["off.test"], backends=[Backend(port=9003)])
+    return State([(1, deny), (2, allow), (3, off)], [], GlobalSettings(), PanelSettings(), {})
+
+
+def render_geo(state, geo_file):
+    p = Paths(str(TMP / "managed" / "stage"), str(TMP / "managed" / "live"), "/var/acme", str(TMP / "logs"),
+              str(TMP / "cache"), 8089, 8088, str(TMP / "data"), bans_file=str(TMP / "bans.conf"), geo_file=geo_file)
+    g = Generator(state, NginxCaps(version=(1, 24, 0), ipv6=False), p)
+    return g.render(), g.warnings
+
+
+def test_generator_geo_rules():
+    files, warnings = render_geo(geo_state(), str(TMP / "geo.conf"))
+    base = files["http.d/00-base.conf"]
+    assert "geo $nm_cc {" in base and f"include {TMP / 'geo.conf'};" in base and "map $uri $nm_acme {" in base
+    deny = next(v for k, v in files.items() if k.startswith("sites/site-1-"))
+    assert "geo $nm_geo_ex_1 {" in deny and "203.0.113.7 1;" in deny
+    assert 'map "$nm_acme$nm_geo_ex_1:$nm_cc" $nm_geo_1 {' in deny
+    assert '"00:CN" 1;' in deny and '"00:RU" 1;' in deny and '"~^01" 0;' in deny and '"~^1" 0;' in deny
+    assert "if ($nm_geo_1) {" in deny and "return 444;" in deny
+    allow = next(v for k, v in files.items() if k.startswith("sites/site-2-"))
+    assert 'map "$nm_acme:$nm_cc" $nm_geo_2 {' in allow and "default 1;" in allow
+    assert '"0:RU" 0;' in allow and '"0:LAN" 0;' in allow and "return 403;" in allow
+    off = next(v for k, v in files.items() if k.startswith("sites/site-3-"))
+    assert "nm_geo" not in off
+    assert not any("GeoIP" in w for w in warnings)
+
+
+def test_generator_geo_without_database_warns():
+    files, warnings = render_geo(geo_state(), "")
+    assert "nm_cc" not in files["http.d/00-base.conf"]
+    assert not any("nm_geo" in v for k, v in files.items() if k.startswith("sites/"))
+    assert sum("нет базы GeoIP" in w for w in warnings) == 2
+
+
+def test_geo_validation():
+    with pytest.raises(Exception):
+        SecuritySettings(geo_mode="allow")
+    with pytest.raises(Exception):
+        SecuritySettings(geo_mode="deny", geo_countries=["XX"])
+    assert SecuritySettings(geo_mode="deny", geo_countries=["de", "DE", "cn"]).geo_countries == ["DE", "CN"]
+
+
+def test_geo_build_from_mmdb():
+    pytest.importorskip("maxminddb")
+    from app.services import geoblock
+    text, stats = geoblock.build(str(DATA / "geo-test.mmdb"), ["RU", "CN"])
+    lines = text.splitlines()
+    assert lines[0].startswith("# nm-geo ") and "countries=CN,RU" in lines[0]
+    assert "203.0.113.0/24 RU;" in lines and "2001:db8:1::/48 RU;" in lines and "2001:db8:2::/48 CN;" in lines
+    assert "10.0.0.0/8 LAN;" in lines and not any(" US;" in x or " DE;" in x for x in lines)
+    assert stats["countries"] == {"CN": 1, "RU": 2}
+    path = TMP / "geo-built.conf"
+    path.write_text(text)
+    db = str(DATA / "geo-test.mmdb")
+    assert not geoblock.needs_rebuild(str(path), db, {"RU", "CN"})
+    assert geoblock.needs_rebuild(str(path), db, {"RU"})
+    assert geoblock.referenced(s for _, s in geo_state().sites) == {"CN", "RU"}
+
+
+@pytest.mark.skipif(not shutil.which("nginx") or os.geteuid() != 0, reason="нужен nginx и root")
+def test_geo_config_passes_nginx_t():
+    pytest.importorskip("maxminddb")
+    from app.db import Database
+    from app.nginx.manager import NginxManager
+    from app.services import geoblock
+    geo = TMP / "geo-t.conf"
+    geo.write_text(geoblock.build(str(DATA / "geo-test.mmdb"), ["RU", "CN"])[0])
+    (TMP / "bans.conf").write_text("")
+    os.makedirs(TMP / "logs", exist_ok=True)
+    mgr = NginxManager(Database(TMP / "t-geo.db"))
+    p = Paths(str(TMP / "managed" / "geo"), str(TMP / "managed" / "live"), "/var/acme", str(TMP / "logs"),
+              str(TMP / "cache"), 8089, 8088, str(TMP / "data"), bans_file=str(TMP / "bans.conf"), geo_file=str(geo))
+    files = Generator(geo_state(), mgr.caps(), p).render()
+    stage = TMP / "managed" / "geo"
+    for rel, content in files.items():
+        (stage / rel).parent.mkdir(parents=True, exist_ok=True)
+        (stage / rel).write_text(content)
+    ok, out = mgr.test_config(stage / "nginx.conf")
+    mgr.db.close()
+    assert ok, out
+
+
+def test_manager_finds_geo_db_on_its_own():
+    """nmctl apply (обновление, откат) работает без ядра панели — база GeoIP должна находиться и там."""
+    pytest.importorskip("maxminddb")
+    from app.db import Database
+    from app.nginx.manager import NginxManager
+    db = Database(TMP / "geo-mgr.db")
+    mgr = NginxManager(db)
+    db.kv_set("panel_settings", {"geoip_path": "/nonexistent.mmdb"})
+    assert mgr.geo_db() is None or mgr.geo_db() != "/nonexistent.mmdb"
+    db.kv_set("panel_settings", {"geoip_path": str(DATA / "geo-test.mmdb")})
+    assert mgr.geo_db() == str(DATA / "geo-test.mmdb")
+    assert mgr.paths("/x").geo_file.endswith("geo-countries.conf")
+    db.close()
+
+
+def test_summary_excludes_blocked_from_clean_4xx():
+    from app.stats.collector import merge_data
+    from app.stats.service import StatsService
+    t = {"req": 100, "bout": 0, "bin": 0, "s1": 0, "s2": 50, "s3": 0, "s4": 50, "s5": 0, "urt_n": 0, "uniq": 0,
+         "rt_sum": 0.0, "urt_sum": 0.0}
+    a = {"codes": {"200": 50, "403": 30, "404": 10}, "blk": {"geo": 30}, "blkc": {"403": 30}}
+    b = {"codes": {"451": 10}, "blk": {"geo": 10}, "blkc": {"451": 10}}
+    data = merge_data(a, b)
+    r = StatsService._summary_from(t, data, 60, "stats_minute")
+    assert r["blocked"] == {"ban": 0, "geo": 40, "codes": {"403": 30, "451": 10}}
+    assert round(r["err4_pct_clean"], 1) == round(10 / 60 * 100, 1)
+    assert r["err4_pct"] == 50

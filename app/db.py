@@ -330,6 +330,13 @@ class Database:
             self._local.conn = c
         return c
 
+    def close(self) -> None:
+        """Закрыть соединение текущего потока (тесты, консольные команды)."""
+        c = getattr(self._local, "conn", None)
+        if c is not None:
+            c.close()
+            self._local.conn = None
+
     def _migrate(self) -> None:
         c = self.conn()
         ver = c.execute("PRAGMA user_version").fetchone()[0]

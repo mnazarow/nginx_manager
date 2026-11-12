@@ -23,6 +23,7 @@ usage() {
   --wheels DIR      офлайн-установка зависимостей из каталога wheel-файлов
   --no-backup       не создавать резервную копию (не рекомендуется)
   --no-apply        не переприменять конфигурацию nginx после обновления
+  --with-geoip      установить поддержку GeoIP (пакет maxminddb), если её ещё нет
   --force           обновить, даже если версия не новее
   -y, --yes         не задавать вопросов
 EOF
@@ -34,6 +35,7 @@ while [ $# -gt 0 ]; do
     --wheels) WHEELS_DIR="$2"; shift ;;
     --no-backup) DO_BACKUP=0 ;;
     --no-apply) DO_APPLY=0 ;;
+    --with-geoip) WITH_GEOIP=1 ;;
     --force) FORCE=1 ;;
     -y|--yes) ASSUME_YES=1 ;;
     -h|--help) usage; exit 0 ;;
@@ -118,7 +120,7 @@ if [ ! -x "$INSTALL_DIR/venv/bin/python" ]; then
   run "$PY" -m venv "$INSTALL_DIR/venv" || rollback
 fi
 retry 3 run "$INSTALL_DIR/venv/bin/pip" install $PIP_OPTS --upgrade -r "$INSTALL_DIR/requirements.txt" || rollback
-if "$INSTALL_DIR/venv/bin/python" -c 'import maxminddb' 2>/dev/null; then
+if [ "${WITH_GEOIP:-0}" = 1 ] || "$INSTALL_DIR/venv/bin/python" -c 'import maxminddb' 2>/dev/null; then
   run "$INSTALL_DIR/venv/bin/pip" install $PIP_OPTS --upgrade -r "$INSTALL_DIR/requirements-optional.txt" || true
 fi
 "$INSTALL_DIR/venv/bin/python" -c 'import fastapi, uvicorn, psutil, pydantic' 2>>"$LOG_FILE" || rollback

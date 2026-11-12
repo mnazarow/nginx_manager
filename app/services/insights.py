@@ -84,7 +84,8 @@ METRICS: Dict[str, Dict[str, Any]] = {
     "err4": dict(
         label="Ошибки 4xx", unit="%", dir="above", warn=15.0, crit=35.0, min_req=50,
         desc="Доля ответов 400–499: запрос клиента не может быть выполнен (нет страницы, нет доступа, лимит).",
-        how="Ответы 4xx / все ответы × 100.",
+        how="Ответы 4xx / все ответы × 100. Запросы, отклонённые блокировками IP и доступом по странам, в оценке "
+            "и сценариях не учитываются — это работа защиты, а не ошибки сайта.",
         norm="До 15% — обычно (404 от ботов, favicon, устаревшие ссылки). Выше — стоит разобраться, какие "
              "коды и адреса преобладают.",
         advice="Аналитика → Топы → «Ошибки 4xx». Много 404 — битые ссылки или сканеры; 403 — правила доступа; "
@@ -569,6 +570,23 @@ S: List[Scenario] = [
              ["Посмотрите, кто эти клиенты (User-Agent в журнале)", "Если они не критичны — используйте профиль "
               "Intermediate (TLS 1.2/1.3)"],
              [L_GLOBAL], ("08-global-settings.md", "профили-tls")),
+    Scenario("geo_inactive", "security", "Ограничение по странам не действует",
+             "у сайта задан доступ по странам, но базы GeoIP нет",
+             "nginx пропускает запросы из всех стран: ни запрет, ни «только выбранные страны» не работают.",
+             ["Не установлен пакет maxminddb", "Нет файла базы (GeoLite2-Country.mmdb или dbip-country-lite.mmdb)",
+              "База повреждена или пакет maxminddb старше 2.4"],
+             ["Установите поддержку GeoIP: sudo ./update.sh --with-geoip", "Положите базу в "
+              "/var/lib/nginx-manager/geoip/ или укажите путь в настройках панели", "Примените конфигурацию"],
+             [L_BANS, L_DIAG], ("17-bans.md", "доступ-по-странам")),
+    Scenario("geo_blocked_high", "security", "Много запросов отклоняется по странам",
+             "≥ 20% запросов к сайту в режиме «только выбранные страны» отклонены (не меньше 100 запросов)",
+             "Возможно, ограничение отсекает настоящих пользователей: поездки, роуминг, VPN, корпоративные прокси, "
+             "CDN без настройки реального IP.",
+             ["Аудитория шире, чем список стран", "Сайт за CDN или балансировщиком, а «Реальный IP клиента» не "
+              "настроен — страной считается страна узла CDN", "Боты и сканеры из других стран (тогда всё в порядке)"],
+             ["Посмотрите страны отклонённых запросов (Блокировки IP → Страны)", "Если это сканеры — ничего делать не "
+              "нужно; если люди — добавьте страны или исключения по IP", "За CDN настройте «Реальный IP клиента»"],
+             [L_BANS, L_SITES], ("17-bans.md", "доступ-по-странам")),
 
     # ------------------------------------------------------------------ сервер
     Scenario("nginx_down", "server", "Nginx не запущен",
@@ -845,6 +863,10 @@ class Analyzer:
                        sites: Dict[str, Any], recent: bool) -> None:
         n = cur["requests"]
         codes = {int(k): v for k, v in (cur.get("codes") or {}).items() if str(k).isdigit()}
+        # ответы, отклонённые блокировками по IP и странам, — не ошибки сайта: из правил по кодам 4xx их убираем
+        for k, v in ((cur.get("blocked") or {}).get("codes") or {}).items():
+            if str(k).isdigit() and int(k) in codes:
+                codes[int(k)] = max(0, codes[int(k)] - v)
         st = self.app.stats
         if n >= 50 and self.level("err5", cur["err5_pct"]) != "ok":
             s5 = sum(v for c, v in codes.items() if 500 <= c < 600)
@@ -864,15 +886,23 @@ class Analyzer:
             if s_id != "*" and n >= 20 and cur["err5_pct"] >= 90:
                 add("site_down", "crit", s_id, f"{P(cur['err5_pct'], 0)} запросов завершились ошибкой 5xx", None,
                     cur["err5_pct"])
-        if n >= 100 and self.level("err4", cur["err4_pct"]) != "ok":
-            add("e4xx_rate", self.level("err4", cur["err4_pct"]), s_id,
-                f"{P(cur['err4_pct'])} ответов — 4xx; " + ", ".join(
+        blk = cur.get("blocked") or {}
+        nblk = int(blk.get("ban", 0)) + int(blk.get("geo", 0))
+        site_obj = sites.get(s_id) if s_id != "*" else None
+        if site_obj is not None and site_obj.security.geo_mode == "allow" and n >= 100 and blk.get("geo", 0) / n >= 0.2:
+            add("geo_blocked_high", "warn", s_id, f"отклонено {P(blk['geo'] / n * 100, 0)} запросов "
+                                                  f"({N(blk['geo'])} из {N(n)})", None, blk["geo"] / n * 100)
+        e4p = cur.get("err4_pct_clean", cur["err4_pct"])  # без отклонённых блокировками по IP и странам
+        if n - nblk >= 100 and self.level("err4", e4p) != "ok":
+            note = (f" (без {N(nblk)} отклонённых блокировками)" if nblk else "")
+            add("e4xx_rate", self.level("err4", e4p), s_id,
+                f"{P(e4p)} ответов — 4xx{note}; " + ", ".join(
                     f"{c}: {N(v)}" for c, v in sorted(((c, v) for c, v in codes.items() if 400 <= c < 500),
-                                                   key=lambda x: -x[1])[:5]), None, cur["err4_pct"])
+                                                   key=lambda x: -x[1])[:5]), None, e4p)
         if n:
             def share(*cs):
                 c = sum(codes.get(x, 0) for x in cs)
-                return c, c / n * 100
+                return c, c / max(1, n - nblk) * 100
             e4top = None
 
             def e4(code: int) -> Optional[Dict[str, Any]]:
@@ -985,6 +1015,11 @@ class Analyzer:
                 add("no_healthcheck", "info", sid, "активные проверки выключены")
             if s.ssl.enabled and s.ssl.force_https and not s.ssl.hsts:
                 add("no_hsts", "info", sid, "HSTS выключен")
+        if any(s.security.geo_mode != "off" for s in sites.values()) and not self.app.nginx.geo_db():
+            for sid, s in sites.items():
+                if s.security.geo_mode != "off":
+                    add("geo_inactive", "crit", sid, "режим «" + ("запретить выбранные" if s.security.geo_mode == "deny"
+                                                                    else "только выбранные") + "», базы GeoIP нет")
 
     def _live_rules(self, add, site: str, sites: Dict[str, Any]) -> None:
         app = self.app

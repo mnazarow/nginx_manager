@@ -138,6 +138,11 @@ class Settings:
         """Список заблокированных IP для geo $nm_banned (вне версий: меняется без применения конфигурации)."""
         return self.managed_dir / "bans.conf"
 
+    @property
+    def geo_file(self) -> Path:
+        """Сети стран для geo $nm_cc (доступ по странам); собирается панелью из базы GeoIP."""
+        return self.managed_dir / "geo-countries.conf"
+
     def _load_or_create_secret(self) -> str:
         p = self.data_dir / ".secret_key"
         try:
@@ -169,6 +174,10 @@ class Settings:
             if self.managed_dir.is_dir() and not self.bans_file.exists():
                 self.bans_file.write_text("# Nginx Manager: заблокированные IP (раздел «Блокировки»)\n")
                 os.chmod(self.bans_file, 0o644)
+            if self.managed_dir.is_dir() and not self.geo_file.exists():
+                from .services.geoblock import empty_file
+                self.geo_file.write_text(empty_file())
+                os.chmod(self.geo_file, 0o644)
         except OSError:
             pass
 

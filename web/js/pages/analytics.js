@@ -1,7 +1,7 @@
 // Аналитика за произвольный период: динамика, распределения, топы, сравнение сайтов.
 import { api } from '../api.js';
 import { h, mount, kpi, card, fmtNum, fmtBps, fmtMs, fmtPct, fmtInt, fmtBytes, fmtCompact, fmtDate, table, tabs, hbars, segmented,
-  icon, loading, statusClass } from '../ui.js';
+  icon, loading, statusClass, countryName } from '../ui.js';
 import { timeChart, setData, chartCard, statusColors, seriesColor, destroyAll, barChart, segBar } from '../charts.js';
 import { ctx, can } from '../app.js';
 import { banDialog } from './bans.js';
@@ -47,7 +47,7 @@ export async function render(root) {
     const kp = [
       kpi('Запросов', fmtCompact(sum.requests), { foot: `${fmtNum(sum.rps, 2)} в секунду` }),
       kpi('Передано', fmtBytes(sum.bytes_out), { foot: `принято ${fmtBytes(sum.bytes_in)}` }),
-      kpi('Ошибки 5xx', fmtPct(sum.err5_pct, 2), { foot: `4xx: ${fmtPct(sum.err4_pct)}` }),
+      kpi('Ошибки 5xx', fmtPct(sum.err5_pct, 2), { foot: `4xx: ${fmtPct(sum.err4_pct)}` + ((sum.blocked?.ban || 0) + (sum.blocked?.geo || 0) ? ` · отклонено блокировками: ${fmtInt(sum.blocked.ban + sum.blocked.geo)}` : '') }),
       kpi('Время ответа p95', fmtMs(sum.p95), { foot: `p50 ${fmtMs(sum.p50)} · p99 ${fmtMs(sum.p99)} · бэкенд ${fmtMs(sum.urt_avg)}` }),
       kpi('Уникальных IP', fmtCompact(sum.uniq), { foot: sum.uniq_exact ? 'точно, по журналу запросов' : 'оценка (сумма почасовых)', tip: 'Точный подсчёт возможен, пока период покрыт журналом запросов' }),
       kpi('Кэш (HIT)', cacheN ? fmtPct(sum.hit_ratio) : '—', { foot: `боты: ${fmtPct(botsPct)} запросов` }),
@@ -102,7 +102,7 @@ export async function render(root) {
     h('div', { class: 'mt' }, hbars(Object.entries(sum.codes).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([k, v]) => ({ label: h('span', { class: statusClass(k) }, k + ' ' + (HTTP[k] || '')), value: v })),
       { valueFmt: fmtCompact }))));
     const topDims = await Promise.all(['browser', 'os', 'device', 'country'].map(k => api('/stats/top', { query: { ...q, kind: k, limit: 8 } })));
-    const dimCard = (title, rows) => card(title, hbars(rows.map(r => ({ label: r.key || '—', value: r.count })), { valueFmt: (v) => `${fmtCompact(v)} · ${fmtPct(sum.requests ? v / sum.requests * 100 : 0)}` }));
+    const dimCard = (title, rows, lbl = (k) => k || '—') => card(title, hbars(rows.map(r => ({ label: lbl(r.key), value: r.count })), { valueFmt: (v) => `${fmtCompact(v)} · ${fmtPct(sum.requests ? v / sum.requests * 100 : 0)}` }));
     const errs = Object.entries(sum.errors || {});
     mount(body,
       h('div', { class: 'grid g6' }, kp),
@@ -114,7 +114,7 @@ export async function render(root) {
           v.hint ? h('div', { class: 'muted small' }, v.hint) : null))) : h('div', { class: 'muted' }, 'Ошибок нет'))),
       h('div', { class: 'grid g4 mt' }, dist('Методы', sum.methods), dist('Протоколы', sum.proto), dist('Версии TLS', sum.tls, { lbl: (k) => k || 'без TLS' }),
         dist('Кэш', sum.cache), dimCard('Браузеры', topDims[0]), dimCard('ОС', topDims[1]), dimCard('Устройства', topDims[2]),
-        topDims[3].length ? dimCard('Страны', topDims[3]) : card('Страны', h('div', { class: 'muted small' }, 'GeoIP не настроен. См. Документация → Мониторинг → GeoIP.'))),
+        topDims[3].length ? dimCard('Страны', topDims[3], (k) => k ? `${k} · ${countryName(k)}` : '—') : card('Страны', h('div', { class: 'muted small' }, 'GeoIP не настроен. См. Документация → Мониторинг → GeoIP.'))),
       h('div', { class: 'mt' }, topCard),
       cmp.length ? h('div', { class: 'mt' }, card('Сравнение сайтов', table([
         { title: 'Сайт', render: (r) => sites.find(s => String(s.id) === r.site)?.name || (r.site === '-' ? 'Неизвестные домены' : r.site === 'panel' ? 'Панель' : r.site) },

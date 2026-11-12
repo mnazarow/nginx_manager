@@ -183,6 +183,30 @@ class Diagnostics:
                 res.append(R("bans_sync", g, "Список блокировок IP", OK,
                              f"активных: {st['active']} (автоматических {st['auto']})" if st["active"]
                              else "блокировок нет" + ("" if included else " (подключится при следующем применении)")))
+        # доступ по странам
+        st_geo = mgr.load_state()
+        geo_sites = [s.name for _, s in st_geo.sites if s.enabled and s.security.geo_mode != "off"]
+        if geo_sites:
+            gs = mgr.geo_status()
+            need = {c for _, s in st_geo.sites if s.enabled and s.security.geo_mode != "off"
+                    for c in s.security.geo_countries}
+            if not gs["db"]:
+                geoip = self.app.stats.geoip
+                res.append(R("geo_block", g, "Доступ по странам", FAIL,
+                             f"Правила заданы у сайтов ({', '.join(geo_sites[:5])}), но базы GeoIP нет — "
+                             "ограничения не действуют",
+                             details=geoip.error or "база не найдена",
+                             hint="Установите пакет maxminddb (sudo ./update.sh --with-geoip), положите "
+                                  "GeoLite2-Country.mmdb или dbip-country-lite.mmdb в /var/lib/nginx-manager/geoip/ "
+                                  "и примените конфигурацию. Подробно — глава 17 документации."))
+            elif not need <= set(gs["countries"]):
+                res.append(R("geo_block", g, "Доступ по странам", WARN,
+                             "Не все страны из правил подключены к nginx: " + ", ".join(sorted(need - set(gs["countries"]))),
+                             hint="Сети стран собираются при применении конфигурации — примените её.",
+                             fix="reapply", fix_label="Применить конфигурацию"))
+            else:
+                res.append(R("geo_block", g, "Доступ по странам", OK,
+                             f"сайтов с правилами: {len(geo_sites)}, стран: {len(need)}, сетей: {gs['nets']}"))
         live = settings.live_dir
         if not live.exists():
             res.append(R("config_live", g, "Каталог конфигурации", FAIL, f"{live} отсутствует",
