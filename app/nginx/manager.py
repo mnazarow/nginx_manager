@@ -151,7 +151,8 @@ class NginxManager:
         return Paths(include_root=include_root, live_root=str(settings.live_dir),
                      acme_webroot=str(settings.acme_webroot), log_dir=str(settings.log_dir),
                      cache_dir=str(settings.cache_dir), stub_status_port=settings.stub_status_port,
-                     panel_port=settings.bind_port, data_dir=str(settings.data_dir))
+                     panel_port=settings.bind_port, data_dir=str(settings.data_dir),
+                     bans_file=str(settings.bans_file))
 
     def render(self, state: State, include_root: Optional[str] = None) -> Tuple[Dict[str, str], List[str]]:
         gen = Generator(state, self.caps(), self.paths(include_root or str(settings.live_dir)))
@@ -211,6 +212,27 @@ class NginxManager:
         if conf is None:
             self._last_test = (time.time(), code == 0, out)
         return code == 0, out
+
+    def write_bans(self, content: str) -> Tuple[bool, str]:
+        """Обновить файл блокировок (geo $nm_banned) и перечитать nginx. При ошибке проверки — вернуть прежний файл.
+        Версия конфигурации не создаётся: список блокировок живёт отдельно от настроек сайтов."""
+        path = settings.bans_file
+        path.parent.mkdir(parents=True, exist_ok=True)
+        old = path.read_text() if path.exists() else None
+        if old == content:
+            return True, "без изменений"
+        atomic_write(path, content, mode=0o644)
+        if not self.last_applied() or not self.is_running():
+            return True, "файл обновлён (nginx не запущен или ещё не настроен панелью)"
+        ok, out = self.test_config()
+        if not ok:
+            if old is not None:
+                atomic_write(path, old, mode=0o644)
+            else:
+                path.unlink(missing_ok=True)
+            return False, out
+        rok, rout = self.reload_or_start()
+        return rok, (out + "\n" + rout).strip()
 
     def parse_errors(self, output: str, files: Dict[str, str], root: str) -> List[dict]:
         errors = []

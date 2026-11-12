@@ -3,7 +3,8 @@ import { api } from '../api.js';
 import { h, mount, kpi, card, fmtNum, fmtBps, fmtMs, fmtPct, fmtInt, fmtBytes, fmtCompact, fmtDate, table, tabs, hbars, segmented,
   icon, loading, statusClass } from '../ui.js';
 import { timeChart, setData, chartCard, statusColors, seriesColor, destroyAll, barChart, segBar } from '../charts.js';
-import { ctx } from '../app.js';
+import { ctx, can } from '../app.js';
+import { banDialog } from './bans.js';
 
 const RANGES = [['900', '15 мин'], ['3600', '1 час'], ['21600', '6 часов'], ['86400', '24 часа'], ['604800', '7 дней'], ['2592000', '30 дней'], ['7776000', '90 дней']];
 
@@ -78,6 +79,7 @@ export async function render(root) {
           { title: 'Доля', num: true, render: (r) => fmtPct(sum.requests ? r.count / sum.requests * 100 : 0) },
           ['uri', 'ip', 'host'].includes(st.topKind) ? { title: 'Трафик', num: true, render: (r) => fmtBytes(r.bytes) } : null,
           st.topKind === 'slow' ? { title: 'Среднее время', num: true, render: (r) => fmtMs(r.avg_ms) } : null,
+          st.topKind === 'ip' && can('operator') ? { title: '', width: '44px', render: (r) => h('button', { class: 'btn sm icon ghost', title: 'Заблокировать IP', onclick: () => banDialog(r.key, { reason: 'Из аналитики: много запросов' }) }, icon('ban')) } : null,
         ].filter(Boolean), rows, { cls: 'compact', empty: 'Нет данных за период' }));
     };
     const dist = (title, obj, opts = {}) => {

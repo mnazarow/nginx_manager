@@ -20,9 +20,9 @@
 
 ```bash
 # 1. Скопируйте архив на сервер и распакуйте
-scp nginx-manager-1.0.0.tar.gz root@server:/root/
+scp nginx-manager-1.1.0.tar.gz root@server:/root/
 ssh root@server
-tar xzf nginx-manager-1.0.0.tar.gz && cd nginx-manager
+tar xzf nginx-manager-1.1.0.tar.gz && cd nginx-manager
 
 # 2. Запустите установку
 sudo ./install.sh

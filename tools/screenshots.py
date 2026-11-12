@@ -18,6 +18,7 @@ PAGES = [
     ("versions", "#/versions", 1500), ("diagnostics", "#/diagnostics", 5000), ("alerts", "#/alerts", 1500),
     ("events", "#/events", 1500), ("users", "#/users", 1500), ("audit", "#/audit", 1500), ("settings", "#/settings", 1500),
     ("backup", "#/backup", 1500), ("profile", "#/profile", 1500), ("docs", "#/docs", 2000),
+    ("bans", "#/bans", 2500), ("settings-bans", "#/settings?tab=bans", 1500),
 ]
 
 
@@ -58,8 +59,6 @@ async def main(a):
 
 async def extras(page, a):
     """Снимки диалогов: мастер сайта, импорт, применение с изменениями, новый сертификат, тёмная тема."""
-    import json
-    import urllib.request
     await page.goto(f"{a.url}/#/sites")
     await page.wait_for_timeout(1500)
     await page.click("text=Добавить сайт")
@@ -122,7 +121,56 @@ async def extras(page, a):
     await page.wait_for_timeout(2500)
     await page.screenshot(path=f"{a.out}/site-editor-dark.png")
     print("dark: ok")
-    await page.evaluate("localStorage.setItem('nm-theme','light')")
+    await page.evaluate("document.documentElement.setAttribute('data-theme','light'); localStorage.setItem('nm-theme','light')")
+    # справка по странице и поиск по документации
+    await page.goto(f"{a.url}/#/sites?edit=1&tab=ssl")
+    await page.wait_for_timeout(2000)
+    await page.click(".switch .info-i.link")
+    await page.wait_for_timeout(2500)
+    await page.screenshot(path=f"{a.out}/help-drawer.png")
+    await page.keyboard.press("Escape")
+    await page.goto(f"{a.url}/#/docs?p=01-overview.md")
+    await page.wait_for_timeout(1500)
+    await page.fill(".docs-nav input", "proxy_read_timeout")
+    await page.wait_for_timeout(2500)
+    await page.screenshot(path=f"{a.out}/docs-search.png")
+    print("help: ok")
+    await mobile(page.context.browser, a)
+
+
+async def mobile(browser, a):
+    """Три экрана телефона рядом: дашборд, меню, редактор сайта."""
+    from PIL import Image
+    ctx = await browser.new_context(viewport={"width": 390, "height": 844}, device_scale_factor=1, locale="ru-RU",
+                                    is_mobile=True, has_touch=True)
+    page = await ctx.new_page()
+    await page.goto(a.url + "/")
+    await page.wait_for_selector("input[autocomplete=username]")
+    await page.fill("input[autocomplete=username]", a.user)
+    await page.fill("input[autocomplete=current-password]", a.password)
+    await page.click("button[type=submit]")
+    await page.wait_for_selector(".main", timeout=15000)
+    shots = []
+    await page.goto(f"{a.url}/#/")
+    await page.wait_for_timeout(6000)
+    shots.append(await page.screenshot())
+    await page.click(".menu-btn")
+    await page.wait_for_timeout(600)
+    shots.append(await page.screenshot())
+    await page.goto(f"{a.url}/#/sites?edit=1&tab=ssl")
+    await page.wait_for_timeout(2500)
+    shots.append(await page.screenshot())
+    import io
+    ims = [Image.open(io.BytesIO(b)) for b in shots]
+    gap = 24
+    out = Image.new("RGB", (sum(i.width for i in ims) + gap * (len(ims) + 1), ims[0].height + gap * 2), (233, 232, 226))
+    x = gap
+    for im in ims:
+        out.paste(im, (x, gap))
+        x += im.width + gap
+    out.save(f"{a.out}/mobile.png", optimize=True)
+    await ctx.close()
+    print("mobile: ok")
 
 
 if __name__ == "__main__":

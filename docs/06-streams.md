@@ -57,6 +57,8 @@ stream {
 <!-- GEN:stream -->
 <!-- Сгенерировано tools/gen_reference.py из app/models.py -->
 
+<a id="f-stream-name"></a>
+
 ### Название — `name`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -68,6 +70,8 @@ stream {
 **Пример:** `PostgreSQL`
 
 
+<a id="f-stream-enabled"></a>
+
 ### Включён — `enabled`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -76,6 +80,8 @@ stream {
 
 Выключенный поток не генерируется.
 
+
+<a id="f-stream-protocol"></a>
 
 ### Протокол — `protocol`
 
@@ -94,6 +100,8 @@ TCP — базы данных, почта, SSH; UDP — DNS, syslog, игры, V
 **Пример:** `tcp`
 
 
+<a id="f-stream-listen_port"></a>
+
 ### Внешний порт — `listen_port`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -104,6 +112,8 @@ TCP — базы данных, почта, SSH; UDP — DNS, syslog, игры, V
 
 **Пример:** `5432`
 
+
+<a id="f-stream-listen_ip"></a>
 
 ### IP для прослушивания — `listen_ip`
 
@@ -116,6 +126,8 @@ TCP — базы данных, почта, SSH; UDP — DNS, syslog, игры, V
 **Пример:** `203.0.113.10`
 
 
+<a id="f-stream-ipv6"></a>
+
 ### Слушать IPv6 — `ipv6`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -124,6 +136,8 @@ TCP — базы данных, почта, SSH; UDP — DNS, syslog, игры, V
 
 Слушать также IPv6 (если включён в системе и в глобальных настройках).
 
+
+<a id="f-stream-backends"></a>
 
 ### Серверы — `backends`
 
@@ -150,6 +164,8 @@ TCP — базы данных, почта, SSH; UDP — DNS, syslog, игры, V
 | Комментарий (`comment`) | строка | пусто |  |
 
 
+<a id="f-stream-balancing"></a>
+
 ### Балансировка — `balancing`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -170,6 +186,8 @@ Round Robin, Least Connections (для долгих соединений — л�
 **Пример:** `least_conn`
 
 
+<a id="f-stream-hash_key"></a>
+
 ### Ключ hash — `hash_key`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -182,6 +200,8 @@ Round Robin, Least Connections (для долгих соединений — л�
 
 *Показывается, когда `balancing` = `hash`.*
 
+
+<a id="f-stream-connect_timeout"></a>
 
 ### Таймаут подключения — `connect_timeout`
 
@@ -196,6 +216,8 @@ Round Robin, Least Connections (для долгих соединений — л�
 **Пример:** `5s`
 
 
+<a id="f-stream-timeout"></a>
+
 ### Таймаут простоя — `timeout`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -207,6 +229,8 @@ Round Robin, Least Connections (для долгих соединений — л�
 > **Рекомендация.** Для БД и SSH — 1h и более; для DNS (UDP) — 10s.
 
 
+<a id="f-stream-proxy_protocol"></a>
+
 ### Отправлять PROXY protocol бэкенду — `proxy_protocol`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -215,6 +239,8 @@ Round Robin, Least Connections (для долгих соединений — л�
 
 Бэкенд узнает реальный IP клиента (бэкенд должен поддерживать PROXY protocol)
 
+
+<a id="f-stream-udp_responses"></a>
 
 ### Ожидаемых UDP-ответов — `udp_responses`
 
@@ -233,6 +259,8 @@ Round Robin, Least Connections (для долгих соединений — л�
 *Показывается, когда `protocol` = `udp`, `both`.*
 
 
+<a id="f-stream-allow"></a>
+
 ### Белый список IP — `allow`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -248,6 +276,8 @@ Round Robin, Least Connections (для долгих соединений — л�
 **Пример:** `203.0.113.0/24`
 
 
+<a id="f-stream-deny"></a>
+
 ### Чёрный список IP — `deny`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -258,6 +288,8 @@ Round Robin, Least Connections (для долгих соединений — л�
 
 **Пример:** `198.51.100.0/24`
 
+
+<a id="f-stream-conn_limit"></a>
 
 ### Макс. соединений с IP — `conn_limit`
 
@@ -270,6 +302,8 @@ Round Robin, Least Connections (для долгих соединений — л�
 **Пример:** `20`
 
 
+<a id="f-stream-health_check"></a>
+
 ### Проверять доступность (TCP) — `health_check`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -278,6 +312,8 @@ Round Robin, Least Connections (для долгих соединений — л�
 
 Активная TCP-проверка серверов потока каждые 15 с (для UDP не выполняется).
 
+
+<a id="f-stream-notes"></a>
 
 ### Заметки — `notes`
 

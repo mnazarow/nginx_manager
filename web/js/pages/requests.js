@@ -1,7 +1,8 @@
 // Журнал запросов: живой поток и поиск по истории.
 import { api, live } from '../api.js';
 import { h, mount, icon, badge, table, tabs, modal, fmtBytes, fmtMs, fmtDate, fmtTime, fmtInt, statusClass, debounce, loading, copyBtn, downloadText } from '../ui.js';
-import { ctx } from '../app.js';
+import { ctx, can } from '../app.js';
+import { banDialog } from './bans.js';
 
 export async function render(root) {
   const sites = await api('/sites');
@@ -56,7 +57,10 @@ function details(r, names) {
       h('dt', {}, 'Referer'), h('dd', { class: 'small' }, r.ref || '—'),
       h('dt', {}, 'User-Agent'), h('dd', { class: 'small' }, r.ua || '—'),
       h('dt', {}, 'X-Request-ID'), h('dd', { class: 'mono small' }, r.rid || '—', r.rid ? copyBtn(r.rid) : null)),
-    h('div', { class: 'alert small' }, 'X-Request-ID передаётся бэкенду в заголовке — по нему можно найти этот запрос в журналах приложения.')) });
+    h('div', { class: 'alert small' }, 'X-Request-ID передаётся бэкенду в заголовке — по нему можно найти этот запрос в журналах приложения.'),
+    can('operator') && r.ip ? h('div', { class: 'row' },
+      h('a', { class: 'btn sm', href: `#/requests?ip=${encodeURIComponent(r.ip)}` }, icon('list'), 'Все запросы с этого IP'),
+      h('button', { class: 'btn sm danger', onclick: () => banDialog(r.ip, { reason: `${g('m', 'method')} ${String(g('u', 'uri')).slice(0, 120)} → ${g('s', 'status')}` }) }, icon('ban'), 'Заблокировать IP')) : null) });
 }
 
 function liveView(box, sites, names) {

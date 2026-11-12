@@ -11,12 +11,11 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Res
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from pydantic import BaseModel
 
-from ..auth import COOKIE, ROLE_LABELS, admin, check_password_strength, operator, viewer
+from ..auth import COOKIE, ROLE_LABELS, admin, operator, viewer
 from ..config import DOCS_DIR, VERSION, settings
 from ..models import (CLOUDFLARE_IPS, AlertChannel, AlertRule, CertificateRequest, GlobalSettings, PanelSettings,
                       Site, Stream)
-from ..nginx.generator import Generator, State, slug
-from ..nginx.manager import ApplyError
+from ..nginx.generator import State, slug
 from ..schema import full_schema
 from ..utils import apr1, totp_secret, totp_verify, verify_password
 
@@ -820,11 +819,106 @@ async def collector(request: Request, user=Depends(viewer)):
     return nm(request).stats.collector_info()
 
 
+# =============================================================================
+#  Блокировки IP
+# =============================================================================
+class BanBody(BaseModel):
+    nets: List[str]
+    minutes: Optional[int] = 60      # None — бессрочно
+    reason: str = ""
+    force: bool = False              # разрешить блокировку доверенных адресов (кроме своего)
+
+
+@router.get("/bans")
+async def bans_list(request: Request, user=Depends(viewer)):
+    app = nm(request)
+    p = app.panel()
+    items = app.bans.active()
+    active = {b["net"] for b in items}
+    suspicious = [{**x, "banned": x["ip"] in active} for x in reversed(app.bans.detector.suspicious.values())]
+    return {"items": items, "stats": app.bans.stats(), "suspicious": suspicious,
+            "offenders": app.bans.detector.top_offenders(30),
+            "settings": {k: getattr(p, k) for k in PanelSettings.model_fields if k.startswith(("autoban", "ban_"))},
+            "file": str(settings.bans_file)}
+
+
+@router.post("/bans")
+async def bans_add(body: BanBody, request: Request, user=Depends(operator)):
+    from ..services.bans import in_any, normalize_net
+    app = nm(request)
+    if body.minutes is not None and not (1 <= body.minutes <= 525600 * 5):
+        raise HTTPException(400, "Срок блокировки: от 1 минуты до 5 лет или бессрочно")
+    nets, errors = [], []
+    for raw in body.nets:
+        for part in raw.replace(",", " ").split():
+            try:
+                nets.append(normalize_net(part))
+            except ValueError as e:
+                errors.append(f"{part}: {e}")
+    if errors:
+        raise HTTPException(400, "Некорректные адреса: " + "; ".join(errors[:10]))
+    if not nets:
+        raise HTTPException(400, "Укажите IP-адрес или подсеть")
+    if len(nets) > 10000:
+        raise HTTPException(400, "Не более 10 000 адресов за раз")
+    own = user.get("ip") or ""
+    trusted = app.bans.trusted_nets()
+    for n in nets:
+        if own and in_any(own, [n]):
+            raise HTTPException(400, f"{n}: в этот диапазон входит ваш собственный адрес ({own}) — вы потеряете доступ")
+        if not body.force and (in_any(n, trusted) or in_any(n.split("/")[0], trusted)):
+            raise HTTPException(400, f"{n}: адрес в списке доверенных (localhost, «Никогда не блокировать» или "
+                                     "доступ к панели). Уберите его оттуда или подтвердите блокировку")
+    country = ""
+    for n in nets:
+        if "/" not in n and app.stats.geoip.reader:
+            country = app.stats.geoip.country(n)
+        app.bans.add(n, body.minutes, body.reason.strip()[:300], "manual", user["username"], "manual",
+                     country=country)
+    audit(request, user, "ip_banned", ", ".join(nets[:20]) + (f" (+{len(nets) - 20})" if len(nets) > 20 else ""),
+          {"minutes": body.minutes, "reason": body.reason})
+    ok, out = await app.bans.sync(force=True)
+    return {"ok": ok, "count": len(nets), "nets": nets[:100], "output": out if not ok else ""}
+
+
+@router.delete("/bans/{ban_id}")
+async def bans_remove(ban_id: int, request: Request, user=Depends(operator)):
+    app = nm(request)
+    row = app.bans.remove(ban_id)
+    if not row:
+        raise HTTPException(404, "Блокировка не найдена")
+    audit(request, user, "ip_unbanned", row["net"])
+    app.db.event("info", "bans", f"Разблокирован {row['net']} ({user['username']})")
+    ok, out = await app.bans.sync(force=True)
+    return {"ok": ok, "output": out if not ok else ""}
+
+
+@router.post("/bans/clear")
+async def bans_clear(request: Request, source: str = Body("auto", embed=True), user=Depends(admin)):
+    app = nm(request)
+    if source not in ("auto", "manual", "all"):
+        raise HTTPException(400, "source: auto | manual | all")
+    where = "" if source == "all" else " WHERE source=?"
+    params = () if source == "all" else (source,)
+    n = app.db.scalar("SELECT COUNT(*) FROM bans" + where, params) or 0
+    app.db.execute("DELETE FROM bans" + where, params)
+    app.bans.dirty = True
+    audit(request, user, "bans_cleared", source, {"count": n})
+    ok, out = await app.bans.sync(force=True)
+    return {"ok": ok, "removed": n}
+
+
 @router.get("/events")
-async def events(request: Request, limit: int = 200, level: str = "", user=Depends(viewer)):
+async def events(request: Request, limit: int = 200, level: str = "", source: str = "", user=Depends(viewer)):
+    where, params = [], []
     if level:
-        return nm(request).db.query("SELECT * FROM events WHERE level=? ORDER BY id DESC LIMIT ?", (level, limit))
-    return nm(request).db.query("SELECT * FROM events ORDER BY id DESC LIMIT ?", (limit,))
+        where.append("level=?")
+        params.append(level)
+    if source:
+        where.append("source=?")
+        params.append(source)
+    sql = "SELECT * FROM events" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY id DESC LIMIT ?"
+    return nm(request).db.query(sql, params + [min(max(1, limit), 5000)])
 
 
 @router.get("/audit")

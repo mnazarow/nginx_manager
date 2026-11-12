@@ -1,5 +1,6 @@
 // Генерация форм по схеме моделей сервера (/api/schema): поля, подсказки, условия видимости, вложенные списки.
 import { h, mount, icon, badge, pickFile, toast } from './ui.js';
+import { openHelp } from './help.js';
 
 export let SCHEMA = null;
 export function setSchema(s) { SCHEMA = s; }
@@ -24,13 +25,21 @@ function visible(f, obj, ctx) {
 
 function tipText(f) {
   return [f.help, f.doc, f.rec ? 'Рекомендация: ' + f.rec : '', f.example ? 'Пример: ' + f.example : '',
-    f.directive ? 'Директива nginx: ' + f.directive : ''].filter(Boolean).join('\n\n');
+    f.directive ? 'Директива nginx: ' + f.directive : '', f.doc_page ? 'Нажмите — подробнее в документации' : ''].filter(Boolean).join('\n\n');
+}
+
+/** Значок «i»: при наведении — краткая подсказка, по щелчку — раздел справочника с описанием параметра. */
+function infoIcon(f) {
+  const tip = tipText(f);
+  if (!tip) return null;
+  return h('span', { class: 'info-i' + (f.doc_page ? ' link' : ''), title: tip, role: f.doc_page ? 'button' : null, tabindex: f.doc_page ? 0 : null,
+    onclick: f.doc_page ? (e) => { e.preventDefault(); e.stopPropagation(); openHelp(f.doc_page, f.anchor); } : null,
+    onkeydown: f.doc_page ? (e) => { if (e.key === 'Enter') { e.preventDefault(); openHelp(f.doc_page, f.anchor); } } : null }, 'i');
 }
 
 function labelEl(f) {
-  const tip = tipText(f);
   return h('label', {}, f.label, f.unit ? h('span', { class: 'muted', style: { fontWeight: 400 } }, `(${f.unit})`) : null,
-    tip ? h('span', { class: 'info-i', title: tip }, 'i') : null,
+    infoIcon(f),
     f.directive ? h('span', { class: 'directive' }, f.directive.length > 28 ? '' : f.directive) : null);
 }
 
@@ -85,9 +94,7 @@ function widget(f, obj, ctx, p) {
   switch (f.type) {
     case 'bool': {
       const inp = h('input', { type: 'checkbox', checked: !!v, onchange: (e) => set(e.target.checked, true) });
-      const tip = tipText(f);
-      return h('div', {}, h('label', { class: 'switch' }, inp, h('span', { class: 'track' }), f.label,
-        tip ? h('span', { class: 'info-i', title: tip }, 'i') : null),
+      return h('div', {}, h('label', { class: 'switch' }, inp, h('span', { class: 'track' }), f.label, infoIcon(f)),
         f.help ? h('div', { class: 'help', style: { marginLeft: '44px' } }, f.help) : null);
     }
     case 'int': case 'float': {

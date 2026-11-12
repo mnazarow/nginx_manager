@@ -173,6 +173,16 @@ def url(v: str) -> str:
     return v
 
 
+def http_url(v: str, allow_empty: bool = True) -> str:
+    """Адрес внешнего сервиса, к которому обращается сама панель: только http(s), без пробелов и управляющих символов."""
+    v = (v or "").strip()
+    if not v and allow_empty:
+        return v
+    if not re.match(r"^https?://[^\s/?#]+[^\s]*$", v):
+        raise ValidationError(f"«{v}» — нужен адрес вида https://host/путь")
+    return v
+
+
 def quote(v: str) -> str:
     """Экранирование строки для конфигурации nginx (в двойных кавычках)."""
     no_ctrl(v)

@@ -88,7 +88,7 @@ def main() -> None:
         # уникальные якоря в пределах одного файла: chNN-<якорь>
         out = re.sub(r'id="([^"]+)"', lambda m: f'id="ch{num}-{m.group(1)}"', out)
 
-        def link(m):
+        def link(m, num=num):
             href = m.group(1)
             if href.startswith(("http://", "https://", "mailto:")):
                 return f'href="{href}" target="_blank" rel="noopener"'
@@ -101,7 +101,7 @@ def main() -> None:
             return m.group(0)
         out = re.sub(r'href="([^"]+)"', link, out)
 
-        def img(m):
+        def img(m, num=num):  # noqa: ARG001
             src = m.group(1)
             f = (DOCS / src).resolve()
             if not f.exists():

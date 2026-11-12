@@ -236,9 +236,9 @@ async function editor(root, id) {
         h('button', { class: 'btn', onclick: test }, icon('check'), 'Проверить'),
         ro ? null : h('button', { class: 'btn', onclick: () => save(false) }, 'Сохранить'),
         ro ? null : h('button', { class: 'btn primary', onclick: () => save(true) }, 'Сохранить и применить'))),
-    h('div', { class: 'grid', style: { gridTemplateColumns: 'minmax(0, 1.35fr) minmax(0, 1fr)', alignItems: 'start' } },
+    h('div', { class: 'grid split' },
       h('div', { class: 'card' }, h('div', { class: 'card-body' }, tabBar, formBox)),
-      h('div', { class: 'card', style: { position: 'sticky', top: '72px' } }, h('div', { class: 'card-head' }, h('h3', {}, 'Итоговая конфигурация nginx'), h('span', { class: 'muted small' }, 'обновляется при вводе')),
+      h('div', { class: 'card sticky-preview' }, h('div', { class: 'card-head' }, h('h3', {}, 'Итоговая конфигурация nginx'), h('span', { class: 'muted small' }, 'обновляется при вводе')),
         h('div', { class: 'card-body' }, preview))));
   drawForm();
   refreshPreview();

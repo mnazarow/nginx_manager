@@ -38,7 +38,7 @@ async function view(v) {
       let cur = names.find(n => n.startsWith('sites/')) || names[0];
       const fileBox = h('div', {});
       const drawFile = () => mount(fileBox, h('div', { class: 'row mb' }, h('code', {}, cur), h('button', { class: 'btn sm', onclick: () => downloadText(cur.split('/').pop(), d.files[cur], 'text/plain') }, icon('download'))), codeBlock(d.files[cur], { maxHeight: '60vh' }));
-      mount(box, h('div', { class: 'grid', style: { gridTemplateColumns: '240px 1fr' } },
+      mount(box, h('div', { class: 'grid split-nav' },
         h('div', { class: 'col', style: { gap: '2px' } }, names.map(n => h('a', { href: '#', class: 'small mono', onclick: (e) => { e.preventDefault(); cur = n; drawFile(); } }, n))), fileBox));
       drawFile();
     } else if (mode === 'output') {

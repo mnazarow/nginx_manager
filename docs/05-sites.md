@@ -57,6 +57,8 @@
 ![Вкладка «Основное»](images/site-editor.png)
 
 
+<a id="f-site-name"></a>
+
 #### Название — `name`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -72,6 +74,8 @@
 **Пример:** `Интернет-магазин`
 
 
+<a id="f-site-enabled"></a>
+
 #### Включён — `enabled`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -84,6 +88,8 @@
 
 > **Рекомендация.** Выключайте вместо удаления, если сайт может понадобиться снова.
 
+
+<a id="f-site-type"></a>
 
 #### Тип — `type`
 
@@ -104,6 +110,8 @@
 **Пример:** `proxy`
 
 
+<a id="f-site-domains"></a>
+
 #### Домены — `domains`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -117,6 +125,8 @@
 **Пример:** `example.com, www.example.com`
 
 
+<a id="f-site-canonical_redirect"></a>
+
 #### Перенаправлять на основной домен — `canonical_redirect`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -127,6 +137,8 @@
 
 > **Рекомендация.** Включите, если в списке есть и example.com, и www.example.com.
 
+
+<a id="f-site-listen_ip"></a>
 
 #### IP для прослушивания — `listen_ip`
 
@@ -143,6 +155,8 @@
 **Пример:** `203.0.113.10`
 
 
+<a id="f-site-http_port"></a>
+
 #### HTTP-порт — `http_port`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -155,6 +169,8 @@
 
 **Пример:** `8080`
 
+
+<a id="f-site-https_port"></a>
 
 #### HTTPS-порт — `https_port`
 
@@ -169,6 +185,8 @@
 **Пример:** `8443`
 
 
+<a id="f-site-default_server"></a>
+
 #### Сервер по умолчанию — `default_server`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -181,6 +199,8 @@
 
 > **Рекомендация.** Обычно не нужно: безопаснее закрывать неизвестные домены (444).
 
+
+<a id="f-site-tags"></a>
 
 #### Метки — `tags`
 
@@ -195,6 +215,8 @@
 **Пример:** `prod, магазин, команда-А`
 
 
+<a id="f-site-notes"></a>
+
 #### Заметки — `notes`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -206,8 +228,12 @@
 **Пример:** `Ответственный: Иван, бэкенд в k8s namespace shop`
 
 
+<a id="f-site-redirect"></a>
+
 #### Перенаправление — `redirect`
 
+
+<a id="f-site-redirect-url"></a>
 
 ##### Куда перенаправлять — `redirect.url`
 
@@ -221,6 +247,8 @@
 
 **Пример:** `https://new.example.com`
 
+
+<a id="f-site-redirect-code"></a>
 
 ##### Код — `redirect.code`
 
@@ -242,6 +270,8 @@
 **Пример:** `301`
 
 
+<a id="f-site-redirect-preserve_path"></a>
+
 ##### Сохранять путь и параметры — `redirect.preserve_path`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -255,8 +285,12 @@
 > **Рекомендация.** Включено при переезде.
 
 
+<a id="f-site-static"></a>
+
 #### Статика — `static`
 
+
+<a id="f-site-static-root"></a>
 
 ##### Корневой каталог — `static.root`
 
@@ -269,6 +303,8 @@
 **Пример:** `/var/www/site`
 
 
+<a id="f-site-static-index"></a>
+
 ##### Индексные файлы — `static.index`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -279,6 +315,8 @@
 
 **Пример:** `index.html`
 
+
+<a id="f-site-static-spa"></a>
 
 ##### Режим SPA (try_files → /index.html) — `static.spa`
 
@@ -291,6 +329,8 @@
 Неизвестные пути отдают /index.html — клиентский роутер приложения сам покажет нужную страницу. Без этого обновление страницы /profile даст 404.
 
 
+<a id="f-site-static-autoindex"></a>
+
 ##### Листинг каталогов — `static.autoindex`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -301,6 +341,8 @@
 
 > **Рекомендация.** Выключено (раскрывает структуру файлов).
 
+
+<a id="f-site-static-expires"></a>
 
 ##### Кэш в браузере — `static.expires`
 
@@ -319,6 +361,8 @@
 
 ![Вкладка «Бэкенды»](images/site-editor-dark.png)
 
+
+<a id="f-site-backends"></a>
 
 #### Серверы бэкенда — `backends`
 
@@ -349,6 +393,8 @@
 | Комментарий (`comment`) | строка | пусто |  |
 
 
+<a id="f-site-backend_scheme"></a>
+
 #### Протокол бэкенда — `backend_scheme`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -370,6 +416,8 @@ https — если бэкенд сам принимает только TLS.
 
 *Показывается, когда `type` = `proxy`.*
 
+
+<a id="f-site-balancing"></a>
 
 #### Метод балансировки — `balancing`
 
@@ -393,6 +441,8 @@ round_robin — равномерно с учётом весов; least_conn — 
 *Показывается, когда `type` = `proxy`.*
 
 
+<a id="f-site-hash_key"></a>
+
 #### Ключ hash — `hash_key`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -405,6 +455,8 @@ round_robin — равномерно с учётом весов; least_conn — 
 
 *Показывается, когда `balancing` = `hash`.*
 
+
+<a id="f-site-hash_consistent"></a>
 
 #### Консистентное хеширование (ketama) — `hash_consistent`
 
@@ -421,6 +473,8 @@ Ketama: при добавлении/удалении сервера перера
 *Показывается, когда `balancing` = `hash`.*
 
 
+<a id="f-site-keepalive"></a>
+
 #### Keepalive-соединений к бэкенду — `keepalive`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -433,6 +487,8 @@ Ketama: при добавлении/удалении сервера перера
 
 *Показывается, когда `type` = `proxy`.*
 
+
+<a id="f-site-keepalive_timeout"></a>
 
 #### Keepalive timeout — `keepalive_timeout`
 
@@ -449,6 +505,8 @@ Ketama: при добавлении/удалении сервера перера
 *Показывается, когда `type` = `proxy`.*
 
 
+<a id="f-site-keepalive_requests"></a>
+
 #### Keepalive requests — `keepalive_requests`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -464,8 +522,12 @@ Ketama: при добавлении/удалении сервера перера
 *Показывается, когда `type` = `proxy`.*
 
 
+<a id="f-site-health"></a>
+
 #### Проверка доступности — `health`
 
+
+<a id="f-site-health-enabled"></a>
 
 ##### Активные проверки — `health.enabled`
 
@@ -477,6 +539,8 @@ Ketama: при добавлении/удалении сервера перера
 
 Open-source nginx не умеет активные проверки, поэтому их выполняет сервис Nginx Manager. Результат виден на странице «Бэкенды», используется в оповещениях и (при включённом автопереключении) в конфигурации.
 
+
+<a id="f-site-health-type"></a>
 
 ##### Тип проверки — `health.type`
 
@@ -496,6 +560,8 @@ HTTP — запрос к пути с проверкой кода (и текст�
 **Пример:** `http`
 
 
+<a id="f-site-health-path"></a>
+
 ##### Путь — `health.path`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -508,6 +574,8 @@ HTTP — запрос к пути с проверкой кода (и текст�
 
 *Показывается, когда `type` = `http`.*
 
+
+<a id="f-site-health-method"></a>
 
 ##### Метод — `health.method`
 
@@ -529,6 +597,8 @@ HEAD не передаёт тело ответа — экономнее, но н
 *Показывается, когда `type` = `http`.*
 
 
+<a id="f-site-health-expected_status"></a>
+
 ##### Ожидаемые коды — `health.expected_status`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -546,6 +616,8 @@ HEAD не передаёт тело ответа — экономнее, но н
 *Показывается, когда `type` = `http`.*
 
 
+<a id="f-site-health-expected_body"></a>
+
 ##### Ожидаемый текст в ответе — `health.expected_body`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -560,6 +632,8 @@ HEAD не передаёт тело ответа — экономнее, но н
 
 *Показывается, когда `type` = `http`.*
 
+
+<a id="f-site-health-host_header"></a>
 
 ##### Заголовок Host — `health.host_header`
 
@@ -576,6 +650,8 @@ HEAD не передаёт тело ответа — экономнее, но н
 *Показывается, когда `type` = `http`.*
 
 
+<a id="f-site-health-interval"></a>
+
 ##### Интервал — `health.interval`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -584,6 +660,8 @@ HEAD не передаёт тело ответа — экономнее, но н
 
 > **Рекомендация.** 10–30 с
 
+
+<a id="f-site-health-timeout"></a>
 
 ##### Таймаут — `health.timeout`
 
@@ -598,6 +676,8 @@ HEAD не передаёт тело ответа — экономнее, но н
 **Пример:** `5`
 
 
+<a id="f-site-health-fall"></a>
+
 ##### Неудач до статуса DOWN — `health.fall`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -611,6 +691,8 @@ HEAD не передаёт тело ответа — экономнее, но н
 **Пример:** `3`
 
 
+<a id="f-site-health-rise"></a>
+
 ##### Успехов до статуса UP — `health.rise`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -623,6 +705,8 @@ HEAD не передаёт тело ответа — экономнее, но н
 
 **Пример:** `2`
 
+
+<a id="f-site-health-auto_failover"></a>
 
 ##### Автоматическое переключение — `health.auto_failover`
 
@@ -642,8 +726,12 @@ HEAD не передаёт тело ответа — экономнее, но н
 ![Вкладка «SSL / HTTPS»](images/site-editor-ssl.png)
 
 
+<a id="f-site-ssl"></a>
+
 #### HTTPS — `ssl`
 
+
+<a id="f-site-ssl-enabled"></a>
 
 ##### Включить HTTPS — `ssl.enabled`
 
@@ -658,6 +746,8 @@ HEAD не передаёт тело ответа — экономнее, но н
 > **Рекомендация.** Включайте для всех публичных сайтов.
 
 
+<a id="f-site-ssl-certificate_id"></a>
+
 ##### Сертификат — `ssl.certificate_id`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -671,6 +761,8 @@ HEAD не передаёт тело ответа — экономнее, но н
 *Показывается, когда `enabled` = вкл.*
 
 
+<a id="f-site-ssl-force_https"></a>
+
 ##### Перенаправлять HTTP → HTTPS — `ssl.force_https`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -683,6 +775,8 @@ HEAD не передаёт тело ответа — экономнее, но н
 
 *Показывается, когда `enabled` = вкл.*
 
+
+<a id="f-site-ssl-redirect_code"></a>
 
 ##### Код перенаправления — `ssl.redirect_code`
 
@@ -702,6 +796,8 @@ HEAD не передаёт тело ответа — экономнее, но н
 *Показывается, когда `enabled` = вкл.*
 
 
+<a id="f-site-ssl-http2"></a>
+
 ##### HTTP/2 — `ssl.http2`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -715,6 +811,8 @@ HEAD не передаёт тело ответа — экономнее, но н
 *Показывается, когда `enabled` = вкл.*
 
 
+<a id="f-site-ssl-http3"></a>
+
 ##### HTTP/3 (QUIC) — `ssl.http3`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -727,6 +825,8 @@ HEAD не передаёт тело ответа — экономнее, но н
 
 *Показывается, когда `enabled` = вкл.*
 
+
+<a id="f-site-ssl-hsts"></a>
 
 ##### HSTS — `ssl.hsts`
 
@@ -743,6 +843,8 @@ HEAD не передаёт тело ответа — экономнее, но н
 *Показывается, когда `enabled` = вкл.*
 
 
+<a id="f-site-ssl-hsts_max_age"></a>
+
 ##### HSTS max-age — `ssl.hsts_max_age`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -758,6 +860,8 @@ HEAD не передаёт тело ответа — экономнее, но н
 *Показывается, когда `enabled` = вкл и `hsts` = вкл.*
 
 
+<a id="f-site-ssl-hsts_subdomains"></a>
+
 ##### HSTS includeSubDomains — `ssl.hsts_subdomains`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -768,6 +872,8 @@ HEAD не передаёт тело ответа — экономнее, но н
 
 *Показывается, когда `enabled` = вкл и `hsts` = вкл.*
 
+
+<a id="f-site-ssl-hsts_preload"></a>
 
 ##### HSTS preload — `ssl.hsts_preload`
 
@@ -782,6 +888,8 @@ HEAD не передаёт тело ответа — экономнее, но н
 *Показывается, когда `enabled` = вкл и `hsts` = вкл.*
 
 
+<a id="f-site-ssl-ocsp_stapling"></a>
+
 ##### OCSP stapling — `ssl.ocsp_stapling`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -794,6 +902,8 @@ Let's Encrypt прекратил поддержку OCSP в 2025 году — д
 
 *Показывается, когда `enabled` = вкл.*
 
+
+<a id="f-site-ssl-protocols"></a>
 
 ##### Протоколы TLS (переопределить) — `ssl.protocols`
 
@@ -816,6 +926,8 @@ Let's Encrypt прекратил поддержку OCSP в 2025 году — д
 
 ![Вкладка «Локации»](images/site-editor-locations.png)
 
+
+<a id="f-site-locations"></a>
 
 #### Локации — `locations`
 
@@ -861,8 +973,12 @@ Let's Encrypt прекратил поддержку OCSP в 2025 году — д
 ### Вкладка «Проксирование»
 
 
+<a id="f-site-proxy"></a>
+
 #### Проксирование — `proxy`
 
+
+<a id="f-site-proxy-host_header"></a>
 
 ##### Заголовок Host к бэкенду — `proxy.host_header`
 
@@ -881,6 +997,8 @@ Let's Encrypt прекратил поддержку OCSP в 2025 году — д
 > **Рекомендация.** Как у клиента.
 
 
+<a id="f-site-proxy-custom_host"></a>
+
 ##### Свой Host — `proxy.custom_host`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -894,6 +1012,8 @@ Let's Encrypt прекратил поддержку OCSP в 2025 году — д
 *Показывается, когда `host_header` = `custom`.*
 
 
+<a id="f-site-proxy-websocket"></a>
+
 ##### Поддержка WebSocket — `proxy.websocket`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -905,6 +1025,8 @@ Let's Encrypt прекратил поддержку OCSP в 2025 году — д
 Безопасно оставлять включённым: для обычных запросов Connection остаётся пустым, что сохраняет keepalive до бэкенда.
 
 
+<a id="f-site-proxy-connect_timeout"></a>
+
 ##### Таймаут подключения — `proxy.connect_timeout`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -915,6 +1037,8 @@ Let's Encrypt прекратил поддержку OCSP в 2025 году — д
 
 > **Рекомендация.** 2s–10s. Большие значения замедляют переключение на живой сервер.
 
+
+<a id="f-site-proxy-read_timeout"></a>
 
 ##### Таймаут чтения — `proxy.read_timeout`
 
@@ -928,6 +1052,8 @@ Let's Encrypt прекратил поддержку OCSP в 2025 году — д
 
 > **Рекомендация.** 60s для сайтов, 300s–3600s для долгих API/WebSocket.
 
+
+<a id="f-site-proxy-send_timeout"></a>
 
 ##### Таймаут отправки — `proxy.send_timeout`
 
@@ -944,6 +1070,8 @@ Let's Encrypt прекратил поддержку OCSP в 2025 году — д
 **Пример:** `60s`
 
 
+<a id="f-site-proxy-buffering"></a>
+
 ##### Буферизация ответа — `proxy.buffering`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -955,6 +1083,8 @@ Let's Encrypt прекратил поддержку OCSP в 2025 году — д
 > **Рекомендация.** Включено.
 
 
+<a id="f-site-proxy-request_buffering"></a>
+
 ##### Буферизация запроса — `proxy.request_buffering`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -965,6 +1095,8 @@ Let's Encrypt прекратил поддержку OCSP в 2025 году — д
 
 > **Рекомендация.** Выключите для потоковой загрузки больших файлов.
 
+
+<a id="f-site-proxy-buffer_size"></a>
 
 ##### proxy_buffer_size — `proxy.buffer_size`
 
@@ -978,6 +1110,8 @@ Let's Encrypt прекратил поддержку OCSP в 2025 году — д
 
 **Пример:** `16k`
 
+
+<a id="f-site-proxy-buffers"></a>
 
 ##### proxy_buffers — `proxy.buffers`
 
@@ -994,6 +1128,8 @@ Let's Encrypt прекратил поддержку OCSP в 2025 году — д
 **Пример:** `16 16k`
 
 
+<a id="f-site-proxy-busy_buffers_size"></a>
+
 ##### proxy_busy_buffers_size — `proxy.busy_buffers_size`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -1006,6 +1142,8 @@ Let's Encrypt прекратил поддержку OCSP в 2025 году — д
 
 **Пример:** `32k`
 
+
+<a id="f-site-proxy-next_upstream"></a>
 
 ##### Повтор на другом сервере при — `proxy.next_upstream`
 
@@ -1033,6 +1171,8 @@ Let's Encrypt прекратил поддержку OCSP в 2025 году — д
 > **Рекомендация.** error timeout http_502 http_503 http_504
 
 
+<a id="f-site-proxy-next_upstream_tries"></a>
+
 ##### Макс. попыток — `proxy.next_upstream_tries`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -1048,6 +1188,8 @@ Let's Encrypt прекратил поддержку OCSP в 2025 году — д
 **Пример:** `2`
 
 
+<a id="f-site-proxy-next_upstream_timeout"></a>
+
 ##### Общее время попыток — `proxy.next_upstream_timeout`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -1060,6 +1202,8 @@ Let's Encrypt прекратил поддержку OCSP в 2025 году — д
 
 **Пример:** `15s`
 
+
+<a id="f-site-proxy-pass_real_ip"></a>
 
 ##### Передавать IP клиента — `proxy.pass_real_ip`
 
@@ -1074,6 +1218,8 @@ Let's Encrypt прекратил поддержку OCSP в 2025 году — д
 > **Рекомендация.** Включено; в приложении настройте доверие к прокси.
 
 
+<a id="f-site-proxy-pass_request_id"></a>
+
 ##### X-Request-ID — `proxy.pass_request_id`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -1086,6 +1232,8 @@ nginx генерирует 32-символьный ID ($request_id) и пере�
 
 > **Рекомендация.** Включено.
 
+
+<a id="f-site-proxy-hide_headers"></a>
 
 ##### Скрыть заголовки бэкенда — `proxy.hide_headers`
 
@@ -1102,6 +1250,8 @@ nginx генерирует 32-символьный ID ($request_id) и пере�
 **Пример:** `X-Powered-By`
 
 
+<a id="f-site-proxy-ssl_verify"></a>
+
 ##### Проверять сертификат бэкенда — `proxy.ssl_verify`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -1117,6 +1267,8 @@ nginx генерирует 32-символьный ID ($request_id) и пере�
 *Показывается, когда `backend_scheme` = `https`.*
 
 
+<a id="f-site-proxy-ssl_server_name"></a>
+
 ##### Передавать SNI бэкенду — `proxy.ssl_server_name`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -1130,6 +1282,8 @@ nginx генерирует 32-символьный ID ($request_id) и пере�
 *Показывается, когда `backend_scheme` = `https`.*
 
 
+<a id="f-site-proxy-intercept_errors"></a>
+
 ##### Перехватывать ошибки бэкенда — `proxy.intercept_errors`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -1142,6 +1296,8 @@ nginx генерирует 32-символьный ID ($request_id) и пере�
 
 > **Рекомендация.** Не включайте для API.
 
+
+<a id="f-site-proxy-redirect"></a>
 
 ##### proxy_redirect — `proxy.redirect`
 
@@ -1163,6 +1319,8 @@ default — nginx переписывает заголовки Location вида 
 **Пример:** `default`
 
 
+<a id="f-site-proxy-http_version"></a>
+
 ##### Версия HTTP к бэкенду — `proxy.http_version`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -1176,6 +1334,8 @@ default — nginx переписывает заголовки Location вида 
 
 > **Рекомендация.** 1.1 (нужно для keepalive и WebSocket)
 
+
+<a id="f-site-headers"></a>
 
 #### Доп. заголовки ответа — `headers`
 
@@ -1197,6 +1357,8 @@ default — nginx переписывает заголовки Location вида 
 | Значение (`value`) | строка | пусто | Можно использовать переменные nginx, например $host |
 | always (`always`) | переключатель (да/нет) | включено | Добавлять и к ответам с ошибками (4xx/5xx) Рекомендация: Включено для CORS и HSTS. |
 
+
+<a id="f-site-proxy_headers"></a>
 
 #### Доп. заголовки к бэкенду — `proxy_headers`
 
@@ -1224,8 +1386,12 @@ default — nginx переписывает заголовки Location вида 
 ![Вкладка «Кэш»](images/site-editor-cache.png)
 
 
+<a id="f-site-cache"></a>
+
 #### Кэширование — `cache`
 
+
+<a id="f-site-cache-enabled"></a>
 
 ##### Включить кэширование — `cache.enabled`
 
@@ -1237,6 +1403,8 @@ default — nginx переписывает заголовки Location вида 
 
 > **Рекомендация.** Включайте для публичного контента; для личных кабинетов настройте обход по cookie.
 
+
+<a id="f-site-cache-zone"></a>
 
 ##### Зона кэша — `cache.zone`
 
@@ -1252,6 +1420,8 @@ default — nginx переписывает заголовки Location вида 
 
 *Показывается, когда `enabled` = вкл.*
 
+
+<a id="f-site-cache-valid"></a>
 
 ##### Время жизни — `cache.valid`
 
@@ -1270,6 +1440,8 @@ default — nginx переписывает заголовки Location вида 
 *Показывается, когда `enabled` = вкл.*
 
 
+<a id="f-site-cache-key"></a>
+
 ##### Ключ кэша — `cache.key`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -1284,6 +1456,8 @@ default — nginx переписывает заголовки Location вида 
 
 *Показывается, когда `enabled` = вкл.*
 
+
+<a id="f-site-cache-bypass_cookies"></a>
 
 ##### Не кэшировать при наличии cookie — `cache.bypass_cookies`
 
@@ -1302,6 +1476,8 @@ default — nginx переписывает заголовки Location вида 
 *Показывается, когда `enabled` = вкл.*
 
 
+<a id="f-site-cache-bypass_cookie_pattern"></a>
+
 ##### Не кэшировать, если cookie совпадает с шаблоном — `cache.bypass_cookie_pattern`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -1317,6 +1493,8 @@ default — nginx переписывает заголовки Location вида 
 *Показывается, когда `enabled` = вкл.*
 
 
+<a id="f-site-cache-bypass_authorization"></a>
+
 ##### Не кэшировать запросы с Authorization — `cache.bypass_authorization`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -1329,6 +1507,8 @@ default — nginx переписывает заголовки Location вида 
 
 *Показывается, когда `enabled` = вкл.*
 
+
+<a id="f-site-cache-bypass_arg"></a>
 
 ##### Параметр обхода кэша — `cache.bypass_arg`
 
@@ -1344,6 +1524,8 @@ default — nginx переписывает заголовки Location вида 
 
 *Показывается, когда `enabled` = вкл.*
 
+
+<a id="f-site-cache-methods"></a>
 
 ##### Кэшируемые методы — `cache.methods`
 
@@ -1364,6 +1546,8 @@ default — nginx переписывает заголовки Location вида 
 *Показывается, когда `enabled` = вкл.*
 
 
+<a id="f-site-cache-min_uses"></a>
+
 ##### Кэшировать после N запросов — `cache.min_uses`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -1378,6 +1562,8 @@ default — nginx переписывает заголовки Location вида 
 
 *Показывается, когда `enabled` = вкл.*
 
+
+<a id="f-site-cache-use_stale"></a>
 
 ##### Отдавать устаревший кэш при — `cache.use_stale`
 
@@ -1403,6 +1589,8 @@ default — nginx переписывает заголовки Location вида 
 *Показывается, когда `enabled` = вкл.*
 
 
+<a id="f-site-cache-background_update"></a>
+
 ##### Фоновое обновление — `cache.background_update`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -1415,6 +1603,8 @@ default — nginx переписывает заголовки Location вида 
 
 *Показывается, когда `enabled` = вкл.*
 
+
+<a id="f-site-cache-lock"></a>
 
 ##### Блокировка (cache lock) — `cache.lock`
 
@@ -1430,6 +1620,8 @@ default — nginx переписывает заголовки Location вида 
 
 *Показывается, когда `enabled` = вкл.*
 
+
+<a id="f-site-cache-ignore_headers"></a>
 
 ##### Игнорировать заголовки бэкенда — `cache.ignore_headers`
 
@@ -1449,6 +1641,8 @@ default — nginx переписывает заголовки Location вида 
 
 *Показывается, когда `enabled` = вкл.*
 
+
+<a id="f-site-cache-status_header"></a>
 
 ##### Заголовок X-Cache-Status — `cache.status_header`
 
@@ -1470,8 +1664,12 @@ HIT / MISS / EXPIRED / BYPASS — удобно для отладки.
 ![Вкладка «Безопасность»](images/site-editor-security.png)
 
 
+<a id="f-site-security"></a>
+
 #### Безопасность — `security`
 
+
+<a id="f-site-security-access_mode"></a>
 
 ##### Режим доступа — `security.access_mode`
 
@@ -1489,6 +1687,8 @@ HIT / MISS / EXPIRED / BYPASS — удобно для отладки.
 **Пример:** `all`
 
 
+<a id="f-site-security-allow"></a>
+
 ##### Белый список IP/подсетей — `security.allow`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -1502,6 +1702,8 @@ HIT / MISS / EXPIRED / BYPASS — удобно для отладки.
 *Показывается, когда `access_mode` = `allowlist`.*
 
 
+<a id="f-site-security-deny"></a>
+
 ##### Чёрный список IP/подсетей — `security.deny`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -1513,6 +1715,8 @@ HIT / MISS / EXPIRED / BYPASS — удобно для отладки.
 **Пример:** `198.51.100.7`
 
 
+<a id="f-site-security-basic_auth"></a>
+
 ##### Защита паролем (Basic Auth) — `security.basic_auth`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -1521,6 +1725,8 @@ HIT / MISS / EXPIRED / BYPASS — удобно для отладки.
 
 Браузер запросит логин и пароль. Пароли хранятся в виде APR1-MD5-хеша. Используйте только вместе с HTTPS — иначе пароль передаётся открыто.
 
+
+<a id="f-site-security-basic_auth_realm"></a>
 
 ##### Текст приглашения — `security.basic_auth_realm`
 
@@ -1534,6 +1740,8 @@ HIT / MISS / EXPIRED / BYPASS — удобно для отладки.
 
 *Показывается, когда `basic_auth` = вкл.*
 
+
+<a id="f-site-security-basic_auth_users"></a>
 
 ##### Пользователи — `security.basic_auth_users`
 
@@ -1553,6 +1761,8 @@ HIT / MISS / EXPIRED / BYPASS — удобно для отладки.
 | Пароль (`password`) | строка | пусто | Хранится только хеш (APR1-MD5). Оставьте пустым, чтобы не менять. Рекомендация: Не менее 8 символов, уникальный. |
 
 
+<a id="f-site-security-satisfy_any"></a>
+
 ##### IP из белого списка входят без пароля — `security.satisfy_any`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -1564,6 +1774,8 @@ HIT / MISS / EXPIRED / BYPASS — удобно для отладки.
 *Показывается, когда `basic_auth` = вкл.*
 
 
+<a id="f-site-security-rate_limit"></a>
+
 ##### Ограничение частоты запросов — `security.rate_limit`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -1574,6 +1786,8 @@ HIT / MISS / EXPIRED / BYPASS — удобно для отладки.
 
 > **Рекомендация.** Сайт: 10–30r/s, burst 50. API: по SLA. Логин-формы: 5r/m отдельной локацией.
 
+
+<a id="f-site-security-rate"></a>
 
 ##### Скорость — `security.rate`
 
@@ -1590,6 +1804,8 @@ HIT / MISS / EXPIRED / BYPASS — удобно для отладки.
 *Показывается, когда `rate_limit` = вкл.*
 
 
+<a id="f-site-security-burst"></a>
+
 ##### Всплеск (burst) — `security.burst`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -1605,6 +1821,8 @@ HIT / MISS / EXPIRED / BYPASS — удобно для отладки.
 *Показывается, когда `rate_limit` = вкл.*
 
 
+<a id="f-site-security-nodelay"></a>
+
 ##### nodelay — `security.nodelay`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -1619,6 +1837,8 @@ HIT / MISS / EXPIRED / BYPASS — удобно для отладки.
 
 *Показывается, когда `rate_limit` = вкл.*
 
+
+<a id="f-site-security-rate_key"></a>
 
 ##### Ключ ограничения — `security.rate_key`
 
@@ -1642,6 +1862,8 @@ HIT / MISS / EXPIRED / BYPASS — удобно для отладки.
 *Показывается, когда `rate_limit` = вкл.*
 
 
+<a id="f-site-security-limit_status"></a>
+
 ##### Код ответа при превышении — `security.limit_status`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -1657,6 +1879,8 @@ HIT / MISS / EXPIRED / BYPASS — удобно для отладки.
 *Показывается, когда `rate_limit` = вкл.*
 
 
+<a id="f-site-security-conn_limit"></a>
+
 ##### Макс. соединений с одного IP — `security.conn_limit`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -1668,6 +1892,8 @@ HIT / MISS / EXPIRED / BYPASS — удобно для отладки.
 > **Рекомендация.** 20–100 для сайтов
 
 
+<a id="f-site-security-block_hidden_files"></a>
+
 ##### Блокировать скрытые файлы (.git, .env, .htaccess) — `security.block_hidden_files`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -1676,6 +1902,8 @@ HIT / MISS / EXPIRED / BYPASS — удобно для отладки.
 
 > **Рекомендация.** Включено — частая причина утечек исходников и паролей.
 
+
+<a id="f-site-security-block_bad_bots"></a>
 
 ##### Блокировать нежелательных ботов и сканеры — `security.block_bad_bots`
 
@@ -1687,6 +1915,8 @@ HIT / MISS / EXPIRED / BYPASS — удобно для отладки.
 
 > **Рекомендация.** Включайте при заметной нагрузке от ботов (см. Аналитика → браузеры).
 
+
+<a id="f-site-security-bad_bots"></a>
 
 ##### Список User-Agent — `security.bad_bots`
 
@@ -1703,6 +1933,8 @@ HIT / MISS / EXPIRED / BYPASS — удобно для отладки.
 *Показывается, когда `block_bad_bots` = вкл.*
 
 
+<a id="f-site-security-block_exploits"></a>
+
 ##### Базовая защита от эксплойтов — `security.block_exploits`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -1713,6 +1945,8 @@ HIT / MISS / EXPIRED / BYPASS — удобно для отладки.
 
 Простой фильтр по регулярным выражениям, не заменяет полноценный WAF. Может давать ложные срабатывания на нестандартных приложениях — проверьте журнал запросов (ответы 403) после включения.
 
+
+<a id="f-site-security-allowed_methods"></a>
 
 ##### Разрешённые HTTP-методы — `security.allowed_methods`
 
@@ -1739,6 +1973,8 @@ HIT / MISS / EXPIRED / BYPASS — удобно для отладки.
 **Пример:** `GET, POST`
 
 
+<a id="f-site-security-security_headers"></a>
+
 ##### Заголовки безопасности — `security.security_headers`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -1751,6 +1987,8 @@ X-Content-Type-Options: nosniff (запрет угадывания типа), X-
 
 > **Рекомендация.** Включено.
 
+
+<a id="f-site-security-x_frame_options"></a>
 
 ##### X-Frame-Options — `security.x_frame_options`
 
@@ -1772,6 +2010,8 @@ SAMEORIGIN — сайт можно встроить во фрейм только
 
 *Показывается, когда `security_headers` = вкл.*
 
+
+<a id="f-site-security-referrer_policy"></a>
 
 ##### Referrer-Policy — `security.referrer_policy`
 
@@ -1795,6 +2035,8 @@ SAMEORIGIN — сайт можно встроить во фрейм только
 *Показывается, когда `security_headers` = вкл.*
 
 
+<a id="f-site-security-permissions_policy"></a>
+
 ##### Permissions-Policy — `security.permissions_policy`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -1807,6 +2049,8 @@ SAMEORIGIN — сайт можно встроить во фрейм только
 
 *Показывается, когда `security_headers` = вкл.*
 
+
+<a id="f-site-security-csp"></a>
 
 ##### Content-Security-Policy — `security.csp`
 
@@ -1825,6 +2069,8 @@ Content-Security-Policy — откуда браузеру разрешено з�
 *Показывается, когда `security_headers` = вкл.*
 
 
+<a id="f-site-security-csp_report_only"></a>
+
 ##### CSP только отчёт (Report-Only) — `security.csp_report_only`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -1839,8 +2085,12 @@ Content-Security-Policy — откуда браузеру разрешено з�
 ### Вкладка «Производительность»
 
 
+<a id="f-site-performance"></a>
+
 #### Производительность — `performance`
 
+
+<a id="f-site-performance-gzip"></a>
 
 ##### Сжатие gzip — `performance.gzip`
 
@@ -1859,6 +2109,8 @@ Content-Security-Policy — откуда браузеру разрешено з�
 **Пример:** `inherit`
 
 
+<a id="f-site-performance-client_max_body_size"></a>
+
 ##### Макс. размер тела запроса — `performance.client_max_body_size`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -1871,6 +2123,8 @@ Content-Security-Policy — откуда браузеру разрешено з�
 
 **Пример:** `100m`
 
+
+<a id="f-site-performance-limit_rate"></a>
 
 ##### Ограничение скорости отдачи на соединение — `performance.limit_rate`
 
@@ -1885,6 +2139,8 @@ Content-Security-Policy — откуда браузеру разрешено з�
 **Пример:** `2m`
 
 
+<a id="f-site-performance-limit_rate_after"></a>
+
 ##### Ограничивать после — `performance.limit_rate_after`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -1896,6 +2152,8 @@ Content-Security-Policy — откуда браузеру разрешено з�
 **Пример:** `10m`
 
 
+<a id="f-site-performance-keepalive_timeout"></a>
+
 ##### keepalive_timeout клиентов — `performance.keepalive_timeout`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -1906,6 +2164,8 @@ Content-Security-Policy — откуда браузеру разрешено з�
 
 **Пример:** `30s`
 
+
+<a id="f-site-performance-access_log"></a>
 
 ##### Журнал запросов и статистика — `performance.access_log`
 
@@ -1920,6 +2180,8 @@ Content-Security-Policy — откуда браузеру разрешено з�
 > **Рекомендация.** Включено.
 
 
+<a id="f-site-performance-log_static"></a>
+
 ##### Учитывать статику (css/js/картинки) — `performance.log_static`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -1932,6 +2194,8 @@ Content-Security-Policy — откуда браузеру разрешено з�
 
 > **Рекомендация.** Выключите для сайтов, где статика составляет большинство запросов и не интересна.
 
+
+<a id="f-site-performance-static_expires"></a>
 
 ##### Кэш статики в браузере (expires) — `performance.static_expires`
 
@@ -1951,8 +2215,12 @@ Content-Security-Policy — откуда браузеру разрешено з�
 ### Вкладка «Ошибки и обслуживание»
 
 
+<a id="f-site-error_pages"></a>
+
 #### Страницы ошибок — `error_pages`
 
+
+<a id="f-site-error_pages-enabled"></a>
 
 ##### Собственные страницы ошибок — `error_pages.enabled`
 
@@ -1966,6 +2234,8 @@ Content-Security-Policy — откуда браузеру разрешено з�
 
 > **Рекомендация.** Включено.
 
+
+<a id="f-site-error_pages-codes"></a>
 
 ##### Коды — `error_pages.codes`
 
@@ -1991,8 +2261,12 @@ Content-Security-Policy — откуда браузеру разрешено з�
 *Показывается, когда `enabled` = вкл.*
 
 
+<a id="f-site-maintenance"></a>
+
 #### Обслуживание — `maintenance`
 
+
+<a id="f-site-maintenance-enabled"></a>
 
 ##### Режим обслуживания — `maintenance.enabled`
 
@@ -2004,6 +2278,8 @@ Content-Security-Policy — откуда браузеру разрешено з�
 
 Удобно на время обновления приложения: включили → применили → обновили бэкенд → выключили. Код 503 и заголовок Retry-After сообщают поисковикам, что это временно.
 
+
+<a id="f-site-maintenance-allow"></a>
 
 ##### IP, которым сайт доступен — `maintenance.allow`
 
@@ -2018,6 +2294,8 @@ Content-Security-Policy — откуда браузеру разрешено з�
 *Показывается, когда `enabled` = вкл.*
 
 
+<a id="f-site-maintenance-title"></a>
+
 ##### Заголовок страницы — `maintenance.title`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -2031,6 +2309,8 @@ Content-Security-Policy — откуда браузеру разрешено з�
 *Показывается, когда `enabled` = вкл.*
 
 
+<a id="f-site-maintenance-message"></a>
+
 ##### Текст — `maintenance.message`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -2043,6 +2323,8 @@ Content-Security-Policy — откуда браузеру разрешено з�
 
 *Показывается, когда `enabled` = вкл.*
 
+
+<a id="f-site-maintenance-retry_after"></a>
 
 ##### Retry-After — `maintenance.retry_after`
 
@@ -2062,6 +2344,8 @@ Content-Security-Policy — откуда браузеру разрешено з�
 ### Вкладка «Дополнительно»
 
 
+<a id="f-site-custom_server"></a>
+
 #### Свои директивы в server { } — `custom_server`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -2073,6 +2357,8 @@ Content-Security-Policy — откуда браузеру разрешено з�
 Для возможностей, которых нет в форме. Конфигурация всегда проверяется nginx -t перед применением — ошибка не сломает работающий nginx.
 
 
+<a id="f-site-custom_location"></a>
+
 #### Свои директивы в location / { } — `custom_location`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -2083,6 +2369,8 @@ Content-Security-Policy — откуда браузеру разрешено з�
 
 **Пример:** `sub_filter 'http://' 'https://';`
 
+
+<a id="f-site-custom_http"></a>
 
 #### Свои директивы на уровне http (map, geo...) — `custom_http`
 
@@ -2104,6 +2392,8 @@ Content-Security-Policy — откуда браузеру разрешено з�
 <!-- GEN:location -->
 <!-- Сгенерировано tools/gen_reference.py из app/models.py -->
 
+<a id="f-location-enabled"></a>
+
 #### Включена — `enabled`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -2112,6 +2402,8 @@ Content-Security-Policy — откуда браузеру разрешено з�
 
 Выключенная локация не генерируется, но сохраняется.
 
+
+<a id="f-location-path"></a>
 
 #### Путь — `path`
 
@@ -2125,6 +2417,8 @@ Content-Security-Policy — откуда браузеру разрешено з�
 
 **Пример:** `/api/`
 
+
+<a id="f-location-match"></a>
 
 #### Тип сопоставления — `match`
 
@@ -2142,6 +2436,8 @@ Content-Security-Policy — откуда браузеру разрешено з�
 - `regex` — Регулярное выражение (~)
 - `regex_ci` — Регулярное без учёта регистра (~*)
 
+
+<a id="f-location-action"></a>
 
 #### Действие — `action`
 
@@ -2162,6 +2458,8 @@ Content-Security-Policy — откуда браузеру разрешено з�
 **Пример:** `proxy`
 
 
+<a id="f-location-use_site_backends"></a>
+
 #### Использовать бэкенды сайта — `use_site_backends`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -2174,6 +2472,8 @@ Content-Security-Policy — откуда браузеру разрешено з�
 
 *Показывается, когда `action` = `proxy`.*
 
+
+<a id="f-location-backends"></a>
 
 #### Бэкенды локации — `backends`
 
@@ -2202,6 +2502,8 @@ Content-Security-Policy — откуда браузеру разрешено з�
 | Комментарий (`comment`) | строка | пусто |  |
 
 
+<a id="f-location-backend_scheme"></a>
+
 #### Протокол бэкенда — `backend_scheme`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -2219,6 +2521,8 @@ Content-Security-Policy — откуда браузеру разрешено з�
 
 *Показывается, когда `action` = `proxy` и `use_site_backends` = выкл.*
 
+
+<a id="f-location-balancing"></a>
 
 #### Балансировка — `balancing`
 
@@ -2240,6 +2544,8 @@ Content-Security-Policy — откуда браузеру разрешено з�
 *Показывается, когда `action` = `proxy` и `use_site_backends` = выкл.*
 
 
+<a id="f-location-proxy_path"></a>
+
 #### Заменить путь на — `proxy_path`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -2255,6 +2561,8 @@ Content-Security-Policy — откуда браузеру разрешено з�
 *Показывается, когда `action` = `proxy`.*
 
 
+<a id="f-location-websocket"></a>
+
 #### WebSocket — `websocket`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -2267,6 +2575,8 @@ Content-Security-Policy — откуда браузеру разрешено з�
 
 *Показывается, когда `action` = `proxy`.*
 
+
+<a id="f-location-read_timeout"></a>
 
 #### Таймаут чтения — `read_timeout`
 
@@ -2281,6 +2591,8 @@ Content-Security-Policy — откуда браузеру разрешено з�
 *Показывается, когда `action` = `proxy`.*
 
 
+<a id="f-location-buffering"></a>
+
 #### Буферизация ответа — `buffering`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -2293,6 +2605,8 @@ Content-Security-Policy — откуда браузеру разрешено з�
 
 *Показывается, когда `action` = `proxy`.*
 
+
+<a id="f-location-cache"></a>
 
 #### Кэш — `cache`
 
@@ -2313,6 +2627,8 @@ Content-Security-Policy — откуда браузеру разрешено з�
 *Показывается, когда `action` = `proxy`.*
 
 
+<a id="f-location-cache_valid"></a>
+
 #### Время жизни кэша — `cache_valid`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -2326,6 +2642,8 @@ Content-Security-Policy — откуда браузеру разрешено з�
 *Показывается, когда `action` = `proxy` и `cache` = `on`.*
 
 
+<a id="f-location-redirect_url"></a>
+
 #### URL перенаправления — `redirect_url`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -2338,6 +2656,8 @@ Content-Security-Policy — откуда браузеру разрешено з�
 
 *Показывается, когда `action` = `redirect`.*
 
+
+<a id="f-location-redirect_code"></a>
 
 #### Код — `redirect_code`
 
@@ -2359,6 +2679,8 @@ Content-Security-Policy — откуда браузеру разрешено з�
 *Показывается, когда `action` = `redirect`.*
 
 
+<a id="f-location-return_code"></a>
+
 #### Код ответа — `return_code`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -2371,6 +2693,8 @@ HTTP-код фиксированного ответа.
 
 *Показывается, когда `action` = `return`.*
 
+
+<a id="f-location-return_body"></a>
 
 #### Тело ответа — `return_body`
 
@@ -2385,6 +2709,8 @@ HTTP-код фиксированного ответа.
 *Показывается, когда `action` = `return`.*
 
 
+<a id="f-location-return_type"></a>
+
 #### Content-Type — `return_type`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -2397,6 +2723,8 @@ Content-Type фиксированного ответа.
 
 *Показывается, когда `action` = `return`.*
 
+
+<a id="f-location-static_root"></a>
 
 #### Каталог — `static_root`
 
@@ -2413,6 +2741,8 @@ Content-Type фиксированного ответа.
 *Показывается, когда `action` = `static`.*
 
 
+<a id="f-location-static_expires"></a>
+
 #### Кэш в браузере — `static_expires`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -2425,6 +2755,8 @@ Content-Type фиксированного ответа.
 
 *Показывается, когда `action` = `static`.*
 
+
+<a id="f-location-rate_limit"></a>
 
 #### Ограничение частоты — `rate_limit`
 
@@ -2441,6 +2773,8 @@ Content-Type фиксированного ответа.
 - `custom` — Своё
 
 
+<a id="f-location-rate"></a>
+
 #### Скорость — `rate`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -2453,6 +2787,8 @@ Content-Type фиксированного ответа.
 
 *Показывается, когда `rate_limit` = `custom`.*
 
+
+<a id="f-location-burst"></a>
 
 #### Burst — `burst`
 
@@ -2467,6 +2803,8 @@ Content-Type фиксированного ответа.
 *Показывается, когда `rate_limit` = `custom`.*
 
 
+<a id="f-location-allow"></a>
+
 #### Доступ только с IP — `allow`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -2479,6 +2817,8 @@ Content-Type фиксированного ответа.
 
 **Пример:** `10.0.0.0/8`
 
+
+<a id="f-location-basic_auth"></a>
 
 #### Basic Auth — `basic_auth`
 
@@ -2495,6 +2835,8 @@ Content-Type фиксированного ответа.
 - `on` — Включить (пользователи сайта)
 
 
+<a id="f-location-client_max_body_size"></a>
+
 #### Макс. тело запроса — `client_max_body_size`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -2505,6 +2847,8 @@ Content-Type фиксированного ответа.
 
 **Пример:** `1g`
 
+
+<a id="f-location-headers"></a>
 
 #### Доп. заголовки ответа — `headers`
 
@@ -2524,6 +2868,8 @@ Content-Type фиксированного ответа.
 | Значение (`value`) | строка | пусто | Можно использовать переменные nginx, например $host |
 | always (`always`) | переключатель (да/нет) | включено | Добавлять и к ответам с ошибками (4xx/5xx) Рекомендация: Включено для CORS и HSTS. |
 
+
+<a id="f-location-proxy_headers"></a>
 
 #### Доп. заголовки к бэкенду — `proxy_headers`
 
@@ -2546,6 +2892,8 @@ Content-Type фиксированного ответа.
 | always (`always`) | переключатель (да/нет) | включено | Добавлять и к ответам с ошибками (4xx/5xx) Рекомендация: Включено для CORS и HSTS. |
 
 
+<a id="f-location-custom"></a>
+
 #### Свои директивы — `custom`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -2565,6 +2913,8 @@ Content-Type фиксированного ответа.
 <!-- GEN:backend -->
 <!-- Сгенерировано tools/gen_reference.py из app/models.py -->
 
+<a id="f-backend-address"></a>
+
 #### Адрес — `address`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -2580,6 +2930,8 @@ IP-адрес (IPv4 или IPv6), DNS-имя или unix-сокет (unix:/пу�
 **Пример:** `10.0.0.5`
 
 
+<a id="f-backend-port"></a>
+
 #### Порт — `port`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -2592,6 +2944,8 @@ TCP-порт приложения на бэкенде.
 
 **Пример:** `8080`
 
+
+<a id="f-backend-weight"></a>
 
 #### Вес — `weight`
 
@@ -2606,6 +2960,8 @@ TCP-порт приложения на бэкенде.
 > **Рекомендация.** Задавайте вес пропорционально производительности серверов.
 
 
+<a id="f-backend-max_fails"></a>
+
 #### max_fails — `max_fails`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -2619,6 +2975,8 @@ TCP-порт приложения на бэкенде.
 > **Рекомендация.** 3 для большинства случаев; 1 — для быстрого переключения при наличии резерва.
 
 
+<a id="f-backend-fail_timeout"></a>
+
 #### fail_timeout — `fail_timeout`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -2629,6 +2987,8 @@ TCP-порт приложения на бэкенде.
 
 > **Рекомендация.** 10s–30s
 
+
+<a id="f-backend-backup"></a>
 
 #### Резервный — `backup`
 
@@ -2641,6 +3001,8 @@ TCP-порт приложения на бэкенде.
 Не совместим с методами балансировки hash, ip_hash и random.
 
 
+<a id="f-backend-down"></a>
+
 #### Выключен — `down`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -2651,6 +3013,8 @@ TCP-порт приложения на бэкенде.
 
 Сервер остаётся в списке, но nginx не отправляет на него запросы — удобно на время обслуживания конкретного сервера (вывести из балансировки → обновить → вернуть).
 
+
+<a id="f-backend-max_conns"></a>
 
 #### max_conns — `max_conns`
 
@@ -2666,6 +3030,8 @@ TCP-порт приложения на бэкенде.
 
 **Пример:** `100`
 
+
+<a id="f-backend-comment"></a>
 
 #### Комментарий — `comment`
 

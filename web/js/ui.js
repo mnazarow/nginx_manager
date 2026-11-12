@@ -29,6 +29,7 @@ export function mount(el, ...children) { clear(el); append(el, children); return
 
 // ---------- Иконки (линейные, 24×24) ----------
 const P = {
+  ban: 'M12 2a10 10 0 100 20 10 10 0 000-20zM4.9 4.9l14.2 14.2',
   dash: 'M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z',
   sites: 'M12 2a10 10 0 100 20 10 10 0 000-20zM2 12h20M12 2a15 15 0 014 10 15 15 0 01-4 10 15 15 0 01-4-10 15 15 0 014-10z',
   stream: 'M4 7h16M4 12h16M4 17h10M17 15l3 2-3 2',

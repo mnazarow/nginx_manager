@@ -54,6 +54,8 @@ fs.file-max = 2000000
 ### Процессы
 
 
+<a id="f-global-user"></a>
+
 #### Пользователь воркеров — `user`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -69,6 +71,8 @@ fs.file-max = 2000000
 **Пример:** `www-data`
 
 
+<a id="f-global-worker_processes"></a>
+
 #### worker_processes — `worker_processes`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -80,6 +84,8 @@ auto — по числу ядер CPU.
 > **Рекомендация.** auto
 
 
+<a id="f-global-worker_connections"></a>
+
 #### worker_connections — `worker_connections`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -90,6 +96,8 @@ auto — по числу ядер CPU.
 
 > **Рекомендация.** 4096–16384. Ошибка «worker_connections are not enough» — повод увеличить.
 
+
+<a id="f-global-worker_rlimit_nofile"></a>
 
 #### worker_rlimit_nofile — `worker_rlimit_nofile`
 
@@ -106,6 +114,8 @@ auto — по числу ядер CPU.
 **Пример:** `65535`
 
 
+<a id="f-global-multi_accept"></a>
+
 #### multi_accept — `multi_accept`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -118,6 +128,8 @@ auto — по числу ядер CPU.
 
 > **Рекомендация.** Включено.
 
+
+<a id="f-global-ipv6"></a>
 
 #### IPv6 — `ipv6`
 
@@ -143,6 +155,8 @@ auto — по числу ядер CPU.
 ### HTTP и соединения
 
 
+<a id="f-global-sendfile"></a>
+
 #### sendfile — `sendfile`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -153,6 +167,8 @@ auto — по числу ядер CPU.
 
 > **Рекомендация.** Включено.
 
+
+<a id="f-global-tcp_nopush"></a>
 
 #### tcp_nopush — `tcp_nopush`
 
@@ -165,6 +181,8 @@ auto — по числу ядер CPU.
 > **Рекомендация.** Включено.
 
 
+<a id="f-global-tcp_nodelay"></a>
+
 #### tcp_nodelay — `tcp_nodelay`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -176,6 +194,8 @@ auto — по числу ядер CPU.
 > **Рекомендация.** Включено.
 
 
+<a id="f-global-keepalive_timeout"></a>
+
 #### keepalive_timeout — `keepalive_timeout`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -186,6 +206,8 @@ auto — по числу ядер CPU.
 
 > **Рекомендация.** 30s–75s
 
+
+<a id="f-global-keepalive_requests"></a>
 
 #### keepalive_requests — `keepalive_requests`
 
@@ -200,6 +222,8 @@ auto — по числу ядер CPU.
 **Пример:** `1000`
 
 
+<a id="f-global-server_tokens"></a>
+
 #### Показывать версию nginx — `server_tokens`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -208,6 +232,8 @@ auto — по числу ядер CPU.
 
 > **Рекомендация.** Выключено — не раскрывать версию атакующим.
 
+
+<a id="f-global-server_names_hash_bucket_size"></a>
 
 #### server_names_hash_bucket_size — `server_names_hash_bucket_size`
 
@@ -224,6 +250,8 @@ auto — по числу ядер CPU.
 **Пример:** `128`
 
 
+<a id="f-global-server_names_hash_max_size"></a>
+
 #### server_names_hash_max_size — `server_names_hash_max_size`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -236,6 +264,8 @@ auto — по числу ядер CPU.
 
 **Пример:** `1024`
 
+
+<a id="f-global-types_hash_max_size"></a>
 
 #### types_hash_max_size — `types_hash_max_size`
 
@@ -250,6 +280,8 @@ auto — по числу ядер CPU.
 **Пример:** `2048`
 
 
+<a id="f-global-http2_global"></a>
+
 #### Разрешить HTTP/2 — `http2_global`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -263,6 +295,8 @@ auto — по числу ядер CPU.
 > **Рекомендация.** Включено.
 
 
+<a id="f-global-proxy_protocol"></a>
+
 #### Принимать PROXY protocol на HTTP-портах — `proxy_protocol`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -275,6 +309,8 @@ auto — по числу ядер CPU.
 ### Буферы и таймауты
 
 
+<a id="f-global-client_max_body_size"></a>
+
 #### client_max_body_size — `client_max_body_size`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -283,6 +319,8 @@ auto — по числу ядер CPU.
 
 > **Рекомендация.** 10m–100m; 0 — без ограничения
 
+
+<a id="f-global-client_body_buffer_size"></a>
 
 #### client_body_buffer_size — `client_body_buffer_size`
 
@@ -297,6 +335,8 @@ auto — по числу ядер CPU.
 **Пример:** `128k`
 
 
+<a id="f-global-client_header_buffer_size"></a>
+
 #### client_header_buffer_size — `client_header_buffer_size`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -309,6 +349,8 @@ auto — по числу ядер CPU.
 
 **Пример:** `1k`
 
+
+<a id="f-global-large_client_header_buffers"></a>
 
 #### large_client_header_buffers — `large_client_header_buffers`
 
@@ -325,6 +367,8 @@ auto — по числу ядер CPU.
 **Пример:** `8 32k`
 
 
+<a id="f-global-client_body_timeout"></a>
+
 #### client_body_timeout — `client_body_timeout`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -338,6 +382,8 @@ auto — по числу ядер CPU.
 **Пример:** `60s`
 
 
+<a id="f-global-client_header_timeout"></a>
+
 #### client_header_timeout — `client_header_timeout`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -346,6 +392,8 @@ auto — по числу ядер CPU.
 
 > **Рекомендация.** 10s–20s для защиты от медленных атак (slowloris).
 
+
+<a id="f-global-send_timeout"></a>
 
 #### send_timeout — `send_timeout`
 
@@ -360,6 +408,8 @@ auto — по числу ядер CPU.
 **Пример:** `60s`
 
 
+<a id="f-global-reset_timedout_connection"></a>
+
 #### reset_timedout_connection — `reset_timedout_connection`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -370,6 +420,8 @@ auto — по числу ядер CPU.
 
 > **Рекомендация.** Включено.
 
+
+<a id="f-global-open_file_cache"></a>
 
 #### open_file_cache — `open_file_cache`
 
@@ -387,6 +439,8 @@ auto — по числу ядер CPU.
 ### Сжатие
 
 
+<a id="f-global-gzip"></a>
+
 #### Включить gzip — `gzip`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -395,6 +449,8 @@ auto — по числу ядер CPU.
 
 Сжимает текстовые ответы (HTML, CSS, JS, JSON) в 3–10 раз. Изображения и видео не сжимаются — они уже сжаты.
 
+
+<a id="f-global-gzip_level"></a>
 
 #### Уровень сжатия — `gzip_level`
 
@@ -406,6 +462,8 @@ auto — по числу ядер CPU.
 
 *Показывается, когда `gzip` = вкл.*
 
+
+<a id="f-global-gzip_min_length"></a>
 
 #### Мин. размер ответа — `gzip_min_length`
 
@@ -422,6 +480,8 @@ auto — по числу ядер CPU.
 *Показывается, когда `gzip` = вкл.*
 
 
+<a id="f-global-gzip_proxied"></a>
+
 #### Сжимать ответы бэкенда — `gzip_proxied`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -434,6 +494,8 @@ auto — по числу ядер CPU.
 
 *Показывается, когда `gzip` = вкл.*
 
+
+<a id="f-global-gzip_types"></a>
 
 #### MIME-типы — `gzip_types`
 
@@ -453,6 +515,8 @@ auto — по числу ядер CPU.
 ![Вкладка «SSL/TLS»](images/global-ssl.png)
 
 
+<a id="f-global-ssl_preset"></a>
+
 #### Профиль TLS (Mozilla) — `ssl_preset`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -469,6 +533,8 @@ auto — по числу ядер CPU.
 > **Рекомендация.** Intermediate
 
 
+<a id="f-global-ssl_protocols"></a>
+
 #### ssl_protocols — `ssl_protocols`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -481,6 +547,8 @@ auto — по числу ядер CPU.
 
 *Показывается, когда `ssl_preset` = `custom`.*
 
+
+<a id="f-global-ssl_ciphers"></a>
 
 #### ssl_ciphers — `ssl_ciphers`
 
@@ -495,6 +563,8 @@ auto — по числу ядер CPU.
 *Показывается, когда `ssl_preset` = `custom`.*
 
 
+<a id="f-global-ssl_prefer_server_ciphers"></a>
+
 #### ssl_prefer_server_ciphers — `ssl_prefer_server_ciphers`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -505,6 +575,8 @@ auto — по числу ядер CPU.
 
 > **Рекомендация.** Выключено.
 
+
+<a id="f-global-ssl_session_cache"></a>
 
 #### Размер кэша TLS-сессий — `ssl_session_cache`
 
@@ -521,6 +593,8 @@ auto — по числу ядер CPU.
 **Пример:** `50m`
 
 
+<a id="f-global-ssl_session_timeout"></a>
+
 #### ssl_session_timeout — `ssl_session_timeout`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -534,6 +608,8 @@ auto — по числу ядер CPU.
 **Пример:** `1d`
 
 
+<a id="f-global-ssl_session_tickets"></a>
+
 #### ssl_session_tickets — `ssl_session_tickets`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -542,6 +618,8 @@ auto — по числу ядер CPU.
 
 > **Рекомендация.** Выключено (forward secrecy)
 
+
+<a id="f-global-ssl_dhparam"></a>
 
 #### Использовать DH-параметры (ffdhe2048) — `ssl_dhparam`
 
@@ -555,6 +633,8 @@ auto — по числу ядер CPU.
 
 > **Рекомендация.** Только при профиле Intermediate/Old и клиентах без ECDHE.
 
+
+<a id="f-global-resolver"></a>
 
 #### DNS-резолверы — `resolver`
 
@@ -570,6 +650,8 @@ DNS-серверы для nginx во время работы: OCSP stapling, б�
 
 **Пример:** `1.1.1.1`
 
+
+<a id="f-global-resolver_valid"></a>
 
 #### Кэш DNS — `resolver_valid`
 
@@ -587,6 +669,8 @@ DNS-серверы для nginx во время работы: OCSP stapling, б�
 ### Прокси по умолчанию
 
 
+<a id="f-global-proxy_connect_timeout"></a>
+
 #### proxy_connect_timeout — `proxy_connect_timeout`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -599,6 +683,8 @@ DNS-серверы для nginx во время работы: OCSP stapling, б�
 
 **Пример:** `5s`
 
+
+<a id="f-global-proxy_read_timeout"></a>
 
 #### proxy_read_timeout — `proxy_read_timeout`
 
@@ -613,6 +699,8 @@ DNS-серверы для nginx во время работы: OCSP stapling, б�
 **Пример:** `60s`
 
 
+<a id="f-global-proxy_send_timeout"></a>
+
 #### proxy_send_timeout — `proxy_send_timeout`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -625,6 +713,8 @@ DNS-серверы для nginx во время работы: OCSP stapling, б�
 
 **Пример:** `60s`
 
+
+<a id="f-global-proxy_buffer_size"></a>
 
 #### proxy_buffer_size — `proxy_buffer_size`
 
@@ -641,6 +731,8 @@ DNS-серверы для nginx во время работы: OCSP stapling, б�
 **Пример:** `16k`
 
 
+<a id="f-global-proxy_buffers"></a>
+
 #### proxy_buffers — `proxy_buffers`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -653,6 +745,8 @@ DNS-серверы для nginx во время работы: OCSP stapling, б�
 
 **Пример:** `16 16k`
 
+
+<a id="f-global-proxy_busy_buffers_size"></a>
 
 #### proxy_busy_buffers_size — `proxy_busy_buffers_size`
 
@@ -670,6 +764,8 @@ DNS-серверы для nginx во время работы: OCSP stapling, б�
 ### Реальный IP клиента
 
 
+<a id="f-global-real_ip_enabled"></a>
+
 #### Определять реальный IP за CDN/балансировщиком — `real_ip_enabled`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -680,6 +776,8 @@ DNS-серверы для nginx во время работы: OCSP stapling, б�
 
 > **Рекомендация.** Указывайте только реально доверенные адреса: иначе клиент сможет подделать IP.
 
+
+<a id="f-global-real_ip_header"></a>
 
 #### Заголовок — `real_ip_header`
 
@@ -702,6 +800,8 @@ DNS-серверы для nginx во время работы: OCSP stapling, б�
 *Показывается, когда `real_ip_enabled` = вкл.*
 
 
+<a id="f-global-real_ip_from"></a>
+
 #### Доверенные адреса — `real_ip_from`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -716,6 +816,8 @@ DNS-серверы для nginx во время работы: OCSP stapling, б�
 
 *Показывается, когда `real_ip_enabled` = вкл.*
 
+
+<a id="f-global-real_ip_recursive"></a>
 
 #### real_ip_recursive — `real_ip_recursive`
 
@@ -733,6 +835,8 @@ DNS-серверы для nginx во время работы: OCSP stapling, б�
 ### Сервер по умолчанию
 
 
+<a id="f-global-default_action"></a>
+
 #### Ответ на неизвестный домен — `default_action`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -749,6 +853,8 @@ DNS-серверы для nginx во время работы: OCSP stapling, б�
 - `redirect` — Перенаправить на URL
 
 
+<a id="f-global-default_redirect"></a>
+
 #### URL — `default_redirect`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -761,6 +867,8 @@ DNS-серверы для nginx во время работы: OCSP stapling, б�
 
 *Показывается, когда `default_action` = `redirect`.*
 
+
+<a id="f-global-default_page_title"></a>
 
 #### Заголовок заглушки — `default_page_title`
 
@@ -777,6 +885,8 @@ DNS-серверы для nginx во время работы: OCSP stapling, б�
 
 ### Зоны кэша
 
+
+<a id="f-global-cache_zones"></a>
 
 #### Зоны кэша — `cache_zones`
 
@@ -804,6 +914,8 @@ DNS-серверы для nginx во время работы: OCSP stapling, б�
 ### Журналы
 
 
+<a id="f-global-access_log_buffer"></a>
+
 #### Буфер журнала запросов — `access_log_buffer`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -814,6 +926,8 @@ DNS-серверы для nginx во время работы: OCSP stapling, б�
 
 > **Рекомендация.** 32k–64k; статистика при этом запаздывает до flush-интервала.
 
+
+<a id="f-global-access_log_flush"></a>
 
 #### Интервал сброса буфера — `access_log_flush`
 
@@ -827,6 +941,8 @@ DNS-серверы для nginx во время работы: OCSP stapling, б�
 
 **Пример:** `1s`
 
+
+<a id="f-global-error_log_level"></a>
 
 #### Уровень журнала ошибок — `error_log_level`
 
@@ -846,6 +962,8 @@ DNS-серверы для nginx во время работы: OCSP stapling, б�
 > **Рекомендация.** warn
 
 
+<a id="f-global-log_ignore_status"></a>
+
 #### Не писать в журнал health-check запросы — `log_ignore_status`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -860,6 +978,8 @@ DNS-серверы для nginx во время работы: OCSP stapling, б�
 ### Дополнительно
 
 
+<a id="f-global-include_conf_d"></a>
+
 #### Подключать /etc/nginx/conf.d/*.conf — `include_conf_d`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -872,6 +992,8 @@ DNS-серверы для nginx во время работы: OCSP stapling, б�
 
 > **Рекомендация.** Включено; следите, чтобы там не было server с default_server на 80/443.
 
+
+<a id="f-global-include_sites_enabled"></a>
 
 #### Подключать /etc/nginx/sites-enabled/* — `include_sites_enabled`
 
@@ -886,6 +1008,8 @@ DNS-серверы для nginx во время работы: OCSP stapling, б�
 > **Рекомендация.** Выключено.
 
 
+<a id="f-global-custom_main"></a>
+
 #### Свои директивы (main) — `custom_main`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -896,6 +1020,8 @@ DNS-серверы для nginx во время работы: OCSP stapling, б�
 
 **Пример:** `worker_cpu_affinity auto;`
 
+
+<a id="f-global-custom_events"></a>
 
 #### Свои директивы (events) — `custom_events`
 
@@ -908,6 +1034,8 @@ DNS-серверы для nginx во время работы: OCSP stapling, б�
 **Пример:** `use epoll;`
 
 
+<a id="f-global-custom_http"></a>
+
 #### Свои директивы (http) — `custom_http`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -918,6 +1046,8 @@ DNS-серверы для nginx во время работы: OCSP stapling, б�
 
 **Пример:** `map $http_user_agent $is_mobile { default 0; ~*mobile 1; }`
 
+
+<a id="f-global-custom_stream"></a>
 
 #### Свои директивы (stream) — `custom_stream`
 

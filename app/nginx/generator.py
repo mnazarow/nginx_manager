@@ -16,7 +16,6 @@ import html
 import re
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Tuple
 
 from ..models import (TLS_PRESETS, Backend, GlobalSettings, Location, PanelSettings, Site, Stream)
@@ -102,6 +101,7 @@ class Paths:
     stub_status_port: int
     panel_port: int
     data_dir: str
+    bans_file: str = ""      # список блокировок для geo $nm_banned (пусто — блокировки не подключаются)
 
 
 class ConfigError(Exception):
@@ -272,6 +272,11 @@ class Generator:
         with c.block("map $request_uri $nm_static"):
             c.d("default", "0")
             c.d(f"~*\\.({STATIC_EXT})(\\?|$)", "1")
+        c.comment("Блокировки IP (раздел «Блокировки»): файл обновляется панелью без создания версии конфигурации")
+        with c.block("geo $nm_banned"):
+            c.d("default", "0")
+            if self.p.bans_file:
+                c.d("include", self.p.bans_file)
         c.line()
         c.d("sendfile", onoff(g.sendfile))
         c.d("tcp_nopush", onoff(g.tcp_nopush))
@@ -383,7 +388,7 @@ class Generator:
             c.d("access_log", "off")
 
     def render_default(self) -> str:
-        g, c = self.g, Conf()
+        c = Conf()
         c.line(MARKER)
         c.comment("Сервер по умолчанию: запросы с неизвестным Host, проверки Let's Encrypt")
         sites = [s for _, s in self.st.sites if s.enabled]
@@ -403,6 +408,7 @@ class Generator:
                 self.listen(c, "", port, default=port not in taken_http)
             c.d("server_name", "_")
             c.d("set", "$nm_site", '"-"')
+            self.ban_check(c)
             self.acme_location(c)
             with c.block("location /"):
                 self.default_action(c)
@@ -595,6 +601,7 @@ class Generator:
                 self.listen(c, s.listen_ip, s.http_port, default=s.default_server)
                 c.d("server_name", " ".join(s.domains))
                 c.d("set", "$nm_site", f'"{sid}"')
+                self.ban_check(c)
                 if not s.performance.access_log:
                     c.d("access_log", "off")
                 self.acme_location(c)
@@ -610,6 +617,11 @@ class Generator:
         return c.text()
 
     # ------------------------------------------------------------------
+    def ban_check(self, c: Conf) -> None:
+        """Отклонить запрос с заблокированного IP до выбора location (раздел «Блокировки»)."""
+        with c.block("if ($nm_banned)"):
+            c.d("return", self.st.panel.ban_response)
+
     def server_block(self, c: Conf, sid: int, s: Site, cert, http: bool, https: bool) -> None:
         sec = s.security
         with c.block("server"):
@@ -629,6 +641,7 @@ class Generator:
                     c.d("http3", "on")
             c.d("server_name", " ".join(s.domains))
             c.d("set", "$nm_site", f'"{sid}"')
+            self.ban_check(c)
             c.line()
             if https:
                 c.d("ssl_certificate", cert.cert_path)
@@ -1036,7 +1049,7 @@ LOG_FORMAT_HTTP = r"""log_format nm_json escape=json '{'
     '"ua":"$upstream_addr","us":"$upstream_status","urt":"$upstream_response_time",'
     '"uct":"$upstream_connect_time","uht":"$upstream_header_time",'
     '"ref":"$http_referer","agent":"$http_user_agent","cache":"$upstream_cache_status",'
-    '"sch":"$scheme","tls":"$ssl_protocol","rid":"$request_id","cr":"$connection_requests"'
+    '"sch":"$scheme","tls":"$ssl_protocol","rid":"$request_id","cr":"$connection_requests","bn":"$nm_banned"'
     '}';"""
 
 LOG_FORMAT_STREAM = r"""log_format nm_stream escape=json '{'

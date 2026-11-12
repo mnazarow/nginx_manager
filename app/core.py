@@ -13,9 +13,10 @@ from .auth import AuthService
 from .config import VERSION, settings
 from .db import Database
 from .models import AlertRule, GlobalSettings, PanelSettings
-from .nginx.generator import CertInfo, State
+from .nginx.generator import State
 from .nginx.manager import ApplyError, NginxManager
 from .services.alerts import DEFAULT_RULES, AlertEngine
+from .services.bans import BanService
 from .services.certs import CertificateService
 from .services.diagnostics import Diagnostics
 from .services.health import HealthChecker, Target
@@ -49,6 +50,8 @@ class App:
         self.certs = CertificateService(self.db, self.panel)
         self.alerts = AlertEngine(self.db, self.metric, self.broadcast)
         self.diag = Diagnostics(self)
+        self.bans = BanService(self)
+        self.stats.agg.detector = self.bans.detector
         self.clients: Set[WSClient] = set()
         self.tasks: List[asyncio.Task] = []
         self.started = time.time()
@@ -104,6 +107,7 @@ class App:
             self.stats.start()
         self.health.start()
         self.alerts.start()
+        self.bans.start()
         loop = asyncio.get_running_loop()
         self.tasks += [loop.create_task(self.ticker(), name="ticker"),
                        loop.create_task(self.watchdog(), name="watchdog"),
@@ -111,7 +115,7 @@ class App:
         self.db.event("info", "panel", f"Nginx Manager {VERSION} запущен")
 
     async def stop(self) -> None:
-        for t in self.tasks + [self.health.task, self.alerts.task]:
+        for t in self.tasks + [self.health.task, self.alerts.task, self.bans.task]:
             if t:
                 t.cancel()
         await self.stats.stop()
@@ -221,6 +225,10 @@ class App:
                 return None, ""
             c = min(certs, key=lambda x: x["days_left"])
             return round(c["days_left"], 1), f"Сертификат «{c['name']}» ({', '.join(c['domains'][:3])})"
+        if m == "autobans":
+            n = self.db.scalar("SELECT COUNT(*) FROM events WHERE source='bans' AND ts>=? AND message LIKE "
+                               "'Автоблокировка%'", (time.time() - rule.window,))
+            return float(n or 0), ""
         sysm = self.stats.system.latest()
         if m == "cpu":
             return sysm.get("cpu"), ""

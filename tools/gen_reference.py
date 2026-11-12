@@ -65,7 +65,7 @@ def show_text(f):
     return "Показывается, когда " + " и ".join(parts) + "."
 
 
-def render_fields(fields, prefix="", level=4, skip_tabs=None, only_tab=None):
+def render_fields(fields, prefix="", level=4, skip_tabs=None, only_tab=None, kind=""):
     out = []
     for f in fields:
         if f.get("ui") == "hidden":
@@ -73,13 +73,15 @@ def render_fields(fields, prefix="", level=4, skip_tabs=None, only_tab=None):
         if only_tab and f.get("tab") and f["tab"] != only_tab:
             continue
         key = f"{prefix}{f['key']}"
+        # явный якорь: на него ведёт ссылка «Подробнее» из подсказки поля в панели (app/schema.py: anchor())
+        anchor = f'<a id="{doc_anchor(kind, key)}"></a>\n' if kind else ""
         if f["type"] == "object":
-            out.append(f"\n{'#' * level} {f['label']} — `{key}`\n")
+            out.append(f"\n{anchor}\n{'#' * level} {f['label']} — `{key}`\n")
             if f.get("doc"):
                 out.append(f"{f['doc']}\n")
-            out.extend(render_fields(f["fields"], key + ".", level + 1))
+            out.extend(render_fields(f["fields"], key + ".", level + 1, kind=kind))
             continue
-        out.append(f"\n{'#' * level} {f['label']} — `{key}`\n")
+        out.append(f"\n{anchor}\n{'#' * level} {f['label']} — `{key}`\n")
         typ = UI_RU.get(f.get("ui"), TYPE_RU.get(f["type"], f["type"]))
         if f["type"] == "array":
             typ = "таблица элементов"
@@ -133,13 +135,18 @@ TAB_IMAGES = {
     ("site", "main"): "site-editor.png", ("site", "backends"): "site-editor-dark.png",
     ("site", "ssl"): "site-editor-ssl.png", ("site", "locations"): "site-editor-locations.png",
     ("site", "cache"): "site-editor-cache.png", ("site", "security"): "site-editor-security.png",
-    ("global", "ssl"): "global-ssl.png",
+    ("global", "ssl"): "global-ssl.png", ("panel", "bans"): "settings-bans.png",
 }
 
 
 def tab_image(kind, tab_id, tab_label):
     img = TAB_IMAGES.get((kind, tab_id))
     return [f"![Вкладка «{tab_label}»](images/{img})\n"] if img else []
+
+
+def doc_anchor(kind, key):
+    from app.schema import anchor
+    return anchor(kind, key)
 
 
 def site_reference():
@@ -151,7 +158,7 @@ def site_reference():
             continue
         out.append(f"\n### Вкладка «{tab_label}»\n")
         out.extend(tab_image("site", tab_id, tab_label))
-        out.extend(render_fields(tab_fields, level=4))
+        out.extend(render_fields(tab_fields, level=4, kind="site"))
     return "\n".join(out)
 
 
@@ -164,12 +171,12 @@ def tabbed(model, tabs, kind=""):
             continue
         out.append(f"\n### {tab_label}\n")
         out.extend(tab_image(kind, tab_id, tab_label))
-        out.extend(render_fields(tab_fields, level=4))
+        out.extend(render_fields(tab_fields, level=4, kind=kind))
     return "\n".join(out)
 
 
-def plain(model, level=3):
-    return "\n".join(render_fields(describe(model), level=level))
+def plain(model, level=3, kind=""):
+    return "\n".join(render_fields(describe(model), level=level, kind=kind))
 
 
 def error_categories():
@@ -201,6 +208,7 @@ def alert_metrics():
         "disk": "максимум заполнения корневого раздела и раздела журналов, %",
         "error_log_rate": "записей уровня error/crit/alert/emerg в журнале nginx за окно, пересчитано в минуту",
         "rate_limited": "срабатываний limit_req/limit_conn в журнале ошибок за окно, в минуту",
+        "autobans": "число автоматических блокировок IP за окно (раздел «Блокировки»)",
     }
     for k, (label, unit) in M.ALERT_METRICS.items():
         out.append(f"| `{k}` | {label} | {unit or '—'} | {how.get(k, '')} |")
@@ -209,14 +217,14 @@ def alert_metrics():
 
 BLOCKS = {
     "site": site_reference,
-    "location": lambda: plain(M.Location, 4),
-    "backend": lambda: plain(M.Backend, 4),
-    "stream": lambda: plain(M.Stream, 3),
+    "location": lambda: plain(M.Location, 4, "location"),
+    "backend": lambda: plain(M.Backend, 4, "backend"),
+    "stream": lambda: plain(M.Stream, 3, "stream"),
     "global": lambda: tabbed(M.GlobalSettings, M.GLOBAL_TABS, "global"),
-    "panel": lambda: tabbed(M.PanelSettings, M.PANEL_TABS),
-    "certificate": lambda: plain(M.CertificateRequest, 3),
-    "alert_rule": lambda: plain(M.AlertRule, 3),
-    "alert_channel": lambda: plain(M.AlertChannel, 3),
+    "panel": lambda: tabbed(M.PanelSettings, M.PANEL_TABS, "panel"),
+    "certificate": lambda: plain(M.CertificateRequest, 3, "certificate"),
+    "alert_rule": lambda: plain(M.AlertRule, 3, "alert_rule"),
+    "alert_channel": lambda: plain(M.AlertChannel, 3, "alert_channel"),
     "errors": error_categories,
     "alert_metrics": alert_metrics,
 }
@@ -231,7 +239,7 @@ def main():
             pat = re.compile(rf"(<!-- GEN:{name} -->)(.*?)(<!-- /GEN:{name} -->)", re.S)
             if pat.search(new):
                 body = fn()
-                new = pat.sub(lambda m: m.group(1) + "\n<!-- Сгенерировано tools/gen_reference.py из app/models.py -->\n"
+                new = pat.sub(lambda m, body=body: m.group(1) + "\n<!-- Сгенерировано tools/gen_reference.py из app/models.py -->\n"
                               + body + "\n" + m.group(3), new)
         if new != text:
             md.write_text(new, encoding="utf-8")

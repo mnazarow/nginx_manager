@@ -2,6 +2,7 @@
 import { api, live, setUnauthorizedHandler, showError } from './api.js';
 import { h, mount, icon, toast, modal, badge, fmtDur, diffBlock, codeBlock, loading, clear } from './ui.js';
 import { setSchema } from './forms.js';
+import { openPageHelp } from './help.js';
 
 const NAV = [
   ['Мониторинг', [
@@ -9,6 +10,7 @@ const NAV = [
     ['/errors', 'Журнал ошибок', 'alert'], ['/backends', 'Бэкенды', 'server'], ['/system', 'Сервер', 'cpu']]],
   ['Конфигурация', [
     ['/sites', 'Сайты', 'sites'], ['/streams', 'TCP/UDP-потоки', 'stream'], ['/certs', 'Сертификаты', 'cert'],
+    ['/bans', 'Блокировки IP', 'ban'],
     ['/global', 'Настройки nginx', 'sliders'], ['/versions', 'Версии конфигурации', 'history']]],
   ['Обслуживание', [
     ['/diagnostics', 'Диагностика', 'stethoscope'], ['/alerts', 'Оповещения', 'bell'], ['/events', 'События', 'activity']]],
@@ -23,6 +25,7 @@ const PAGES = {
   '/system': 'system', '/sites': 'sites', '/streams': 'streams', '/certs': 'certs', '/global': 'global',
   '/versions': 'versions', '/diagnostics': 'diagnostics', '/alerts': 'alerts', '/events': 'events', '/users': 'users',
   '/audit': 'audit', '/settings': 'settings', '/backup': 'backup', '/docs': 'docs', '/profile': 'profile',
+  '/bans': 'bans',
 };
 
 export const ctx = { state: null, schema: null, user: null, cleanup: null, route: '', params: {} };
@@ -83,17 +86,24 @@ function layout() {
     title: h('div', { class: 'title' }), nginx: h('span', { class: 'pill' }), live: h('span', { class: 'pill', title: 'Соединение реального времени' }),
     pending: h('div', {}), alerts: h('div', {}),
   };
+  const helpBtn = h('button', { class: 'btn ghost icon help-btn', title: 'Справка по этой странице (F1)', onclick: () => openPageHelp(ctx.route, ctx.params) }, '?');
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'F1' && ctx.user) { e.preventDefault(); openPageHelp(ctx.route, ctx.params); }
+  });
   const themeBtn = h('button', { class: 'btn ghost icon', title: 'Сменить тему', onclick: () => {
     applyTheme(document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark'); route();
   } }, icon('moon'));
+  const menuBtn = h('button', { class: 'btn ghost icon menu-btn', title: 'Меню', 'aria-label': 'Меню', onclick: () => document.querySelector('.app')?.classList.toggle('nav-open') }, icon('list'));
+  nav.addEventListener('click', (e) => { if (e.target.closest('a')) document.querySelector('.app')?.classList.remove('nav-open'); });
   mount(root, h('div', { class: 'app' },
+    h('div', { class: 'nav-backdrop', onclick: () => document.querySelector('.app')?.classList.remove('nav-open') }),
     h('aside', { class: 'sidebar' },
       h('div', { class: 'brand' }, h('div', { class: 'brand-logo' }, icon('bolt')), h('div', {}, 'Nginx Manager', h('small', {}, 'v' + ctx.state.version))),
       nav,
       h('div', { class: 'sidebar-foot' }, h('div', {}, ctx.user.username, ' · ', ctx.user.role_label || ctx.user.role),
         h('a', { href: '#', onclick: async (e) => { e.preventDefault(); await api('/auth/logout', { method: 'POST' }); ctx.user = null; loginPage(); } }, 'Выйти'))),
     h('div', { class: 'main' },
-      h('header', { class: 'topbar' }, topEls.title, h('span', { class: 'grow' }), topEls.alerts, topEls.pending, topEls.nginx, topEls.live, themeBtn),
+      h('header', { class: 'topbar' }, menuBtn, topEls.title, h('span', { class: 'grow' }), topEls.alerts, topEls.pending, topEls.nginx, topEls.live, helpBtn, themeBtn),
       h('main', { class: 'content', id: 'page' }))));
   live.on('status', (ok) => drawLive(ok));
   drawLive(live.connected);
@@ -196,6 +206,7 @@ async function route(keep = false) {
   const hash = location.hash.slice(1) || '/';
   const [path, qs] = hash.split('?');
   ctx.route = path; ctx.params = Object.fromEntries(new URLSearchParams(qs || ''));
+  document.querySelector('.app')?.classList.remove('nav-open');
   const name = PAGES[path];
   const page = document.getElementById('page');
   if (!page) return;

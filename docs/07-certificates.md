@@ -88,6 +88,8 @@ certbot certonly --dns-cloudflare --dns-cloudflare-credentials /root/.cf.ini \
 <!-- GEN:certificate -->
 <!-- Сгенерировано tools/gen_reference.py из app/models.py -->
 
+<a id="f-certificate-type"></a>
+
 ### Способ — `type`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -108,6 +110,8 @@ certbot certonly --dns-cloudflare --dns-cloudflare-credentials /root/.cf.ini \
 **Пример:** `letsencrypt`
 
 
+<a id="f-certificate-name"></a>
+
 ### Название — `name`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -118,6 +122,8 @@ certbot certonly --dns-cloudflare --dns-cloudflare-credentials /root/.cf.ini \
 
 **Пример:** `shop.example.com`
 
+
+<a id="f-certificate-domains"></a>
 
 ### Домены — `domains`
 
@@ -136,6 +142,8 @@ certbot certonly --dns-cloudflare --dns-cloudflare-credentials /root/.cf.ini \
 *Показывается, когда `type` = `letsencrypt`, `selfsigned`.*
 
 
+<a id="f-certificate-email"></a>
+
 ### E-mail — `email`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -151,6 +159,8 @@ E-mail аккаунта ACME (если отличается от общего в
 *Показывается, когда `type` = `letsencrypt`.*
 
 
+<a id="f-certificate-staging"></a>
+
 ### Тестовый сервер — `staging`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -161,6 +171,8 @@ E-mail аккаунта ACME (если отличается от общего в
 
 *Показывается, когда `type` = `letsencrypt`.*
 
+
+<a id="f-certificate-key_type"></a>
 
 ### Тип ключа — `key_type`
 
@@ -182,6 +194,8 @@ E-mail аккаунта ACME (если отличается от общего в
 *Показывается, когда `type` = `letsencrypt`, `selfsigned`.*
 
 
+<a id="f-certificate-cert_pem"></a>
+
 ### Сертификат + цепочка (PEM) — `cert_pem`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -193,6 +207,8 @@ E-mail аккаунта ACME (если отличается от общего в
 *Показывается, когда `type` = `upload`.*
 
 
+<a id="f-certificate-key_pem"></a>
+
 ### Закрытый ключ (PEM) — `key_pem`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -203,6 +219,8 @@ E-mail аккаунта ACME (если отличается от общего в
 
 *Показывается, когда `type` = `upload`.*
 
+
+<a id="f-certificate-cert_path"></a>
 
 ### Путь к fullchain.pem — `cert_path`
 
@@ -217,6 +235,8 @@ E-mail аккаунта ACME (если отличается от общего в
 *Показывается, когда `type` = `path`.*
 
 
+<a id="f-certificate-key_path"></a>
+
 ### Путь к privkey.pem — `key_path`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -229,6 +249,8 @@ E-mail аккаунта ACME (если отличается от общего в
 
 *Показывается, когда `type` = `path`.*
 
+
+<a id="f-certificate-days"></a>
 
 ### Срок, дней — `days`
 

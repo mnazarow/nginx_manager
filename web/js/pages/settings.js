@@ -4,9 +4,9 @@ import { h, mount, icon, toast, tabs, badge } from '../ui.js';
 import { model, renderFields, errorsToMap, SCHEMA } from '../forms.js';
 import { applyDialog } from '../app.js';
 
-export async function render(root) {
+export async function render(root, c) {
   const [obj, certs] = await Promise.all([api('/settings/panel'), api('/certs')]);
-  let tab = 'stats', errors = {};
+  let tab = (c && c.params && c.params.tab) || 'stats', errors = {};
   const form = h('div', {});
   const tabBar = h('div', {});
   const draw = () => {

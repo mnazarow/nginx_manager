@@ -107,6 +107,77 @@ restart, start, stop, переоткрыть журналы), сведения �
 
 Обновляйте базу ежемесячно (например, cron + `geoipupdate` для MaxMind).
 
+## Метрики Prometheus
+
+Панель отдаёт метрики в формате Prometheus по адресу `http://сервер:8088/metrics` (порт панели). Их можно
+собирать Prometheus, VictoriaMetrics, Grafana Agent, Zabbix (HTTP-агент с препроцессингом Prometheus) и строить
+дашборды Grafana рядом с остальной инфраструктурой.
+
+**Доступ** («Настройки панели → Мониторинг»):
+
+- по API-токену (создаётся в «Моём профиле», достаточно роли «Наблюдатель»): заголовок
+  `Authorization: Bearer nm_…`;
+- без токена — только с адресов из «Читать /metrics без токена с IP» (например, адрес сервера Prometheus);
+- переключатель «Метрики Prometheus» полностью выключает адрес (ответ 404).
+
+Пример конфигурации Prometheus:
+
+```yaml
+scrape_configs:
+  - job_name: nginx-manager
+    scrape_interval: 15s
+    metrics_path: /metrics
+    authorization:
+      type: Bearer
+      credentials: nm_xxxxxxxxxxxxxxxx      # API-токен наблюдателя
+    static_configs:
+      - targets: ["203.0.113.10:8088"]
+```
+
+| Метрика | Тип | Метки | Что означает |
+|---|---|---|---|
+| `nginx_up` | gauge | — | 1 — мастер-процесс nginx запущен |
+| `nginx_connections` | gauge | `state` (active, reading, writing, waiting) | Соединения по данным stub_status |
+| `nginx_connections_accepted_total`, `nginx_connections_handled_total`, `nginx_http_requests_total` | counter | — | Счётчики stub_status |
+| `nm_http_requests_total` | counter | `site_id`, `site` | Запросы по сайтам по журналу доступа |
+| `nm_http_responses_total` | counter | `site_id`, `site`, `code` (2xx…5xx) | Ответы по классам кодов |
+| `nm_http_request_duration_seconds` | histogram | `site_id`, `site`, `le` | Время обработки `$request_time`; корзины совпадают с графиками панели |
+| `nm_http_received_bytes_total`, `nm_http_sent_bytes_total` | counter | `site_id`, `site` | Трафик |
+| `nm_http_cache_responses_total` | counter | `site_id`, `site`, `cache_status` | HIT, MISS, EXPIRED, STALE… |
+| `nm_http_banned_requests_total` | counter | `site_id`, `site` | Отклонено запросов с заблокированных IP |
+| `nm_backend_up` | gauge | `owner`, `name`, `backend`, `backup` | 1/0 по активной проверке бэкенда, NaN — ещё не проверялся |
+| `nm_backend_check_latency_seconds` | gauge | то же | Время ответа на последнюю проверку |
+| `nm_certificate_expiry_days` | gauge | `id`, `name`, `domain`, `used` | Дней до истечения сертификата |
+| `nm_bans_active` | gauge | `source` (auto, manual) | Активные блокировки IP ([17](17-bans.md)) |
+| `nm_bans_suspicious` | gauge | — | Подозрительные IP за последнее время |
+| `nm_alerts_firing` | gauge | — | Сработавшие оповещения |
+| `nm_system_cpu_percent`, `nm_system_memory_percent`, `nm_system_disk_percent`, `nm_system_load1` | gauge | — | Ресурсы сервера |
+| `nm_log_lines_parsed_total`, `nm_log_parse_errors_total` | counter | — | Работа сборщика статистики |
+| `nginx_manager_info`, `nginx_manager_uptime_seconds` | gauge | `version` | Версия и время работы панели |
+
+Счётчики `…_total` растут с момента запуска панели; после её перезапуска они начинаются с нуля, и функции
+`rate()` / `increase()` учитывают это автоматически. Сайт `-` — сервер по умолчанию (неизвестные домены).
+
+Полезные запросы PromQL:
+
+```promql
+# запросов в секунду по сайтам
+sum by (site) (rate(nm_http_requests_total[5m]))
+
+# доля ответов 5xx, %
+100 * sum by (site) (rate(nm_http_responses_total{code="5xx"}[5m]))
+    / sum by (site) (rate(nm_http_requests_total[5m]))
+
+# 95-й перцентиль времени ответа
+histogram_quantile(0.95, sum by (site, le) (rate(nm_http_request_duration_seconds_bucket[5m])))
+
+# сертификаты, истекающие менее чем через 14 дней
+nm_certificate_expiry_days{used="1"} < 14
+
+# недоступные основные бэкенды
+nm_backend_up{backup="0"} == 0
+```
+
 ## Хранение и объём данных
 
 | Нагрузка | Журнал запросов за 72 ч | Поминутная статистика за 14 дней | Рекомендация |

@@ -1205,7 +1205,8 @@ class GlobalSettings(Model):
 #  Настройки самой панели
 # =============================================================================
 PANEL_TABS = [("stats", "Статистика и хранение"), ("network", "Сеть и внешний IP"), ("security", "Безопасность панели"),
-              ("acme", "Let's Encrypt"), ("monitor", "Мониторинг"), ("backup", "Резервные копии")]
+              ("bans", "Блокировки IP"), ("acme", "Let's Encrypt"), ("monitor", "Мониторинг"),
+              ("backup", "Резервные копии")]
 
 
 class PanelSettings(Model):
@@ -1255,6 +1256,39 @@ class PanelSettings(Model):
     auto_apply_failover: bool = F(True, label="Разрешить автопереключение бэкендов", tab="monitor",
                                   help="Глобальный выключатель для опции «Автоматическое переключение» сайтов")
     diagnostics_interval: int = F(600, label="Фоновая диагностика каждые", unit="с", tab="monitor", ge=60, le=86400)
+    metrics_enabled: bool = F(True, label="Метрики Prometheus (/metrics)", tab="monitor",
+                              help="Адрес http://сервер:порт-панели/metrics; доступ по API-токену или с IP из списка ниже")
+    metrics_allow: List[str] = F(factory=list, label="Читать /metrics без токена с IP", tab="monitor", ui="lines",
+                                 show={"metrics_enabled": [True]}, ph="10.0.0.5")
+    # ---------------------------------------------------------------- блокировки
+    ban_response: Literal["444", "403", "429"] = F(
+        "444", label="Ответ заблокированным", tab="bans",
+        labels={"444": "444 — закрыть соединение без ответа", "403": "403 Forbidden (страница ошибки)",
+                "429": "429 Too Many Requests"},
+        help="Изменение вступает в силу после «Применить»")
+    autoban_enabled: bool = F(False, label="Автоматическая блокировка", tab="bans",
+                              help="Блокировать IP, превысившие пороги ниже. Выключено — такие IP только показываются "
+                                   "в разделе «Блокировки → Подозрительные»")
+    autoban_window: int = F(300, label="Окно подсчёта", unit="с", tab="bans", ge=30, le=3600)
+    autoban_scan: int = F(5, label="Зондирование уязвимостей", unit="запросов", tab="bans", ge=0, le=100000,
+                          help="Запросы к /.env, /.git, phpMyAdmin, обход каталогов, SQL-инъекции… 0 — не учитывать")
+    autoban_auth: int = F(30, label="Неудачные авторизации (401)", unit="ответов", tab="bans", ge=0, le=100000,
+                          help="Подбор пароля Basic Auth или API. 0 — не учитывать")
+    autoban_default_host: int = F(30, label="Обращения по IP / к чужим доменам", unit="запросов", tab="bans", ge=0,
+                                  le=100000, help="Запросы, попавшие на сервер по умолчанию. 0 — не учитывать")
+    autoban_4xx: int = F(300, label="Ответы 4xx", unit="ответов", tab="bans", ge=0, le=1000000,
+                         help="Перебор адресов, массовые 404/403/429. 0 — не учитывать")
+    autoban_requests: int = F(0, label="Всего запросов с одного IP", unit="запросов", tab="bans", ge=0, le=10000000,
+                              help="Грубая защита от флуда. 0 — не учитывать (рекомендуется ограничение частоты сайта)")
+    autoban_minutes: int = F(60, label="Срок блокировки", unit="мин", tab="bans", ge=1, le=525600)
+    autoban_escalate: bool = F(True, label="Увеличивать срок для повторных нарушителей", tab="bans",
+                               help="×4 за каждое повторное нарушение в течение 30 дней, максимум 30 суток")
+    autoban_ignore_bots: bool = F(True, label="Не блокировать поисковых ботов за 4xx и частоту", tab="bans",
+                                  help="По User-Agent (Googlebot, YandexBot…). За зондирование уязвимостей блокируются все")
+    autoban_whitelist: List[str] = F(factory=list, label="Никогда не блокировать", tab="bans", ui="lines",
+                                     ph="203.0.113.0/24",
+                                     help="Ваши офисы, мониторинг, партнёры. 127.0.0.1 и «Доступ к панели только с IP» "
+                                          "не блокируются всегда")
     backup_keep: int = F(14, label="Хранить автоматических копий", tab="backup", ge=1, le=365)
     backup_hour: int = F(3, label="Час ежедневного резервного копирования", tab="backup", ge=0, le=23)
 
@@ -1278,6 +1312,14 @@ class PanelSettings(Model):
     @classmethod
     def _gp(cls, v): return V.no_ctrl(v)
 
+    @field_validator("ip_detect_url")
+    @classmethod
+    def _iu(cls, v): return V.http_url(v)
+
+    @field_validator("metrics_allow", "autoban_whitelist")
+    @classmethod
+    def _nets(cls, v): return [V.cidr(x) for x in v if x.strip()]
+
 
 # =============================================================================
 #  Оповещения
@@ -1300,6 +1342,7 @@ ALERT_METRICS = {
     "disk": ("Заполнение диска", "%"),
     "error_log_rate": ("Ошибок nginx в минуту", "/мин"),
     "rate_limited": ("Отклонено лимитами (429/503 limit_req)", "/мин"),
+    "autobans": ("Автоблокировок IP за окно", "шт."),
 }
 
 
@@ -1346,6 +1389,10 @@ class AlertChannel(Model):
     smtp_password: str = F("", label="Пароль", ui="password", show={"type": ["email"]})
     email_from: str = F("", label="От кого", show={"type": ["email"]})
     email_to: List[str] = F(factory=list, label="Кому", ui="lines", show={"type": ["email"]})
+
+    @field_validator("telegram_api", "url")
+    @classmethod
+    def _u(cls, v): return V.http_url(v)
 
     @model_validator(mode="after")
     def _check(self):

@@ -9,7 +9,6 @@ import re
 import secrets
 import shutil
 import socket
-import tempfile
 import time
 import urllib.request
 from datetime import datetime, timezone

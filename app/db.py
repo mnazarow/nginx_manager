@@ -267,6 +267,30 @@ SCHEMA: List[str] = [
     );
     CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
     """,
+    # ---- v2: блокировки IP ------------------------------------------------
+    """
+    CREATE TABLE IF NOT EXISTS bans (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        net TEXT NOT NULL UNIQUE,
+        reason TEXT NOT NULL DEFAULT '',
+        source TEXT NOT NULL DEFAULT 'manual',
+        rule TEXT NOT NULL DEFAULT '',
+        username TEXT NOT NULL DEFAULT '',
+        created_at REAL NOT NULL,
+        expires_at REAL,
+        offenses INTEGER NOT NULL DEFAULT 1,
+        hits INTEGER NOT NULL DEFAULT 0,
+        last_hit REAL,
+        country TEXT NOT NULL DEFAULT '',
+        details TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_bans_exp ON bans(expires_at);
+    CREATE TABLE IF NOT EXISTS ban_offenses (
+        ip TEXT PRIMARY KEY,
+        count INTEGER NOT NULL DEFAULT 0,
+        last_at REAL NOT NULL
+    )
+    """,
 ]
 
 

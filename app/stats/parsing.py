@@ -86,6 +86,7 @@ def parse_access(line: str) -> Optional[Dict[str, Any]]:
         "tls": tls if tls != "-" else "",
         "rid": d.get("rid", ""),
         "static": bool(STATIC_RE.search(path)),
+        "banned": d.get("bn") == "1",
     }
 
 

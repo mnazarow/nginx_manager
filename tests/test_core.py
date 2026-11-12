@@ -142,8 +142,10 @@ def make_state():
 
 
 def render(state, caps=None):
+    bans = TMP / "bans.conf"
+    bans.write_text("203.0.113.7 1;\n198.51.100.0/24 1;\n2001:db8::/32 1;\n")
     p = Paths(str(TMP / "managed" / "stage"), str(TMP / "managed" / "live"), "/var/acme", str(TMP / "logs"),
-              str(TMP / "cache"), 8089, 8088, str(TMP / "data"))
+              str(TMP / "cache"), 8089, 8088, str(TMP / "data"), bans_file=str(bans))
     return Generator(state, caps or NginxCaps(version=(1, 24, 0), ipv6=False), p).render()
 
 
@@ -186,3 +188,108 @@ def test_generated_config_passes_nginx_t():
         (stage / rel).write_text(content)
     ok, out = mgr.test_config(stage / "nginx.conf")
     assert ok, out
+
+
+# ---------------------------------------------------------------- блокировки IP
+def test_normalize_net():
+    from app.services.bans import normalize_net
+    assert normalize_net(" 203.0.113.7 ") == "203.0.113.7"
+    assert normalize_net("198.51.100.77/24") == "198.51.100.0/24"
+    assert normalize_net("2001:db8::1/128") == "2001:db8::1"
+    for bad in ("", "999.1.1.1", "10.0.0.0/4", "abc"):
+        with pytest.raises(ValueError):
+            normalize_net(bad)
+
+
+def test_ban_detector_rules():
+    from app.services.bans import BanDetector, SCAN_RE
+    ps = PanelSettings(autoban_scan=3, autoban_auth=5, autoban_4xx=0, autoban_default_host=0)
+    d = BanDetector(lambda: ps)
+    t = 1_700_000_000.0
+    for uri in ("/.env", "/.git/config", "/index.php?id=1%20union%20select%201", "/wp-config.php.bak"):
+        assert SCAN_RE.search(uri.lower()), uri
+    for uri in ("/", "/products/42?page=2", "/static/app.css", "/wp-login.php", "/api/v1/users"):
+        assert not SCAN_RE.search(uri.lower()), uri
+    d.observe("1.2.3.4", t, 404, "/.env", "1", False, False)
+    d.observe("1.2.3.4", t + 1, 404, "/.git/HEAD", "1", False, False)
+    assert not d.candidates
+    d.observe("1.2.3.4", t + 2, 404, "/phpmyadmin/", "1", False, False)
+    c = d.take()
+    assert len(c) == 1 and c[0]["rule"] == "scan" and c[0]["count"] == 3
+    d.observe("1.2.3.4", t + 3, 404, "/.aws/credentials", "1", False, False)
+    assert not d.take()  # повторно в том же окне не помечается
+    for i in range(5):
+        d.observe("5.6.7.8", t + i, 401, "/admin", "2", False, False)
+    assert d.take()[0]["rule"] == "auth"
+    # новое окно — счётчики сбрасываются
+    d.observe("9.9.9.9", t, 404, "/.env", "1", False, False)
+    d.observe("9.9.9.9", t + ps.autoban_window + 1, 404, "/.env", "1", False, False)
+    assert d.win["9.9.9.9"][4] == 1
+    d.observe("9.9.9.9", t, 444, "/", "1", False, True)
+    assert d.blocked_total == 1 and d.blocked_hits["9.9.9.9"] == 1
+
+
+def test_generator_bans():
+    files = render(make_state())
+    base = files["http.d/00-base.conf"]
+    assert "geo $nm_banned" in base and '"bn":"$nm_banned"' in base and "bans.conf;" in base
+    site = next(v for k, v in files.items() if k.startswith("sites/site-1"))
+    assert site.count("if ($nm_banned)") == 2  # HTTP→HTTPS и основной server
+    assert "return 444;" in site
+    assert "if ($nm_banned)" in files["http.d/10-default.conf"]
+
+
+def test_metrics_format():
+    from app.services.metrics import Out, labels, num
+    assert labels({"a": 'x"y\\z\n'}) == '{a="x\\"y\\\\z\\n"}'
+    assert num(float("nan")) == "NaN" and num(3.0) == "3" and num(0.25) == "0.25"
+    o = Out()
+    o.metric("m_total", "counter", "help", [({"s": "1"}, 5)])
+    assert o.text() == '# HELP m_total help\n# TYPE m_total counter\nm_total{s="1"} 5\n'
+
+
+def test_tailer_reads_in_chunks(tmp_path):
+    import asyncio
+    from app.db import Database
+    from app.stats.collector import LogTailer
+    log = tmp_path / "a.log"
+    lines = [f'{{"n":{i},"pad":"{"x" * 200}"}}' for i in range(20000)]
+    log.write_text("\n".join(lines) + "\n")
+    got = []
+    t = LogTailer(log, "test", Database(tmp_path / "t.db"), got.extend)
+    t._open(from_start=True)
+    chunks = 0
+    while t._read(budget=256 * 1024):
+        chunks += 1
+    assert len(got) == 20000 and chunks > 10
+    asyncio.run(asyncio.sleep(0))
+
+
+def test_every_form_field_has_doc_anchor():
+    """Ссылка «подробнее» из подсказки каждого поля ведёт на существующий якорь справочника."""
+    from app.schema import full_schema
+    docs = {p.name: p.read_text(encoding="utf-8") for p in (ROOT / "docs").glob("*.md")}
+    missing = []
+
+    def walk(fields):
+        for f in fields:
+            if f.get("ui") == "hidden":
+                continue
+            if f.get("doc_page") and f'id="{f["anchor"]}"' not in docs.get(f["doc_page"], ""):
+                missing.append(f"{f['doc_page']}#{f['anchor']}")
+            walk(f.get("fields") or [])
+    for fields in full_schema()["models"].values():
+        walk(fields)
+    assert not missing, missing[:10]
+
+
+def test_docs_links_resolve():
+    """Ссылки между главами документации указывают на существующие файлы."""
+    import re as _re
+    names = {p.name for p in (ROOT / "docs").glob("*.md")}
+    bad = []
+    for p in (ROOT / "docs").glob("*.md"):
+        for m in _re.finditer(r"\]\(([\w.-]+\.md)(#[^)]*)?\)", p.read_text(encoding="utf-8")):
+            if m.group(1) not in names:
+                bad.append(f"{p.name} → {m.group(1)}")
+    assert not bad, bad

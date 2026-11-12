@@ -54,6 +54,7 @@
 | `disk` | Заполнение диска | % | максимум заполнения корневого раздела и раздела журналов, % |
 | `error_log_rate` | Ошибок nginx в минуту | /мин | записей уровня error/crit/alert/emerg в журнале nginx за окно, пересчитано в минуту |
 | `rate_limited` | Отклонено лимитами (429/503 limit_req) | /мин | срабатываний limit_req/limit_conn в журнале ошибок за окно, в минуту |
+| `autobans` | Автоблокировок IP за окно | шт. | число автоматических блокировок IP за окно (раздел «Блокировки») |
 <!-- /GEN:alert_metrics -->
 
 Поле **«Сайт»** ограничивает метрики трафика и бэкендов одним сайтом; `*` — все сайты вместе.
@@ -62,6 +63,8 @@
 
 <!-- GEN:alert_rule -->
 <!-- Сгенерировано tools/gen_reference.py из app/models.py -->
+
+<a id="f-alert_rule-name"></a>
 
 ### Название — `name`
 
@@ -74,6 +77,8 @@
 **Пример:** `Много ошибок 5xx на магазине`
 
 
+<a id="f-alert_rule-enabled"></a>
+
 ### Включено — `enabled`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -82,6 +87,8 @@
 
 Выключенное правило не вычисляется.
 
+
+<a id="f-alert_rule-metric"></a>
 
 ### Метрика — `metric`
 
@@ -110,9 +117,12 @@
 - `disk` — Заполнение диска
 - `error_log_rate` — Ошибок nginx в минуту
 - `rate_limited` — Отклонено лимитами (429/503 limit_req)
+- `autobans` — Автоблокировок IP за окно
 
 **Пример:** `error_5xx_rate`
 
+
+<a id="f-alert_rule-site"></a>
 
 ### Сайт — `site`
 
@@ -126,6 +136,8 @@
 
 **Пример:** `*`
 
+
+<a id="f-alert_rule-operator"></a>
 
 ### Условие — `operator`
 
@@ -143,6 +155,8 @@
 **Пример:** `>`
 
 
+<a id="f-alert_rule-threshold"></a>
+
 ### Порог — `threshold`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -153,6 +167,8 @@
 
 **Пример:** `5`
 
+
+<a id="f-alert_rule-window"></a>
 
 ### Окно усреднения — `window`
 
@@ -169,6 +185,8 @@
 **Пример:** `120`
 
 
+<a id="f-alert_rule-duration"></a>
+
 ### Держится не менее — `duration`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -184,6 +202,8 @@
 **Пример:** `120`
 
 
+<a id="f-alert_rule-min_requests"></a>
+
 ### Мин. запросов в окне — `min_requests`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -198,6 +218,8 @@
 
 **Пример:** `30`
 
+
+<a id="f-alert_rule-severity"></a>
 
 ### Важность — `severity`
 
@@ -216,6 +238,8 @@
 **Пример:** `critical`
 
 
+<a id="f-alert_rule-channels"></a>
+
 ### Каналы уведомлений — `channels`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -224,6 +248,8 @@
 
 Куда отправлять. Пусто — только в панели.
 
+
+<a id="f-alert_rule-repeat_minutes"></a>
 
 ### Повторять уведомление каждые — `repeat_minutes`
 
@@ -239,6 +265,8 @@
 
 **Пример:** `60`
 
+
+<a id="f-alert_rule-notify_resolved"></a>
 
 ### Сообщать о восстановлении — `notify_resolved`
 
@@ -292,6 +320,8 @@ relay). Для Gmail/Яндекса используйте пароль прил
 <!-- GEN:alert_channel -->
 <!-- Сгенерировано tools/gen_reference.py из app/models.py -->
 
+<a id="f-alert_channel-name"></a>
+
 ### Название — `name`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -302,6 +332,8 @@ relay). Для Gmail/Яндекса используйте пароль прил
 
 **Пример:** `Дежурные (Telegram)`
 
+
+<a id="f-alert_channel-type"></a>
 
 ### Тип — `type`
 
@@ -322,6 +354,8 @@ relay). Для Gmail/Яндекса используйте пароль прил
 **Пример:** `telegram`
 
 
+<a id="f-alert_channel-enabled"></a>
+
 ### Включён — `enabled`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -330,6 +364,8 @@ relay). Для Gmail/Яндекса используйте пароль прил
 
 Выключенный канал пропускается.
 
+
+<a id="f-alert_channel-telegram_token"></a>
 
 ### Токен бота — `telegram_token`
 
@@ -346,6 +382,8 @@ relay). Для Gmail/Яндекса используйте пароль прил
 *Показывается, когда `type` = `telegram`.*
 
 
+<a id="f-alert_channel-telegram_chat_id"></a>
+
 ### Chat ID — `telegram_chat_id`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -361,6 +399,8 @@ ID чата, группы (отрицательный) или канала (@и�
 *Показывается, когда `type` = `telegram`.*
 
 
+<a id="f-alert_channel-telegram_api"></a>
+
 ### API URL — `telegram_api`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -374,6 +414,8 @@ ID чата, группы (отрицательный) или канала (@и�
 *Показывается, когда `type` = `telegram`.*
 
 
+<a id="f-alert_channel-url"></a>
+
 ### URL — `url`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -386,6 +428,8 @@ URL вебхука Slack/Discord или вашего сервиса.
 
 *Показывается, когда `type` = `webhook`, `slack`, `discord`.*
 
+
+<a id="f-alert_channel-webhook_headers"></a>
 
 ### Заголовки — `webhook_headers`
 
@@ -408,6 +452,8 @@ URL вебхука Slack/Discord или вашего сервиса.
 | always (`always`) | переключатель (да/нет) | включено | Добавлять и к ответам с ошибками (4xx/5xx) Рекомендация: Включено для CORS и HSTS. |
 
 
+<a id="f-alert_channel-smtp_host"></a>
+
 ### SMTP-сервер — `smtp_host`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -421,6 +467,8 @@ SMTP-сервер.
 *Показывается, когда `type` = `email`.*
 
 
+<a id="f-alert_channel-smtp_port"></a>
+
 ### Порт — `smtp_port`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -433,6 +481,8 @@ SMTP-сервер.
 
 *Показывается, когда `type` = `email`.*
 
+
+<a id="f-alert_channel-smtp_security"></a>
 
 ### Шифрование — `smtp_security`
 
@@ -455,6 +505,8 @@ SMTP-сервер.
 *Показывается, когда `type` = `email`.*
 
 
+<a id="f-alert_channel-smtp_user"></a>
+
 ### Логин — `smtp_user`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -468,6 +520,8 @@ SMTP-сервер.
 *Показывается, когда `type` = `email`.*
 
 
+<a id="f-alert_channel-smtp_password"></a>
+
 ### Пароль — `smtp_password`
 
 | Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
@@ -478,6 +532,8 @@ SMTP-сервер.
 
 *Показывается, когда `type` = `email`.*
 
+
+<a id="f-alert_channel-email_from"></a>
 
 ### От кого — `email_from`
 
@@ -491,6 +547,8 @@ SMTP-сервер.
 
 *Показывается, когда `type` = `email`.*
 
+
+<a id="f-alert_channel-email_to"></a>
 
 ### Кому — `email_to`
 

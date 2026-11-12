@@ -82,14 +82,17 @@ class LogTailer:
         self.status = "ok"
         return True
 
-    def _read(self) -> None:
+    def _read(self, budget: int = 1024 * 1024) -> bool:
+        """Прочитать и обработать до budget байт. Возвращает True, если в файле, вероятно, есть ещё данные
+        (вызывающий отдаёт управление циклу событий и продолжает — так WebSocket и API не «замирают»
+        при всплесках трафика и дочитывании накопившегося журнала после перезапуска)."""
         if not self.f:
-            return
+            return False
         chunk_total = 0
-        while chunk_total < 16 * 1024 * 1024:
-            data = self.f.read(1024 * 1024)
+        while chunk_total < budget:
+            data = self.f.read(256 * 1024)
             if not data:
-                break
+                return False
             chunk_total += len(data)
             self.pos += len(data)
             data = self.partial + data
@@ -103,6 +106,7 @@ class LogTailer:
                 except Exception:  # pragma: no cover
                     self.errors += 1
                     log.exception("ошибка обработки строк журнала %s", self.name)
+        return True
 
     async def run(self) -> None:
         first = True
@@ -113,12 +117,16 @@ class LogTailer:
                         await asyncio.sleep(2)
                         continue
                     first = False
-                self._read()
+                rounds = 0
+                while self._read() and rounds < 64:  # не более ~64 МБ за проход, между порциями — другие задачи
+                    rounds += 1
+                    await asyncio.sleep(0)
                 # ротация / усечение
                 try:
                     st = os.stat(self.path)
                     if st.st_ino != self.ino:
-                        self._read()  # дочитать старый файл
+                        while self._read():  # дочитать старый файл
+                            await asyncio.sleep(0)
                         self.db.kv_set(f"tail:{self.name}", {})
                         self.f.close()
                         self.f = None
@@ -196,6 +204,30 @@ class Minute:
                 "bots": self.bots, "slow": self.slow, "static": self.static, "ustatus": dict(self.ustatus)}
 
 
+class Totals:
+    """Накопительные счётчики сайта с момента запуска панели (counter-метрики Prometheus)."""
+    __slots__ = ("req", "s", "bin", "bout", "rt_sum", "hist", "cache", "banned")
+
+    def __init__(self) -> None:
+        self.req = self.bin = self.bout = self.banned = 0
+        self.s = [0] * 6
+        self.rt_sum = 0.0
+        self.hist = [0] * NB
+        self.cache: Counter = Counter()
+
+    def add(self, cls: int, bin_: int, bout: int, rt: float, hb: int, cache: str, banned: bool) -> None:
+        self.req += 1
+        self.s[cls] += 1
+        self.bin += bin_
+        self.bout += bout
+        self.rt_sum += rt
+        self.hist[hb] += 1
+        if cache:
+            self.cache[cache] += 1
+        if banned:
+            self.banned += 1
+
+
 def merge_data(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(a)
     for k, v in b.items():
@@ -256,6 +288,9 @@ class Aggregator:
         self.stream_port_map: Dict[Tuple[int, str], str] = {}
         self.last_flush_hour_tops = 0.0
         self.passive_upstream: Counter = Counter()  # ошибки соединения к бэкендам из error.log
+        self.detector = None  # BanDetector (раздел «Блокировки»), подключается ядром
+        # накопительные счётчики с момента запуска (для /metrics в формате Prometheus)
+        self.totals: Dict[str, Totals] = {}
 
     # ------------------------------------------------------------------
     def _sec(self, ts: int) -> Optional[Dict[str, Sec]]:
@@ -298,6 +333,12 @@ class Aggregator:
         r["country"] = country
         r["bot"] = is_bot
         keys = (site, "*") if site != "*" else ("*",)
+        if self.detector is not None and site != "panel":
+            self.detector.observe(r["ip"], ts, status, r["uri"], site, is_bot, r["banned"], country, r["host"])
+        tot = self.totals.get(site)
+        if tot is None:
+            tot = self.totals[site] = Totals()
+        tot.add(cls, r["bin"], r["bout"], rt, hb, r["cache"], r["banned"])
         sb = self._sec(sec_ts)
         if sb is not None:
             for k in keys:

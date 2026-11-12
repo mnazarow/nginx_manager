@@ -28,7 +28,7 @@ def _classify(ann) -> Dict[str, Any]:
         (item,) = typing.get_args(ann) or (str,)
         item, _ = _unwrap(item)
         if isinstance(item, type) and issubclass(item, BaseModel):
-            out.update(type="array", fields=describe(item))
+            out.update(type="array", fields=describe(item), item_model=item.__name__)
         elif typing.get_origin(item) is typing.Literal:
             out.update(type="multiselect", options=list(typing.get_args(item)))
         elif item is int:
@@ -77,8 +77,41 @@ def describe(model: type) -> List[Dict[str, Any]]:
     return fields
 
 
+# Где в документации описаны параметры каждой модели (справочники генерирует tools/gen_reference.py)
+DOC_PAGES = {
+    "site": "05-sites.md", "location": "05-sites.md", "backend": "05-sites.md", "stream": "06-streams.md",
+    "certificate": "07-certificates.md", "global": "08-global-settings.md", "alert_rule": "11-alerts.md",
+    "alert_channel": "11-alerts.md", "panel": "13-panel-settings.md",
+}
+# Элементы списков, у которых в справочнике свой раздел (остальные описаны таблицей внутри поля-списка)
+ITEM_KINDS = {"Location": "location", "Backend": "backend"}
+
+
+def anchor(kind: str, path: str) -> str:
+    """Якорь параметра в справочнике: f-<модель>-<путь через дефис>. Совпадает с tools/gen_reference.py."""
+    return f"f-{kind}-{path.replace('.', '-')}"
+
+
+def _add_anchors(fields: List[Dict[str, Any]], kind: str, prefix: str = "", fixed: str = "") -> None:
+    for f in fields:
+        path = prefix + f["key"]
+        f["doc_page"] = DOC_PAGES.get(kind, "")
+        f["anchor"] = fixed or anchor(kind, path)
+        if f["type"] == "object":
+            _add_anchors(f["fields"], kind, path + ".", fixed)
+        elif f["type"] == "array" and f.get("fields"):
+            item_kind = ITEM_KINDS.get(f.get("item_model", ""))
+            if item_kind and not fixed:
+                _add_anchors(f["fields"], item_kind)
+            else:
+                _add_anchors(f["fields"], kind, "", f["anchor"])
+
+
 def full_schema() -> Dict[str, Any]:
+    models = {k: describe(m) for k, m in MODELS.items()}
+    for k, fields in models.items():
+        _add_anchors(fields, k)
     return {
-        "models": {k: describe(m) for k, m in MODELS.items()},
+        "models": models,
         "tabs": {k: [{"id": i, "label": lbl} for i, lbl in v] for k, v in TABS.items()},
     }

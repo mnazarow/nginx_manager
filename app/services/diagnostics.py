@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
-import json
 import logging
 import os
 import re
@@ -165,6 +164,25 @@ class Diagnostics:
         else:
             res.append(R("config_perms", g, "Права доступа воркеров nginx", OK,
                          f"{user} читает страницы, ACME и файлы паролей"))
+        # блокировки IP: файл подключён в живой конфигурации и принят nginx
+        bans = getattr(self.app, "bans", None)
+        if bans is not None:
+            base = settings.live_dir / "http.d" / "00-base.conf"
+            included = base.exists() and "nm_banned" in base.read_text(errors="replace")
+            st = bans.stats()
+            if st["last_error"]:
+                res.append(R("bans_sync", g, "Список блокировок IP", FAIL, "nginx не принял файл блокировок",
+                             details=st["last_error"][-800:], fix="bans_sync", fix_label="Повторить",
+                             hint="Список сохранён в панели и будет отправлен повторно. Проверьте вывод nginx -t."))
+            elif st["active"] and not included:
+                res.append(R("bans_sync", g, "Список блокировок IP", WARN,
+                             f"Активных блокировок: {st['active']}, но действующая конфигурация их ещё не учитывает",
+                             hint="Конфигурация создана версией панели без блокировок — примените её заново.",
+                             fix="reapply", fix_label="Применить конфигурацию"))
+            else:
+                res.append(R("bans_sync", g, "Список блокировок IP", OK,
+                             f"активных: {st['active']} (автоматических {st['auto']})" if st["active"]
+                             else "блокировок нет" + ("" if included else " (подключится при следующем применении)")))
         live = settings.live_dir
         if not live.exists():
             res.append(R("config_live", g, "Каталог конфигурации", FAIL, f"{live} отсутствует",
@@ -757,6 +775,9 @@ class Diagnostics:
         if action == "renew_cert":
             await self.app.certs.renew(int(args["id"]), after=self.app.after_cert_issued)
             return {"ok": True, "output": "Продление запущено — следите за статусом на странице «Сертификаты»"}
+        if action == "bans_sync":
+            ok, out = await self.app.bans.sync(force=True)
+            return {"ok": ok, "output": out}
         if action == "fix_perms":
             user = mgr.load_state().glob.user or mgr.caps().default_user
             fixed = await asyncio.to_thread(mgr.fix_permissions, user)

@@ -69,6 +69,10 @@ curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8088/api/sites
 | `POST /api/certs/selftest` `{"domain": "…"}` | Проверка домена для Let's Encrypt. |
 | `GET /api/config/pending` | Разница неприменённых изменений (unified diff). |
 | `POST /api/config/apply` `{"comment": "…"}` | Применить. Ошибка — HTTP 409 с разбором. |
+| `GET /api/bans` | Блокировки IP, подозрительные адреса, статистика ([17](17-bans.md)). |
+| `POST /api/bans` `{"nets": ["203.0.113.7"], "minutes": 1440, "reason": "…"}` | Заблокировать (`minutes: null` — бессрочно). |
+| `DELETE /api/bans/{id}`, `POST /api/bans/clear` `{"source": "auto"}` | Разблокировать один адрес / снять все автоматические. |
+| `GET /metrics` | Метрики Prometheus (вне `/api`; токен или IP из списка, см. [09](09-monitoring.md#метрики-prometheus)). |
 | `GET /api/config/versions`, `GET /api/config/versions/{id}`, `…/diff`, `POST …/rollback` | Версии. |
 | `GET/PUT /api/settings/global`, `GET/PUT /api/settings/panel` | Настройки. |
 | `POST /api/nginx/{reload\|restart\|start\|stop\|reopen}` | Управление nginx. |
@@ -111,6 +115,13 @@ curl -s -H "$H" "$API/stats/summary?from=$(( $(date +%s) - 3600 ))" | jq .err5_p
 
 # Последние 20 ошибок 502
 curl -s -H "$H" "$API/requests?status=502&limit=20" | jq '.items[] | {ts, host, uri, upstream}'
+
+# Заблокировать адреса из файла на сутки (например, из списка вашей SIEM)
+jq -Rn '{nets: [inputs], minutes: 1440, reason: "SIEM"}' bad-ips.txt | \
+  curl -s -H "$H" -H 'Content-Type: application/json' -X POST "$API/bans" -d @-
+
+# Метрики Prometheus
+curl -s -H "$H" http://127.0.0.1:8088/metrics | grep '^nm_http_requests_total'
 ```
 
 ### Ошибки API

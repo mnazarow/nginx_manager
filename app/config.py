@@ -133,6 +133,11 @@ class Settings:
     def live_dir(self) -> Path:
         return self.managed_dir / "live"
 
+    @property
+    def bans_file(self) -> Path:
+        """Список заблокированных IP для geo $nm_banned (вне версий: меняется без применения конфигурации)."""
+        return self.managed_dir / "bans.conf"
+
     def _load_or_create_secret(self) -> str:
         p = self.data_dir / ".secret_key"
         try:
@@ -159,6 +164,13 @@ class Settings:
         for d in (self.acme_webroot, self.acme_webroot / ".well-known",
                   self.acme_webroot / ".well-known" / "acme-challenge"):
             os.chmod(d, 0o755)
+        # файл блокировок должен существовать всегда: на него ссылается include в geo $nm_banned
+        try:
+            if self.managed_dir.is_dir() and not self.bans_file.exists():
+                self.bans_file.write_text("# Nginx Manager: заблокированные IP (раздел «Блокировки»)\n")
+                os.chmod(self.bans_file, 0o644)
+        except OSError:
+            pass
 
 
 settings = Settings()

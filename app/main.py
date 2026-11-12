@@ -5,7 +5,7 @@ import logging
 import sys
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -114,6 +114,22 @@ def create_app() -> FastAPI:
     async def healthz(request: Request):
         nm = request.app.state.nm
         return {"ok": True, "version": VERSION, "nginx": nm.nginx.is_running()}
+
+    @app.get("/metrics", include_in_schema=False)
+    async def metrics(request: Request):
+        """Метрики Prometheus: доступ с IP из «Читать /metrics без токена» или по API-токену (Bearer)."""
+        from fastapi.responses import PlainTextResponse
+        from .auth import require
+        from .services.bans import in_any
+        from .services.metrics import render
+        nm = request.app.state.nm
+        p = nm.panel()
+        if not p.metrics_enabled:
+            return JSONResponse({"detail": "Метрики выключены в настройках панели"}, status_code=404)
+        ip = nm.auth.client_ip(request)
+        if not (p.metrics_allow and in_any(ip, list(p.metrics_allow))):
+            require(request, "viewer")
+        return PlainTextResponse(render(nm), media_type="text/plain; version=0.0.4; charset=utf-8")
 
     return app
 
