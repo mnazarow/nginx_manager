@@ -82,6 +82,7 @@ DOC_PAGES = {
     "site": "05-sites.md", "location": "05-sites.md", "backend": "05-sites.md", "stream": "06-streams.md",
     "certificate": "07-certificates.md", "global": "08-global-settings.md", "alert_rule": "11-alerts.md",
     "alert_channel": "11-alerts.md", "panel": "13-panel-settings.md", "dns_account": "07-certificates.md",
+    "protection": "19-protection.md", "custom_rule": "19-protection.md", "threat_feed": "19-protection.md",
 }
 # Элементы списков, у которых в справочнике свой раздел (остальные описаны таблицей внутри поля-списка)
 ITEM_KINDS = {"Location": "location", "Backend": "backend"}
@@ -111,7 +112,10 @@ def full_schema() -> Dict[str, Any]:
     models = {k: describe(m) for k, m in MODELS.items()}
     for k, fields in models.items():
         _add_anchors(fields, k)
+    from .protection import rules as W
     return {
         "models": models,
         "tabs": {k: [{"id": i, "label": lbl} for i, lbl in v] for k, v in TABS.items()},
+        "waf": {"categories": [{"id": k, "title": c["title"], "default": c["default"]} for k, c in W.CATEGORIES.items()],
+                "rules": [{"id": r.id, "cat": r.cat, "title": r.title, "level": r.level} for r in W.RULES]},
     }

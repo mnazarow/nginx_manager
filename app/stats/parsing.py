@@ -98,6 +98,9 @@ def parse_access(line: str) -> Optional[Dict[str, Any]]:
         "static": bool(STATIC_RE.search(path)),
         "banned": d.get("bn") == "1",
         "geo_blocked": d.get("gb") == "1",
+        "wf": d.get("wf", "")[:80],
+        "wa": d.get("wa", "")[:20],
+        "ch": d.get("ch", "")[:8],
     }
 
 

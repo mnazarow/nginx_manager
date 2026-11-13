@@ -82,6 +82,36 @@ function field(f, w, wide, ctx, p) {
     err ? h('div', { class: 'err' }, err) : null);
 }
 
+/** Отключённые правила фильтра: метки с названием, добавление поиском по коду или названию правила. */
+function wafRulesInput(f, obj, set) {
+  const rules = (SCHEMA.waf && SCHEMA.waf.rules) || [];
+  const byId = Object.fromEntries(rules.map(r => [r.id, r]));
+  const cur = () => obj[f.key] || [];
+  const chips = h('div', { class: 'chips' });
+  const listId = 'wafr-' + Math.random().toString(36).slice(2, 8);
+  const input = h('input', { type: 'text', list: listId, placeholder: 'Код или название правила, например xss-dom', autocomplete: 'off', 'aria-label': 'Добавить правило' });
+  const dl = h('datalist', { id: listId }, rules.map(r => h('option', { value: r.id }, `${r.title} (${r.cat})`)));
+  const drawChips = () => mount(chips, cur().length ? cur().map(id => h('span', { class: 'chip on', title: 'Убрать', onclick: () => { set(cur().filter(x => x !== id)); drawChips(); } },
+    h('b', {}, id), byId[id] ? ' ' + byId[id].title : '', ' ×')) : h('span', { class: 'muted small' }, 'Все правила действуют'));
+  const add = () => { const v = input.value.trim(); if (byId[v] && !cur().includes(v)) { set([...cur(), v]); drawChips(); } input.value = ''; };
+  input.addEventListener('change', add);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } });
+  drawChips();
+  return h('div', { class: 'col' }, chips, input, dl);
+}
+
+/** Режимы категорий фильтра для сайта: «как в общих» / выкл / запись / блокировка. */
+function wafModesInput(f, obj, ctx) {
+  const cats = (SCHEMA.waf && SCHEMA.waf.categories) || [];
+  if (!obj[f.key] || typeof obj[f.key] !== 'object') obj[f.key] = {};
+  const M = { inherit: 'как в общих', off: 'выключено', detect: 'запись', block: 'блокировать' };
+  return h('div', { class: 'table-wrap' }, h('table', { class: 't compact' },
+    h('thead', {}, h('tr', {}, h('th', {}, 'Категория'), h('th', {}, 'Режим'))),
+    h('tbody', {}, cats.map(c => h('tr', {}, h('td', {}, c.title),
+      h('td', {}, h('select', { 'aria-label': `Режим: ${c.title}`, onchange: (e) => { const v = e.target.value; if (v === 'inherit') delete obj[f.key][c.id]; else obj[f.key][c.id] = v; changed(ctx); } },
+        Object.entries(M).map(([k, l]) => h('option', { value: k, selected: (obj[f.key][c.id] || 'inherit') === k }, l)))))))));
+}
+
 /** Выбор стран: выбранные — метками, добавление поиском по названию или коду, быстрые группы. */
 function countriesInput(f, obj, set, invalid) {
   const all = (SCHEMA.countries || []).map(c => ({ c, n: countryName(c) })).sort((a, b) => a.n.localeCompare(b.n, 'ru'));
@@ -162,6 +192,16 @@ function widget(f, obj, ctx, p) {
       return wrap;
     }
     case 'intlist': {
+      if (f.ui === 'sites') {
+        const cur = new Set(v || []);
+        const wrap = h('div', { class: 'chips' });
+        const list = ctx.sites || [];
+        const draw = () => mount(wrap, list.length ? list.map(s => h('span', { class: 'chip' + (cur.has(s.id) ? ' on' : ''),
+          onclick: () => { cur.has(s.id) ? cur.delete(s.id) : cur.add(s.id); obj[f.key] = [...cur]; draw(); changed(ctx); } }, s.name))
+          : h('span', { class: 'muted small' }, 'Сайтов нет'));
+        draw();
+        return wrap;
+      }
       if (f.ui === 'channels') {
         const cur = new Set(v || []);
         const wrap = h('div', { class: 'chips' });
@@ -176,6 +216,7 @@ function widget(f, obj, ctx, p) {
     }
     case 'list': {
       if (f.ui === 'countries') return countriesInput(f, obj, set, invalid);
+      if (f.ui === 'wafrules') return wafRulesInput(f, obj, set);
       if (f.ui === 'tags') {
         return h('input', { type: 'text', value: (v || []).join(', '), placeholder: 'метка1, метка2',
           oninput: (e) => set(e.target.value.split(',').map(s => s.trim()).filter(Boolean)) });
@@ -196,6 +237,7 @@ function widget(f, obj, ctx, p) {
       return ta;
     }
     default: {
+      if (f.ui === 'wafmodes') return wafModesInput(f, obj, ctx);
       if (f.ui === 'cachezone') {
         const zones = ctx.cacheZones || ['default'];
         return h('select', { onchange: (e) => set(e.target.value) }, zones.map(z => h('option', { value: z, selected: z === v }, z)));

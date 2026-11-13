@@ -48,6 +48,8 @@ RULE_TITLES = {
     "auth": "Подбор пароля (401)",
     "default": "Обращения по IP / к чужим доменам",
     "flood": "Слишком много запросов",
+    "waf": "Атаки (фильтр запросов)",
+    "honeypot": "Ловушка для сканеров",
     "manual": "Вручную",
 }
 
@@ -292,7 +294,9 @@ class BanService:
         p = self.app.panel()
         banned = []
         cands = self.detector.take()
-        if not cands or not p.autoban_enabled:
+        if not p.autoban_enabled:  # ловушки — отдельная настройка сайта, блокируют и без общей автоблокировки
+            cands = [c for c in cands if c.get("force")]
+        if not cands:
             return banned
         trusted = [ipaddress.ip_network(x, strict=False) for x in self.trusted_nets()]
         active = {r["net"] for r in self.db.query("SELECT net FROM bans WHERE expires_at IS NULL OR expires_at > ?",
@@ -306,12 +310,13 @@ class BanService:
             except ValueError:
                 continue
             prev = self.offense_count(n)
-            minutes = p.autoban_minutes
+            minutes = c.get("ban_minutes") or p.autoban_minutes
             if p.autoban_escalate and prev:
                 minutes = min(MAX_ESCALATED_MINUTES, minutes * (4 ** prev))
             self.db.execute("INSERT INTO ban_offenses(ip, count, last_at) VALUES(?,?,?) ON CONFLICT(ip) DO UPDATE "
                             "SET count=?, last_at=excluded.last_at", (n, prev + 1, time.time(), prev + 1))
-            reason = f"{c['title']}: {c['count']} за {c['window'] // 60 or 1} мин"
+            reason = (f"{c['title']}: {c['sample'][:120]}" if c["rule"] == "honeypot"
+                      else f"{c['title']}: {c['count']} за {c['window'] // 60 or 1} мин")
             self.add(n, minutes, reason, "auto", "system", c["rule"], c, c.get("country", ""))
             active.add(n)
             c["minutes"] = minutes

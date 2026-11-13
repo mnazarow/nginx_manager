@@ -142,7 +142,7 @@ export async function render(root) {
         { title: 'Осталось', render: remaining },
         { title: 'Отклонено', num: true, render: (b) => fmtInt(b.hits) },
         { title: '', render: (b) => can('operator') ? h('div', { class: 'row nowrap', style: { justifyContent: 'flex-end', gap: '4px' } },
-          h('select', { class: 'sm', title: 'Изменить срок', onchange: async (e) => {
+          h('select', { class: 'sm', title: 'Изменить срок', 'aria-label': `Изменить срок блокировки ${b.net}`, onchange: async (e) => {
             const v = e.target.value; if (v === '-') return;
             await api('/bans', { method: 'POST', body: { nets: [b.net], minutes: v ? Number(v) : null, reason: b.reason, force: true } });
             toast('Срок изменён', 'good'); load();

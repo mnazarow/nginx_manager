@@ -167,6 +167,29 @@ def build():
                12, y, w=12, unit="short"),
     ]
     y += 8
+    p.append(row("Защита от атак", y))
+    y += 1
+    p += [
+        stat("Сайтов «Под атакой»", f'count(nm_under_attack{{{SEL},site_id!="*"}} == 1) or vector(0)', 0, y, w=4,
+             desc="Сайтов, где сейчас включён режим «Под атакой» (вручную или автоматически)",
+             thresholds=[{"color": "green", "value": None}, {"color": "orange", "value": 1}]),
+        stat("Для всех сайтов", f'max(nm_under_attack{{{SEL},site_id="*"}}) or vector(0)', 0, y + 4, w=4,
+             desc="Режим «Под атакой» включён для всех сайтов",
+             mappings=[{"type": "value", "options": {"0": {"text": "выключен"}, "1": {"text": "ВКЛЮЧЁН"}}}],
+             thresholds=[{"color": "green", "value": None}, {"color": "red", "value": 1}]),
+        series("Отражённые атаки по видам",
+               [target(f'sum by (kind) (rate(nm_attacks_total{{{SITE},action="blocked"}}{RI}))', "{{kind}}")],
+               4, y, w=10, unit="reqps", stack=True,
+               desc="Заблокированные защитой запросы в секунду: waf — фильтр запросов, threat — списки угроз, "
+                    "custom — свои правила, hotlink — хотлинкинг, honeypot — ловушки"),
+        series("Проверка браузера", [
+            target(f"sum by (result) (rate(nm_challenge_total{{{SEL}}}{RI}))", "{{result}}", "A"),
+            target(f'sum(rate(nm_attacks_total{{{SITE},action="detected"}}{RI}))', "записано фильтром (обучение)",
+                   "B")], 14, y, w=10, unit="reqps",
+            desc="served — показана страница проверки, solved — задача решена, failed — неверное решение, "
+                 "passed — запросы с действующим пропуском"),
+    ]
+    y += 8
     p.append(row("Сервер и nginx", y))
     y += 1
     p += [

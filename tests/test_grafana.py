@@ -34,7 +34,8 @@ def exprs(d):
 
 PROMQL_WORDS = {"sum", "by", "rate", "max", "min", "count", "or", "vector", "histogram_quantile", "label_values",
                 "instance", "site", "code", "le", "backup", "used", "name", "backend", "source", "state",
-                "cache_status", "version", "without", "on", "and", "unless", "avg", "increase"}
+                "cache_status", "version", "without", "on", "and", "unless", "avg", "increase", "kind", "action",
+                "result", "site_id"}
 
 
 def test_dashboard_up_to_date():
@@ -57,7 +58,8 @@ def test_metrics_exist():
     missing = used - have
     assert not missing, f"в дашборде метрики, которых панель не отдаёт: {sorted(missing)}"
     # и наоборот — значимые метрики панели на дашборде есть
-    assert {"nm_backend_up", "nm_certificate_expiry_days", "nm_http_responses_total", "nm_bans_active"} <= used
+    assert {"nm_backend_up", "nm_certificate_expiry_days", "nm_http_responses_total", "nm_bans_active",
+            "nm_attacks_total", "nm_under_attack", "nm_challenge_total"} <= used
 
 
 def test_layout_and_datasource():

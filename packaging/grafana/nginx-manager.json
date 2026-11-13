@@ -1423,7 +1423,7 @@
     {
       "id": 22,
       "type": "row",
-      "title": "Сервер и nginx",
+      "title": "Защита от атак",
       "collapsed": false,
       "gridPos": {
         "x": 0,
@@ -1435,6 +1435,308 @@
     },
     {
       "id": 23,
+      "type": "stat",
+      "title": "Сайтов «Под атакой»",
+      "description": "Сайтов, где сейчас включён режим «Под атакой» (вручную или автоматически)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 49,
+        "w": 4,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "textMode": "auto",
+        "orientation": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "count(nm_under_attack{instance=~\"$instance\",site_id!=\"*\"} == 1) or vector(0)",
+          "legendFormat": "__auto",
+          "refId": "A",
+          "range": true,
+          "instant": false,
+          "format": "time_series"
+        }
+      ]
+    },
+    {
+      "id": 24,
+      "type": "stat",
+      "title": "Для всех сайтов",
+      "description": "Режим «Под атакой» включён для всех сайтов",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 53,
+        "w": 4,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "выключен"
+                },
+                "1": {
+                  "text": "ВКЛЮЧЁН"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "textMode": "auto",
+        "orientation": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(nm_under_attack{instance=~\"$instance\",site_id=\"*\"}) or vector(0)",
+          "legendFormat": "__auto",
+          "refId": "A",
+          "range": true,
+          "instant": false,
+          "format": "time_series"
+        }
+      ]
+    },
+    {
+      "id": 25,
+      "type": "timeseries",
+      "title": "Отражённые атаки по видам",
+      "description": "Заблокированные защитой запросы в секунду: waf — фильтр запросов, threat — списки угроз, custom — свои правила, hotlink — хотлинкинг, honeypot — ловушки",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 4,
+        "y": 49,
+        "w": 10,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 35,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisSoftMin": 0,
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (kind) (rate(nm_attacks_total{instance=~\"$instance\",site=~\"$site\",action=\"blocked\"}[$__rate_interval]))",
+          "legendFormat": "{{kind}}",
+          "refId": "A",
+          "range": true,
+          "instant": false,
+          "format": "time_series"
+        }
+      ]
+    },
+    {
+      "id": 26,
+      "type": "timeseries",
+      "title": "Проверка браузера",
+      "description": "served — показана страница проверки, solved — задача решена, failed — неверное решение, passed — запросы с действующим пропуском",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 14,
+        "y": 49,
+        "w": 10,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisSoftMin": 0,
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (result) (rate(nm_challenge_total{instance=~\"$instance\"}[$__rate_interval]))",
+          "legendFormat": "{{result}}",
+          "refId": "A",
+          "range": true,
+          "instant": false,
+          "format": "time_series"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(nm_attacks_total{instance=~\"$instance\",site=~\"$site\",action=\"detected\"}[$__rate_interval]))",
+          "legendFormat": "записано фильтром (обучение)",
+          "refId": "B",
+          "range": true,
+          "instant": false,
+          "format": "time_series"
+        }
+      ]
+    },
+    {
+      "id": 27,
+      "type": "row",
+      "title": "Сервер и nginx",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 57,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 28,
       "type": "timeseries",
       "title": "Соединения nginx",
       "description": "",
@@ -1444,7 +1746,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 49,
+        "y": 58,
         "w": 8,
         "h": 8
       },
@@ -1500,7 +1802,7 @@
       ]
     },
     {
-      "id": 24,
+      "id": 29,
       "type": "timeseries",
       "title": "Ресурсы сервера",
       "description": "",
@@ -1510,7 +1812,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 49,
+        "y": 58,
         "w": 8,
         "h": 8
       },
@@ -1592,7 +1894,7 @@
       ]
     },
     {
-      "id": 25,
+      "id": 30,
       "type": "timeseries",
       "title": "Load average (1 мин)",
       "description": "",
@@ -1602,7 +1904,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 49,
+        "y": 58,
         "w": 8,
         "h": 8
       },
@@ -1658,7 +1960,7 @@
       ]
     },
     {
-      "id": 26,
+      "id": 31,
       "type": "table",
       "title": "Сертификаты",
       "datasource": {
@@ -1668,7 +1970,7 @@
       "description": "Дней до истечения; «используется» — подключён к сайту или к панели",
       "gridPos": {
         "x": 0,
-        "y": 57,
+        "y": 66,
         "w": 12,
         "h": 8
       },
@@ -1746,7 +2048,7 @@
       ]
     },
     {
-      "id": 27,
+      "id": 32,
       "type": "timeseries",
       "title": "Сборщик статистики",
       "description": "Нераспознанные строки — журнал nginx не в формате панели (см. «Диагностика»)",
@@ -1756,7 +2058,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 57,
+        "y": 66,
         "w": 12,
         "h": 8
       },
@@ -1824,7 +2126,7 @@
       ]
     },
     {
-      "id": 28,
+      "id": 33,
       "type": "stat",
       "title": "Версия панели",
       "description": "Метка version метрики nginx_manager_info",
@@ -1834,7 +2136,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 65,
+        "y": 74,
         "w": 6,
         "h": 3
       },
@@ -1886,7 +2188,7 @@
       ]
     },
     {
-      "id": 29,
+      "id": 34,
       "type": "stat",
       "title": "Панель работает",
       "description": "",
@@ -1896,7 +2198,7 @@
       },
       "gridPos": {
         "x": 6,
-        "y": 65,
+        "y": 74,
         "w": 6,
         "h": 3
       },
@@ -1948,7 +2250,7 @@
       ]
     },
     {
-      "id": 30,
+      "id": 35,
       "type": "stat",
       "title": "Запросов по данным nginx",
       "description": "stub_status: все запросы nginx, включая не попавшие в журналы сайтов",
@@ -1958,7 +2260,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 65,
+        "y": 74,
         "w": 6,
         "h": 3
       },
@@ -2010,7 +2312,7 @@
       ]
     },
     {
-      "id": 31,
+      "id": 36,
       "type": "stat",
       "title": "Принято соединений в секунду",
       "description": "",
@@ -2020,7 +2322,7 @@
       },
       "gridPos": {
         "x": 18,
-        "y": 65,
+        "y": 74,
         "w": 6,
         "h": 3
       },

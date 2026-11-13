@@ -138,7 +138,7 @@ class Diagnostics:
             checks: List[Callable[[], Awaitable[List[Dict[str, Any]]]]] = [
                 self.c_nginx, self.c_config, self.c_ports, self.c_network, self.c_dns, self.c_backends,
                 self.c_certs, self.c_firewall, self.c_selinux, self.c_system, self.c_limits, self.c_logs,
-                self.c_errors, self.c_traffic, self.c_security, self.c_time, self.c_backups,
+                self.c_errors, self.c_traffic, self.c_security, self.c_protection, self.c_time, self.c_backups,
             ]
             results: List[Dict[str, Any]] = []
             outs = await asyncio.gather(*(asyncio.wait_for(c(), 60) for c in checks), return_exceptions=True)
@@ -924,6 +924,88 @@ class Diagnostics:
         if basic_nohttps:
             res.append(R("sec_basic_http", g, "Basic Auth без HTTPS", WARN, ", ".join(basic_nohttps),
                          hint="Пароли передаются открытым текстом."))
+        return res
+
+    async def c_protection(self) -> List[Dict[str, Any]]:
+        """Раздел «Защита от атак»: фильтр запросов, проверка браузера, списки угроз, самопроверка, ядро."""
+        from ..protection.nginx import challenge_ready
+        from ..protection.service import sysctl_report
+        g = "Защита от атак"
+        res = []
+        prot = self.app.protection
+        p = prot.settings()
+        state = self.app.nginx.load_state()
+        sites = [(sid, s) for sid, s in state.sites if s.enabled and s.type != "redirect"]
+        if not p.waf_enabled:
+            res.append(R("prot_waf", g, "Фильтр запросов (WAF)", WARN, "Выключен для всех сайтов",
+                         hint="Включите на странице «Защита от атак» → «Фильтр запросов». Начните с режима "
+                              "«только запись» у новых сайтов."))
+        else:
+            off = [s.name for _, s in sites if not s.protection.enabled or s.protection.waf == "off"]
+            learn = [s.name for _, s in sites if s.protection.enabled and s.protection.waf == "detect"]
+            res.append(R("prot_waf", g, "Фильтр запросов (WAF)", WARN if off else OK,
+                         f"Без фильтра: {', '.join(off[:10])}" if off else
+                         f"Включён: {len(sites)} {plural(len(sites), 'сайт', 'сайта', 'сайтов')}",
+                         hint="Защита сайта выключена на вкладке «Защита от атак» его редактора." if off else ""))
+            if learn:
+                res.append(R("prot_learn", g, "Сайты в режиме обучения", INFO, ", ".join(learn[:10]),
+                             hint="Фильтр только записывает атаки. Просмотрите «Журнал атак» с действием «записано», "
+                                  "исключите ложные срабатывания и переключите сайт в «Как в общих настройках»."))
+        caps = self.app.nginx.caps()
+        need = [s.name for _, s in sites if s.protection.enabled and s.protection.challenge != "off"]
+        if challenge_ready(caps):
+            res.append(R("prot_challenge", g, "Проверка браузера", OK, "Модуль secure_link есть в nginx"))
+        elif need:
+            res.append(R("prot_challenge", g, "Проверка браузера", WARN,
+                         "В nginx нет модуля secure_link — проверка браузера и режим «Под атакой» не работают",
+                         hint="Установите сборку nginx с модулем http_secure_link (пакеты nginx из Debian, Ubuntu, "
+                              "RHEL и nginx.org его содержат)."))
+        on_global, on_sites = prot.active_attack()
+        if on_global or on_sites:
+            names = ["все сайты"] if on_global else [prot.site_name(x) for x in on_sites]
+            res.append(R("prot_attack", g, "Режим «Под атакой»", INFO, "Включён: " + ", ".join(names[:10]),
+                         hint="Посетители без пропуска проходят проверку браузера. Выключите режим на странице "
+                              "«Защита от атак», когда атака закончится (автоматический режим выключится сам)."))
+        status = prot.feed_status()
+        now = time.time()
+        for f in p.threat_feeds:
+            if not f.enabled:
+                continue
+            st = status.get(f.id) or {}
+            if not st.get("updated"):
+                res.append(R(f"prot_feed_{f.id}", g, f"Список угроз «{f.name}»", WARN if st.get("error") else INFO,
+                             st.get("error") or "Ещё не загружен",
+                             hint="Проверьте адрес списка и доступ сервера в интернет; «Обновить сейчас» на вкладке "
+                                  "«Списки угроз»."))
+            elif not st.get("ok") or now - st["updated"] > p.threat_update_hours * 3600 * 3:
+                age = fmt_dur(now - st["updated"])
+                res.append(R(f"prot_feed_{f.id}", g, f"Список угроз «{f.name}»", WARN,
+                             f"Не обновляется {age}" + (f": {st['error']}" if st.get("error") else ""),
+                             hint="Используется последняя загруженная версия. Проверьте адрес и доступ в интернет."))
+            else:
+                res.append(R(f"prot_feed_{f.id}", g, f"Список угроз «{f.name}»", OK,
+                             f"{st.get('count', 0)} адресов, обновлён {fmt_dur(now - st['updated'])} назад"))
+        for sid, s in state.sites:
+            last = self.app.db.kv_get(f"selftest_{sid}", None) if s.enabled else None
+            if not last:
+                continue
+            sm = last.get("summary") or {}
+            if sm.get("failed") or sm.get("false_positives"):
+                res.append(R(f"prot_selftest_{sid}", g, f"Самопроверка «{s.name}»", WARN,
+                             f"Не отражено: {sm.get('failed', 0)}, ложных срабатываний: {sm.get('false_positives', 0)}"
+                             f" ({fmt_dur(now - last.get('ts', now))} назад)",
+                             hint="Откройте «Защита от атак» → «Самопроверка»: там видно, какие правила не сработали "
+                                  "и почему (режим категории, исключения, доверенные IP)."))
+        try:
+            rows = {r["name"]: r for r in await asyncio.to_thread(sysctl_report)}
+            syn = rows.get("net.ipv4.tcp_syncookies")
+            if syn and syn.get("ok") is False:
+                res.append(R("prot_syncookies", g, "Защита от SYN-флуда", WARN,
+                             f"net.ipv4.tcp_syncookies = {syn.get('current')}",
+                             hint="«Защита от атак» → «Сеть и сервер» → «Применить рекомендуемые» включит SYN cookies "
+                                  "и другие параметры ядра."))
+        except Exception:  # noqa: BLE001 — sysctl может быть недоступен в контейнере
+            pass
         return res
 
     async def c_backups(self) -> List[Dict[str, Any]]:

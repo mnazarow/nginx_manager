@@ -93,6 +93,9 @@ class App:
         from .services.events import EventNotifier
         self.events = EventNotifier(self)
         self.stats.agg.detector = self.bans.detector
+        from .protection.service import ProtectionService
+        self.protection = ProtectionService(self)
+        self.stats.agg.protection = self.protection
         self.alerts.site_name = self._site_name
         self.clients: Set[WSClient] = set()
         self.tasks: List[asyncio.Task] = []
@@ -157,11 +160,20 @@ class App:
         self.db.on_event = self.events.on_event
         self.tasks += [loop.create_task(self.ticker(), name="ticker"),
                        loop.create_task(self.watchdog(), name="watchdog"),
-                       loop.create_task(self.periodic(), name="periodic")]
+                       loop.create_task(self.periodic(), name="periodic"),
+                       loop.create_task(self.protection.run(), name="protection")]
+        try:  # режим «Под атакой» мог закончиться, пока панель не работала
+            await self.protection.sync_attack_file()
+        except Exception:  # noqa: BLE001
+            log.exception("защита: не удалось обновить файл режима «Под атакой»")
         self.db.event("info", "panel", f"Nginx Manager {VERSION} запущен")
 
     async def stop(self) -> None:
         self.db.on_event = None
+        try:
+            self.protection.flush()
+        except Exception:  # noqa: BLE001
+            pass
         for t in self.tasks + [self.health.task, self.alerts.task, self.bans.task]:
             if t:
                 t.cancel()
@@ -311,6 +323,8 @@ class App:
             return float(self.insights.last["counts"].get("crit", 0)), "\n".join(
                 f"{f['site_name']}: {f['title']} — {f['summary']}" for f in self.insights.last["findings"]
                 if f["level"] == "crit")[:1500]
+        if m in ("attacks_blocked", "under_attack"):
+            return self.protection.alert_metric(m, site, rule.window)
         if m == "autobans":
             n = self.db.scalar("SELECT COUNT(*) FROM events WHERE source='bans' AND ts>=? AND message LIKE "
                                "'Автоблокировка%'", (time.time() - rule.window,))

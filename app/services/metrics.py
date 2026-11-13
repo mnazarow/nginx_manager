@@ -148,6 +148,35 @@ def render(app) -> str:
                                                                     ({"source": "manual"}, bs["manual"])])
     o.metric("nm_bans_suspicious", "gauge", "Подозрительных IP (превысили пороги)", [({}, bs["suspicious"])])
 
+    # ---- защита от атак
+    prot = getattr(app, "protection", None)
+    if prot is not None:
+        o.metric("nm_attacks_total", "counter",
+                 "Запросов, отражённых или записанных защитой (вид: waf/challenge/threat/custom/hotlink/honeypot)",
+                 [({"site_id": sid, "site": names.get(sid, f"#{sid}"), "kind": kind, "action": act}, v)
+                  for (sid, kind, act), v in sorted(prot.totals.items())])
+        cs = prot.challenge_stats
+        o.metric("nm_challenge_total", "counter",
+                 "Проверка браузера: served — показана страница, solved — задача решена, failed — неверное "
+                 "решение, passed — запросы с действующим пропуском",
+                 [({"result": k}, cs.get(k, 0)) for k in ("served", "solved", "failed", "passed")])
+        try:
+            on_global, on_sites = prot.active_attack(now)
+        except Exception:  # noqa: BLE001
+            on_global, on_sites = False, []
+        o.metric("nm_under_attack", "gauge", "Режим «Под атакой» включён (site_id=\"*\" — для всех сайтов)",
+                 [({"site_id": "*", "site": "(все сайты)"}, 1 if on_global else 0)]
+                 + [({"site_id": s, "site": names.get(s, f"#{s}")}, 1) for s in on_sites])
+        feeds = []
+        try:
+            st = prot.feed_status()
+            for f in prot.settings().threat_feeds:
+                if f.enabled:
+                    feeds.append(({"feed": f.id, "name": f.name}, (st.get(f.id) or {}).get("count", 0)))
+        except Exception:  # noqa: BLE001
+            pass
+        o.metric("nm_threat_feed_entries", "gauge", "Адресов и подсетей в подключённом списке угроз", feeds)
+
     # ---- оповещения, журналы, система
     firing = sum(1 for s in app.alerts.status().values() if s.get("state") == "firing")
     o.metric("nm_alerts_firing", "gauge", "Активных оповещений", [({}, firing)])

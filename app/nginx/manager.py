@@ -160,7 +160,9 @@ class NginxManager:
         for r in self.db.query("SELECT id, cert_path, key_path, status FROM certificates"):
             ok = r["status"] == "valid" and Path(r["cert_path"]).exists() and Path(r["key_path"]).exists()
             certs[r["id"]] = CertInfo(r["id"], r["cert_path"], r["key_path"], ok)
-        return State(sites, streams, glob, panel, certs, overrides=self._overrides())
+        from ..models import ProtectionSettings
+        prot = ProtectionSettings.model_validate(self.db.kv_get("protection_settings", {}))
+        return State(sites, streams, glob, panel, certs, overrides=self._overrides(), protection=prot)
 
     def _overrides(self) -> Dict[str, List[str]]:
         if self.overrides_provider is None:
@@ -176,7 +178,24 @@ class NginxManager:
                      cache_dir=str(settings.cache_dir), stub_status_port=settings.stub_status_port,
                      panel_port=settings.bind_port, data_dir=str(settings.data_dir),
                      bans_file=str(settings.bans_file),
-                     geo_file=str(settings.geo_file) if self.geo_db() else "")
+                     geo_file=str(settings.geo_file) if self.geo_db() else "",
+                     threats_file=str(settings.threats_file), attack_file=str(settings.attack_file),
+                     challenge_secret=self.challenge_secret(), challenge_key=self.challenge_key(),
+                     panel_host=settings.bind_host if settings.bind_host not in ("", "0.0.0.0", "::") else "127.0.0.1",
+                     panel_scheme="https" if settings.tls_cert and settings.tls_key else "http")
+
+    def challenge_secret(self) -> str:
+        """Секрет пропусков проверки браузера (создаётся один раз; смена — все пропуска недействительны)."""
+        sec = self.db.kv_get("challenge_secret")
+        if not sec:
+            import secrets as _s
+            sec = _s.token_hex(24)
+            self.db.kv_set("challenge_secret", sec)
+        return sec
+
+    def challenge_key(self) -> str:
+        import hashlib
+        return hashlib.sha256(("nm-challenge-key:" + self.challenge_secret()).encode()).hexdigest()[:40]
 
     # =====================================================================
     #  Доступ по странам: файл сетей из базы GeoIP

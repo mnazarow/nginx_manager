@@ -197,6 +197,10 @@ scrape_configs:
 | `nm_certificate_expiry_days` | gauge | `id`, `name`, `domain`, `used` | Дней до истечения сертификата |
 | `nm_bans_active` | gauge | `source` (auto, manual) | Активные блокировки IP ([17](17-bans.md)) |
 | `nm_bans_suspicious` | gauge | — | Подозрительные IP за последнее время |
+| `nm_attacks_total` | counter | `site_id`, `site`, `kind` (waf, challenge, threat, custom, hotlink, honeypot, sni, ratelimit), `action` (blocked, detected, challenged, banned) | Запросы, отражённые или записанные защитой от атак ([19](19-protection.md)); запросы самопроверки не считаются |
+| `nm_challenge_total` | counter | `result` (served, solved, failed, passed) | Проверка браузера: показана страница, задача решена, неверное решение, запросы с действующим пропуском |
+| `nm_under_attack` | gauge | `site_id`, `site` (`*` — для всех сайтов) | 1 — включён режим «Под атакой» |
+| `nm_threat_feed_entries` | gauge | `feed`, `name` | Адресов и подсетей в подключённом списке угроз |
 | `nm_alerts_firing` | gauge | — | Сработавшие оповещения |
 | `nm_system_cpu_percent`, `nm_system_memory_percent`, `nm_system_disk_percent`, `nm_system_load1` | gauge | — | Ресурсы сервера |
 | `nm_log_lines_parsed_total`, `nm_log_parse_errors_total` | counter | — | Работа сборщика статистики |
@@ -223,6 +227,9 @@ nm_certificate_expiry_days{used="1"} < 14
 
 # недоступные основные бэкенды
 nm_backend_up{backup="0"} == 0
+
+# отражённые атаки в секунду по механизмам защиты
+sum by (kind) (rate(nm_attacks_total{action="blocked"}[5m]))
 ```
 
 ### Дашборд Grafana
@@ -241,6 +248,7 @@ Grafana 9 и новее → «Dashboards → New → Import» → загрузи
 | Трафик | запросы по сайтам; ответы по классам кодов (2xx зелёный, 3xx синий, 4xx жёлтый, 5xx красный); медиана, p95 и p99 времени ответа; исходящий и входящий трафик по сайтам; ответы кэша по статусу |
 | Бэкенды | шкала доступности каждого сервера по активным проверкам; время ответа на проверку |
 | Безопасность | отклонённые запросы (заблокированные IP, доступ по странам); активные блокировки и подозрительные IP |
+| Защита от атак | сайтов в режиме «Под атакой» и режим для всех сайтов; отражённые атаки по механизмам (фильтр, списки угроз, свои правила, хотлинкинг, ловушки); проверка браузера (показана, решена, ошибки, пропуски) и записанное фильтром в режиме обучения |
 | Сервер и nginx | соединения nginx по состояниям; CPU, память, диск (0–100 %); load average; таблица сертификатов с днями до истечения; работа сборщика статистики (строк в секунду и нераспознанных строк); версия и время работы панели, запросы и соединения по данным `stub_status` |
 
 Каждый запрос дашборда проверен на Prometheus 2.55 против работающей панели (все возвращают данные), а автотест
@@ -266,6 +274,11 @@ groups:
       - alert: CertificateExpiresSoon
         expr: nm_certificate_expiry_days{used="1"} < 14
         for: 1h
+      - alert: UnderAttack
+        expr: max by (instance, site) (nm_under_attack) == 1
+      - alert: AttacksHigh
+        expr: sum by (instance, site) (rate(nm_attacks_total{action="blocked"}[5m])) > 10
+        for: 5m
 ```
 
 ## Хранение и объём данных

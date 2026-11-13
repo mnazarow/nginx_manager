@@ -11,8 +11,9 @@ export const NAV = [
     ['/errors', 'Журнал ошибок', 'alert'], ['/backends', 'Бэкенды', 'server'], ['/system', 'Сервер', 'cpu']]],
   ['Конфигурация', [
     ['/sites', 'Сайты', 'sites'], ['/streams', 'TCP/UDP-потоки', 'stream'], ['/certs', 'Сертификаты', 'cert'],
-    ['/bans', 'Блокировки IP', 'ban'],
     ['/global', 'Настройки nginx', 'sliders'], ['/versions', 'Версии конфигурации', 'history']]],
+  ['Защита', [
+    ['/protection', 'Защита от атак', 'guard'], ['/bans', 'Блокировки IP', 'ban']]],
   ['Обслуживание', [
     ['/diagnostics', 'Диагностика', 'stethoscope'], ['/alerts', 'Оповещения', 'bell'], ['/events', 'События', 'activity']]],
   ['Администрирование', [
@@ -26,7 +27,7 @@ const PAGES = {
   '/system': 'system', '/sites': 'sites', '/streams': 'streams', '/certs': 'certs', '/global': 'global',
   '/versions': 'versions', '/diagnostics': 'diagnostics', '/alerts': 'alerts', '/events': 'events', '/users': 'users',
   '/audit': 'audit', '/settings': 'settings', '/backup': 'backup', '/docs': 'docs', '/profile': 'profile',
-  '/bans': 'bans', '/insights': 'insights',
+  '/bans': 'bans', '/insights': 'insights', '/protection': 'protection',
 };
 
 export const ctx = { state: null, schema: null, user: null, cleanup: null, route: '', params: {} };

@@ -320,6 +320,26 @@ SCHEMA: List[str] = [
     """
     ALTER TABLE api_tokens ADD COLUMN role TEXT NOT NULL DEFAULT ''
     """,
+    # ---- v6: защита от атак — журнал атак и поминутные счётчики ---------------------------------
+    """
+    CREATE TABLE IF NOT EXISTS attack_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts REAL NOT NULL, site TEXT NOT NULL DEFAULT '', ip TEXT NOT NULL DEFAULT '',
+        country TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL, rule TEXT NOT NULL DEFAULT '',
+        action TEXT NOT NULL, method TEXT NOT NULL DEFAULT '', uri TEXT NOT NULL DEFAULT '',
+        ua TEXT NOT NULL DEFAULT '', status INTEGER NOT NULL DEFAULT 0, rid TEXT NOT NULL DEFAULT '',
+        host TEXT NOT NULL DEFAULT '', test INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS attack_log_ts ON attack_log(ts);
+    CREATE INDEX IF NOT EXISTS attack_log_ip ON attack_log(ip, ts);
+    CREATE INDEX IF NOT EXISTS attack_log_rid ON attack_log(rid);
+    CREATE TABLE IF NOT EXISTS attack_minute (
+        ts INTEGER NOT NULL, site TEXT NOT NULL, kind TEXT NOT NULL, rule TEXT NOT NULL, action TEXT NOT NULL,
+        n INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (ts, site, kind, rule, action)
+    );
+    CREATE INDEX IF NOT EXISTS attack_minute_ts ON attack_minute(ts);
+    """,
 ]
 
 

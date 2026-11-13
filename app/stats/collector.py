@@ -298,6 +298,7 @@ class Aggregator:
         self.last_flush_hour_tops = 0.0
         self.passive_upstream: Counter = Counter()  # ошибки соединения к бэкендам из error.log
         self.detector = None  # BanDetector (раздел «Блокировки»), подключается ядром
+        self.protection = None  # ProtectionService (раздел «Защита»), подключается ядром
         # накопительные счётчики с момента запуска (для /metrics в формате Prometheus)
         self.totals: Dict[str, Totals] = {}
         self.geo_hits: Counter = Counter()  # (сайт, страна) -> отклонено по странам с запуска панели
@@ -349,6 +350,11 @@ class Aggregator:
             self.geo_hits[(site, country or "--")] += 1
         elif self.detector is not None and site != "panel":
             self.detector.observe(r["ip"], ts, status, r["uri"], site, is_bot, r["banned"], country, r["host"])
+        if self.protection is not None and site != "panel" and not r["banned"]:
+            try:
+                self.protection.observe(r, site, country, ts)
+            except Exception:  # noqa: BLE001 — сбор статистики важнее журнала атак
+                log.exception("журнал атак: строка не обработана")
         tot = self.totals.get(site)
         if tot is None:
             tot = self.totals[site] = Totals()

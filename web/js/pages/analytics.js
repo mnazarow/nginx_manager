@@ -98,7 +98,7 @@ export async function render(root) {
       const link = (r) => {
         const k = st.topKind;
         if (k === 'ip') return h('a', { href: `#/requests?ip=${encodeURIComponent(r.key)}` }, r.key);
-        if (k === 'uri' || k === 'slow') return h('a', { href: `#/requests?uri=${encodeURIComponent(r.key)}` }, r.key);
+        if (k === 'uri' || k === 'slow') return h('a', { href: `#/requests?uri=${encodeURIComponent(r.key)}` }, r.key || '(пустой адрес)');
         if (k === 'e4xx' || k === 'e5xx') { const [code, ...p] = r.key.split(' '); return h('a', { href: `#/requests?status=${code}&uri=${encodeURIComponent(p.join(' '))}` }, h('span', { class: statusClass(code) }, code), ' ', p.join(' ')); }
         return r.key;
       };

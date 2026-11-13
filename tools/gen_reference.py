@@ -215,6 +215,10 @@ def alert_metrics():
         "autobans": "число автоматических блокировок IP за окно (раздел «Блокировки»)",
         "insights_crit": "число находок уровня «проблема» во встроенном анализе за последние 15 минут "
                          "(обновляется раз в минуту)",
+        "attacks_blocked": "запросов, заблокированных защитой от атак (фильтр запросов, списки угроз, свои правила, "
+                           "хотлинкинг), за окно, в минуту ([19](19-protection.md))",
+        "under_attack": "1, если режим «Под атакой» включён для выбранного сайта или для всех сайтов (при «*» — "
+                        "для любого сайта), иначе 0",
     }
     for k, (label, unit) in M.ALERT_METRICS.items():
         out.append(f"| `{k}` | {label} | {unit or '—'} | {how.get(k, '')} |")
@@ -281,7 +285,7 @@ API_GROUPS = [
     ("/api/sites", "Сайты"), ("/api/streams", "Потоки TCP/UDP"),
     ("/api/config", "Конфигурация и версии"), ("/api/settings", "Настройки"), ("/api/nginx", "Управление nginx"),
     ("/api/certs", "Сертификаты"), ("/api/dns-accounts", "Сертификаты"),
-    ("/api/stats", "Статистика"), ("/api/metrics", "Статистика"), ("/api/requests", "Журналы"), ("/api/errors", "Журналы"),
+    ("/api/protection", "Защита от атак"), ("/api/stats", "Статистика"), ("/api/metrics", "Статистика"), ("/api/requests", "Журналы"), ("/api/errors", "Журналы"),
     ("/api/health", "Бэкенды"), ("/api/diagnostics", "Диагностика"), ("/api/collector", "Диагностика"),
     ("/api/insights", "Анализ и отчёты"), ("/api/reports", "Анализ и отчёты"),
     ("/api/bans", "Блокировки и доступ по странам"), ("/api/geo", "Блокировки и доступ по странам"),
@@ -331,6 +335,38 @@ def api_reference():
     return "\n".join(out).rstrip()
 
 
+def waf_categories():
+    from app.protection.rules import CATEGORIES, MODES, RULES
+    out = ["| Категория | По умолчанию | Правил (ур. 1 / 2) | Что ловит |", "|---|---|---|---|"]
+    for k, c in CATEGORIES.items():
+        n1 = sum(1 for r in RULES if r.cat == k and r.level == 1)
+        n2 = sum(1 for r in RULES if r.cat == k and r.level == 2)
+        out.append(f"| **{c['title']}** (`{k}`) | {MODES[c['default']]} | {n1} / {n2} | {c['doc']} |")
+    return "\n".join(out)
+
+
+def waf_rules():
+    from app.protection.rules import CATEGORIES, RULES, TARGETS
+    out = [f"Всего правил: **{len(RULES)}**.", ""]
+    for k, c in CATEGORIES.items():
+        rules = [r for r in RULES if r.cat == k]
+        out += [f"#### {c['title']}", "", "| Правило | Ур. | Поля | Пример атаки | CVE |", "|---|---|---|---|---|"]
+        for r in rules:
+            ex = (r.examples[0] if r.examples else "")[:90].replace("|", "\\|").replace("`", "'")
+            fields = ", ".join(TARGETS[t][1] for t in r.targets)
+            note = f" {r.note}" if r.note else ""
+            out.append(f"| `{r.id}` — {r.title}{note} | {r.level} | {fields} | `{ex}` | {r.cve or '—'} |")
+        out.append("")
+    return "\n".join(out).rstrip()
+
+
+def threat_presets():
+    out = ["| Список | Адрес |", "|---|---|"]
+    for f in M.THREAT_PRESETS:
+        out.append(f"| {f['name']} (`{f['id']}`) | <{f['url']}> |")
+    return "\n".join(out)
+
+
 BLOCKS = {
     "site": site_reference,
     "location": lambda: plain(M.Location, 4, "location"),
@@ -340,6 +376,12 @@ BLOCKS = {
     "panel": lambda: tabbed(M.PanelSettings, M.PANEL_TABS, "panel"),
     "certificate": lambda: plain(M.CertificateRequest, 3, "certificate"),
     "dns_account": lambda: plain(M.DnsAccount, 3, "dns_account"),
+    "protection": lambda: tabbed(M.ProtectionSettings, M.PROTECTION_TABS, "protection"),
+    "custom_rule": lambda: plain(M.CustomRule, 3, "custom_rule"),
+    "threat_feed": lambda: plain(M.ThreatFeed, 3, "threat_feed"),
+    "waf_categories": waf_categories,
+    "waf_rules": waf_rules,
+    "threat_presets": threat_presets,
     "alert_rule": lambda: plain(M.AlertRule, 3, "alert_rule"),
     "alert_channel": lambda: plain(M.AlertChannel, 3, "alert_channel"),
     "errors": error_categories,

@@ -207,7 +207,7 @@ async function editor(root, id) {
   const [siteRes, certs, glob, extIps] = await Promise.all([
     id ? api(`/sites/${id}`) : Promise.resolve(null), api('/certs'), api('/settings/global'), Promise.resolve([])]);
   const fields = model('site');
-  const site = siteRes ? siteRes.data : defaults(fields);
+  const site = siteRes ? deepMerge(defaults(fields), siteRes.data) : defaults(fields);
   if (!siteRes) { site.name = ''; site.backends = [{ ...defaults(model('backend')), address: '127.0.0.1', port: 8080 }]; }
   let tab = ctx.params.tab || 'main';
   let advanced = localStorage.getItem('nm-adv') === '1';

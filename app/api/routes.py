@@ -264,6 +264,9 @@ def _site_row(app, r: Dict[str, Any], live: Dict[str, Any], health: Dict[str, Li
             "certificate_id": (d.get("ssl") or {}).get("certificate_id"),
             "backends": [f"{b['address']}:{b.get('port') or ''}".rstrip(":") for b in d.get("backends", [])],
             "health": hs, "tags": d.get("tags", []), "maintenance": (d.get("maintenance") or {}).get("enabled"),
+            "protection": {"enabled": (d.get("protection") or {}).get("enabled", True),
+                           "challenge": (d.get("protection") or {}).get("challenge", "auto"),
+                           "waf": (d.get("protection") or {}).get("waf", "inherit")},
             "cache": (d.get("cache") or {}).get("enabled"), "rps": lv.get("rps", 0), "bps": lv.get("bps", 0),
             "err5_pct": lv.get("err5_pct", 0), "rt_avg": lv.get("rt_avg", 0), "updated_at": r["updated_at"],
             "locations": len(d.get("locations", [])),
@@ -290,6 +293,10 @@ async def get_site(sid: int, request: Request, user=Depends(viewer)):
     if not r:
         raise HTTPException(404, "Сайт не найден")
     data = json.loads(r["data"])
+    try:  # сайт, сохранённый прежней версией, — с умолчаниями новых настроек (иначе форма покажет их пустыми)
+        data = Site.model_validate(data).model_dump(mode="json")
+    except Exception:  # noqa: BLE001 — некорректные данные отдаются как есть, ошибки покажет проверка формы
+        pass
     for u in (data.get("security") or {}).get("basic_auth_users", []):
         u["password"] = ""
         u["password_hash"] = ""  # хранится только на сервере; при сохранении без пароля берётся прежний
@@ -2091,3 +2098,6 @@ async def ws(websocket: WebSocket):
         pass
     finally:
         app.clients.discard(client)
+
+
+from . import protection as _protection  # noqa: E402,F401 — регистрирует маршруты раздела «Защита»

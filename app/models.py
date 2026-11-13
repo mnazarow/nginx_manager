@@ -760,9 +760,356 @@ class Location(Model):
         return self
 
 
+# =============================================================================
+#  Защита от атак (раздел «Защита», docs/19-protection.md)
+# =============================================================================
+DEFAULT_LOGIN_PATHS = ["/wp-login.php", "/xmlrpc.php", "/administrator/index.php", "/user/login", "/admin/login",
+                       "/login", "/signin", "/auth/login", "/api/login", "/api/auth"]
+DEFAULT_HOTLINK_EXT = ["jpg", "jpeg", "png", "gif", "webp", "avif", "svg", "mp4", "webm", "mp3", "pdf", "zip"]
+DEFAULT_HONEYPOTS = ["/.nm-trap/", "/wp-config.php.bak", "/.git/config", "/.aws/credentials", "/phpmyadmin/setup/",
+                     "/admin/.env", "/backup.sql", "/.vscode/sftp.json"]
+DEFAULT_CHALLENGE_EXEMPT = ["/.well-known/", "/robots.txt", "/favicon.ico", "/sitemap.xml"]
+WAF_SITE_MODES = {"inherit": "как в общих настройках", "off": "выключено", "detect": "только запись в журнал",
+                  "block": "блокировать"}
+
+
+def _prot_path(v: str, what: str) -> str:
+    v = (v or "").strip()
+    if not v:
+        return ""
+    V.no_ctrl(v, what)
+    if v.startswith("~"):
+        try:
+            re.compile(v[1:])
+        except re.error as e:
+            raise V.ValidationError(f"{what}: ошибка в регулярном выражении «{v[1:]}»: {e}")
+        if '"' in v:
+            raise V.ValidationError(f"{what}: кавычки в выражении недопустимы")
+        return v
+    if not v.startswith("/"):
+        raise V.ValidationError(f"{what}: «{v}» — путь должен начинаться с / (или ~ для регулярного выражения)")
+    if any(c in v for c in "\"' ;{}\\"):
+        raise V.ValidationError(f"{what}: «{v}» — недопустимые символы")
+    return v
+
+
+class SiteProtection(Model):
+    enabled: bool = F(True, label="Защита от атак включена",
+                      help="Фильтр запросов, проверка браузера, списки угроз и ловушки для этого сайта",
+                      doc="Главный выключатель защиты сайта. Блокировки IP и доступ по странам работают "
+                          "независимо от него (вкладка «Безопасность»).")
+    waf: Literal["inherit", "detect", "off", "custom"] = F(
+        "inherit", label="Фильтр запросов (WAF)", show={"enabled": [True]},
+        labels={"inherit": "Как в общих настройках защиты", "detect": "Только запись в журнал (обучение)",
+                "off": "Выключен", "custom": "Свои режимы по категориям"},
+        doc="«Только запись в журнал» — всё, что общие настройки блокируют, лишь записывается в «Журнал атак»: "
+            "так безопасно включают защиту на новом сайте и смотрят, нет ли ложных срабатываний.",
+        rec="Новый сайт: неделю в режиме «только запись», затем «как в общих настройках».")
+    waf_overrides: Dict[str, Literal["inherit", "off", "detect", "block"]] = F(
+        factory=dict, label="Режимы категорий", ui="wafmodes", show={"enabled": [True], "waf": ["custom"]},
+        help="Категории, режим которых отличается от общих настроек")
+    waf_exclude_paths: List[str] = F(
+        factory=list, label="Не проверять пути", ui="lines", show={"enabled": [True], "waf": ["inherit", "detect", "custom"]},
+        ph="/api/upload\n~^/admin/editor/", help="Префикс пути или ~регулярное выражение. Для форм, редакторов "
+                                              "и API, где в параметрах законно бывают HTML и SQL",
+        example="/wp-admin/post.php\n~^/api/v[0-9]+/templates")
+    waf_disabled_rules: List[str] = F(factory=list, label="Отключённые правила", ui="wafrules",
+                                      show={"enabled": [True], "waf": ["inherit", "detect", "custom"]},
+                                      help="Идентификаторы правил, ложно срабатывающих на этом сайте")
+    challenge: Literal["off", "auto", "on"] = F(
+        "auto", label="Проверка браузера", show={"enabled": [True]},
+        labels={"off": "Никогда (API, вебхуки, мониторинг)", "auto": "В режиме «Под атакой»",
+                "on": "Всегда для новых посетителей"},
+        doc="Посетитель без действующего пропуска получает страницу, где браузер решает небольшую задачу "
+            "(proof-of-work) — 1–2 секунды; затем ставится cookie на заданный срок. Боты без JavaScript "
+            "и простые флудеры не проходят. «В режиме «Под атакой»» — проверка включается кнопкой или "
+            "автоматически при всплеске нагрузки.",
+        rec="Сайты для людей — «В режиме «Под атакой»». API и вебхуки — «Никогда».")
+    challenge_exclude_paths: List[str] = F(factory=list, label="Не проверять браузер на путях", ui="lines",
+                                           show={"enabled": [True], "challenge": ["auto", "on"]},
+                                           ph="/api/\n/webhooks/", help="В дополнение к общим исключениям")
+    threats: bool = F(True, label="Применять списки угроз", show={"enabled": [True]},
+                      help="Адреса из подключённых списков (Spamhaus, FireHOL, Tor…) — действие из общих настроек")
+    honeypot: bool = F(True, label="Ловушки для сканеров", show={"enabled": [True]},
+                       help="Обращение к пути-ловушке — немедленная блокировка IP")
+    login_protection: bool = F(False, label="Защита форм входа от перебора", show={"enabled": [True]},
+                               doc="Отдельное ограничение частоты для путей входа (с одного IP). Дополняет "
+                                   "автоблокировку за подбор пароля.",
+                               rec="Для WordPress, Joomla, Drupal, своих форм входа — включить.")
+    login_paths: List[str] = F(factory=lambda: list(DEFAULT_LOGIN_PATHS), label="Пути входа", ui="lines",
+                               show={"enabled": [True], "login_protection": [True]})
+    login_rate: str = F("10r/m", label="Частота попыток с одного IP", ph="10r/m",
+                        show={"enabled": [True], "login_protection": [True]})
+    login_burst: int = F(5, label="Запас (burst)", ge=0, le=1000, show={"enabled": [True], "login_protection": [True]})
+    hotlink: bool = F(False, label="Защита от хотлинкинга", show={"enabled": [True]},
+                      help="Запрет встраивания картинок и файлов сайта на чужие страницы (по Referer)")
+    hotlink_ext: List[str] = F(factory=lambda: list(DEFAULT_HOTLINK_EXT), label="Расширения", ui="tags",
+                               show={"enabled": [True], "hotlink": [True]})
+    hotlink_allow: List[str] = F(factory=list, label="Разрешённые сайты", ui="lines", ph="partner.example.com\n*.google.",
+                                 show={"enabled": [True], "hotlink": [True]},
+                                 help="Домены, которым можно встраивать (поисковики добавьте сами)")
+    strip_headers: bool = F(True, label="Удалять опасные заголовки запроса",
+                            show={"enabled": [True]},
+                            help="Proxy (httpoxy), X-Original-URL, X-Rewrite-URL, X-Middleware-Subrequest, "
+                                 "X-HTTP-Method-Override — не передаются бэкенду",
+                            doc="Закрывает httpoxy (CVE-2016-5385), обход авторизации через X-Original-URL в IIS и "
+                                "Symfony, обход middleware Next.js (CVE-2025-29927) и подмену метода.")
+    sni_check: bool = F(True, label="Проверять соответствие Host и SNI", show={"enabled": [True]},
+                        help="HTTPS-запрос с Host другого сайта на этом же соединении — ответ 421",
+                        doc="Защищает от domain fronting и подмены сайта при общем сертификате. Браузеры, "
+                            "получив 421, повторяют запрос по новому соединению — посетители ничего не замечают.")
+    bypass_ips: List[str] = F(factory=list, label="Доверенные IP (без проверок)", ui="lines", ph="203.0.113.10",
+                              show={"enabled": [True]}, help="Офис, мониторинг, партнёрские серверы")
+
+    @field_validator("waf_exclude_paths", "challenge_exclude_paths", "login_paths")
+    @classmethod
+    def _paths(cls, v): return [x for x in (_prot_path(p, "путь") for p in v) if x]
+
+    @field_validator("bypass_ips")
+    @classmethod
+    def _bip(cls, v): return [V.cidr(x) for x in v if x.strip() and x.strip() != "all"]
+
+    @field_validator("login_rate")
+    @classmethod
+    def _lr(cls, v): return V.rate(v)
+
+    @field_validator("hotlink_ext")
+    @classmethod
+    def _ext(cls, v):
+        out = []
+        for x in v:
+            x = x.strip().lower().lstrip(".")
+            if x and not re.match(r"^[a-z0-9]{1,10}$", x):
+                raise V.ValidationError(f"«{x}» — расширение файла: латиница и цифры")
+            if x and x not in out:
+                out.append(x)
+        return out
+
+    @field_validator("hotlink_allow")
+    @classmethod
+    def _hla(cls, v):
+        out = []
+        for x in v:
+            x = x.strip().lower()
+            if not x:
+                continue
+            if not re.match(r"^[a-z0-9*.-]+$", x):
+                raise V.ValidationError(f"«{x}» — домен или маска (*.example.com)")
+            out.append(x)
+        return out
+
+    @field_validator("waf_disabled_rules")
+    @classmethod
+    def _dr(cls, v):
+        from .protection.rules import RULE_BY_ID
+        out = []
+        for x in v:
+            x = x.strip()
+            if x and x not in RULE_BY_ID:
+                raise V.ValidationError(f"Неизвестное правило «{x}»")
+            if x and x not in out:
+                out.append(x)
+        return out
+
+    @field_validator("waf_overrides")
+    @classmethod
+    def _wo(cls, v):
+        from .protection.rules import CATEGORIES
+        for k in v:
+            if k not in CATEGORIES:
+                raise V.ValidationError(f"Неизвестная категория правил «{k}»")
+        return {k: m for k, m in v.items() if m != "inherit"}
+
+
+class CustomRule(Model):
+    id: str = F("", label="Идентификатор", help="Заполняется автоматически")
+    name: str = F("", label="Название", ph="Закрыть /admin снаружи", min_length=1, max_length=100)
+    enabled: bool = F(True, label="Включено")
+    sites: List[int] = F(factory=list, label="Сайты", ui="sites", help="Пусто — все сайты")
+    field: Literal["uri", "path", "args", "ua", "referer", "cookie", "host", "method", "header", "ip"] = F(
+        "path", label="Что проверять",
+        labels={"uri": "Строка запроса целиком (путь и параметры)", "path": "Путь (декодированный)",
+                "args": "Параметры запроса", "ua": "User-Agent", "referer": "Referer", "cookie": "Cookie",
+                "host": "Host (домен)", "method": "Метод", "header": "Другой заголовок", "ip": "IP-адрес клиента"})
+    header: str = F("", label="Заголовок", ph="X-Api-Key", show={"field": ["header"]})
+    op: Literal["contains", "not_contains", "prefix", "equals", "regex", "not_regex", "in", "not_in"] = F(
+        "prefix", label="Условие",
+        labels={"contains": "содержит", "not_contains": "не содержит", "prefix": "начинается с",
+                "equals": "равно", "regex": "совпадает с регулярным выражением",
+                "not_regex": "не совпадает с регулярным выражением", "in": "входит в список (IP, подсети)",
+                "not_in": "не входит в список (IP, подсети)"})
+    value: str = F("", label="Значение", ui="textarea", ph="/admin",
+                   help="Для IP — адреса и подсети через пробел или с новой строки")
+    action: Literal["block", "drop", "challenge", "log", "allow"] = F(
+        "block", label="Действие",
+        labels={"block": "Блокировать (403)", "drop": "Закрыть соединение (444)",
+                "challenge": "Проверить браузер", "log": "Только записать в журнал",
+                "allow": "Пропустить без проверок защиты"})
+
+    @model_validator(mode="after")
+    def _chk(self):
+        v = self.value.strip()
+        if not v:
+            raise V.ValidationError(f"Правило «{self.name}»: задайте значение")
+        if self.field == "ip" and self.op not in ("in", "not_in"):
+            raise V.ValidationError(f"Правило «{self.name}»: для IP-адреса условие — «входит» или «не входит в список»")
+        if self.field != "ip" and self.op in ("in", "not_in"):
+            raise V.ValidationError(f"Правило «{self.name}»: списки адресов — только для поля «IP-адрес клиента»")
+        if self.op in ("in", "not_in"):
+            self.value = " ".join(V.cidr(x) for x in v.replace(",", " ").split())
+        else:
+            V.no_ctrl(v, "значение правила")
+            if '"' in v:
+                raise V.ValidationError(f"Правило «{self.name}»: двойные кавычки в значении недопустимы")
+            if self.op in ("regex", "not_regex"):
+                try:
+                    re.compile(v)
+                except re.error as e:
+                    raise V.ValidationError(f"Правило «{self.name}»: ошибка в регулярном выражении: {e}")
+            self.value = v
+        if self.field == "header":
+            self.header = V.header_name(self.header)
+        if not self.id:
+            self.id = secrets.token_hex(4)
+        elif not re.match(r"^[a-z0-9]{1,16}$", self.id):
+            raise V.ValidationError("Идентификатор правила: латиница и цифры")
+        return self
+
+
+THREAT_PRESETS = [
+    {"id": "spamhaus", "name": "Spamhaus DROP (захваченные и преступные сети)",
+     "url": "https://www.spamhaus.org/drop/drop.txt"},
+    {"id": "spamhaus6", "name": "Spamhaus DROPv6", "url": "https://www.spamhaus.org/drop/dropv6.txt"},
+    {"id": "firehol1", "name": "FireHOL level 1 (атакующие, бот-сети, нераспределённые сети)",
+     "url": "https://iplists.firehol.org/files/firehol_level1.netset"},
+    {"id": "tor", "name": "Выходные узлы Tor", "url": "https://check.torproject.org/torbulkexitlist"},
+    {"id": "blocklistde", "name": "blocklist.de (атаки за 48 часов)", "url": "https://lists.blocklist.de/lists/all.txt"},
+    {"id": "cins", "name": "CINS Army (недоверенные адреса)", "url": "https://cinsscore.com/list/ci-badguys.txt"},
+    {"id": "etcompromised", "name": "Emerging Threats: скомпрометированные узлы",
+     "url": "https://rules.emergingthreats.net/blockrules/compromised-ips.txt"},
+    {"id": "dshield", "name": "DShield: самые активные сети атакующих",
+     "url": "https://feeds.dshield.org/block.txt"},
+]
+
+
+class ThreatFeed(Model):
+    id: str = F("", label="Идентификатор", help="Латиница и цифры")
+    name: str = F("", label="Название", min_length=1, max_length=120)
+    url: str = F("", label="Адрес списка (https://…)", ph="https://example.com/list.txt")
+    enabled: bool = F(False, label="Включён")
+    action: Literal["block", "challenge", "detect"] = F(
+        "block", label="Действие", labels={"block": "Блокировать", "challenge": "Проверить браузер",
+                                           "detect": "Только записать в журнал"})
+
+    @model_validator(mode="after")
+    def _chk(self):
+        if not re.match(r"^[a-z0-9]{1,20}$", self.id or ""):
+            raise V.ValidationError(f"Список «{self.name}»: идентификатор — латиница и цифры, до 20 символов")
+        u = urllib.parse.urlparse(self.url.strip())
+        if u.scheme not in ("https", "http", "file") or (u.scheme != "file" and not u.netloc):
+            raise V.ValidationError(f"Список «{self.name}»: адрес должен начинаться с https://")
+        self.url = self.url.strip()
+        return self
+
+
+PROTECTION_TABS = [("waf", "Фильтр запросов"), ("challenge", "Проверка браузера"), ("auto", "Автоматика и ловушки"),
+                   ("threats", "Списки угроз"), ("log", "Журнал атак")]
+
+
+class ProtectionSettings(Model):
+    """Общие настройки защиты от атак (раздел «Защита»)."""
+    waf_enabled: bool = F(True, label="Фильтр запросов (WAF) включён", tab="waf",
+                          doc="Проверка каждого запроса по каталогу сигнатур атак на уровне nginx: строка запроса и "
+                              "заголовки. Режим каждой категории — на странице «Защита → Фильтр запросов».")
+    waf_modes: Dict[str, Literal["off", "detect", "block"]] = F(factory=dict, label="Режимы категорий", tab="waf",
+                                                                ui="hidden")
+    waf_level: Literal[1, 2] = F(1, label="Строгость", tab="waf",
+                                 labels={"1": "1 — почти без ложных срабатываний", "2": "2 — строже (больше правил)"},
+                                 doc="Уровень 2 добавляет правила, которые чаще задевают необычные, но законные "
+                                     "запросы: комментарии SQL, длинные hex-строки, пустой User-Agent, localhost в "
+                                     "параметрах, панели администрирования БД.",
+                                 rec="1 для большинства сайтов; 2 — после недели в режиме записи без ложных срабатываний.")
+    waf_disabled_rules: List[str] = F(factory=list, label="Отключённые правила (на всех сайтах)", tab="waf", ui="wafrules")
+    block_status: Literal[403, 444] = F(403, label="Ответ на заблокированный запрос", tab="waf",
+                                        labels={"403": "403 и страница «Доступ запрещён» с номером запроса",
+                                                "444": "444 — закрыть соединение без ответа"},
+                                        rec="403: посетитель при ложном срабатывании сообщит номер запроса.")
+    bypass_ips: List[str] = F(factory=list, label="Доверенные IP (без проверок на всех сайтах)", tab="waf", ui="lines",
+                              ph="203.0.113.0/24")
+    challenge_difficulty: int = F(16, label="Сложность задачи (бит)", tab="challenge", ge=8, le=24,
+                                  doc="Число нулевых бит в начале хеша SHA-256. Каждый бит удваивает работу: 16 — "
+                                      "около 65 тысяч попыток, 0,2–1,5 с на телефоне; 20 — в 16 раз дольше.",
+                                  rec="16; при сильной атаке ботов с JavaScript — 18–20.")
+    challenge_ttl_hours: int = F(24, label="Пропуск действует (ч)", tab="challenge", ge=1, le=720)
+    challenge_bind_ip: bool = F(True, label="Пропуск привязан к IP", tab="challenge",
+                                doc="Решённую задачу нельзя переиспользовать с других адресов (бот-сеть не раздаст "
+                                    "один пропуск всем узлам). Посетитель мобильной сети при смене IP пройдёт "
+                                    "проверку заново.")
+    challenge_exempt_paths: List[str] = F(factory=lambda: list(DEFAULT_CHALLENGE_EXEMPT), tab="challenge",
+                                          label="Не проверять браузер на путях (все сайты)", ui="lines")
+    auto_attack: bool = F(True, label="Автоматически включать «Под атакой»", tab="challenge",
+                          doc="Панель каждую минуту сравнивает нагрузку на сайт с обычной. При резком росте "
+                              "запросов включает проверку браузера на сайтах с режимом «В режиме «Под атакой»» и "
+                              "выключает её, когда нагрузка спадёт.")
+    auto_rps: int = F(200, label="Порог: запросов в секунду", tab="challenge", ge=10, le=1000000,
+                      show={"auto_attack": [True]}, help="Средняя нагрузка сайта за минуту")
+    auto_factor: float = F(8.0, label="и во сколько раз больше обычного", tab="challenge", ge=2, le=1000,
+                           show={"auto_attack": [True]}, help="Обычная — средняя за ту же минуту прошлых суток")
+    auto_minutes: int = F(30, label="Держать режим не меньше (мин)", tab="challenge", ge=5, le=1440,
+                          show={"auto_attack": [True]})
+    autoban_waf: int = F(5, label="Блокировать IP после N срабатываний фильтра", tab="auto", ge=0, le=10000,
+                         help="За окно автоблокировки (раздел «Блокировки IP»); 0 — не блокировать",
+                         rec="3–10. Нужно включить автоблокировку в «Настройки панели → Блокировки IP».")
+    honeypot_paths: List[str] = F(factory=lambda: list(DEFAULT_HONEYPOTS), label="Пути-ловушки", tab="auto",
+                                  ui="lines", help="Первое же обращение — блокировка IP (на сайтах с включёнными "
+                                                   "ловушками). Добавьте «Disallow: /.nm-trap/» в robots.txt сайта: "
+                                                   "законные роботы туда не пойдут, а сканеры попадутся")
+    honeypot_minutes: int = F(1440, label="Блокировать попавших в ловушку (мин)", tab="auto", ge=1, le=525600)
+    threat_feeds: List[ThreatFeed] = F(factory=list, label="Списки угроз", tab="threats", ui="hidden")
+    threat_update_hours: int = F(6, label="Обновлять списки каждые (ч)", tab="threats", ge=1, le=168)
+    log_days: int = F(30, label="Хранить журнал атак (дней)", tab="log", ge=1, le=365)
+    log_per_minute: int = F(2000, label="Записей журнала в минуту, не больше", tab="log", ge=100, le=100000,
+                            help="Во время флуда счётчики считаются полностью, а подробные записи — до этого предела")
+    custom_rules: List[CustomRule] = F(factory=list, label="Свои правила", ui="hidden")
+
+    @field_validator("bypass_ips")
+    @classmethod
+    def _bip(cls, v): return [V.cidr(x) for x in v if x.strip() and x.strip() != "all"]
+
+    @field_validator("challenge_exempt_paths", "honeypot_paths")
+    @classmethod
+    def _paths(cls, v): return [x for x in (_prot_path(p, "путь") for p in v) if x]
+
+    @field_validator("waf_modes")
+    @classmethod
+    def _modes(cls, v):
+        from .protection.rules import CATEGORIES
+        return {k: m for k, m in v.items() if k in CATEGORIES}
+
+    @field_validator("waf_disabled_rules")
+    @classmethod
+    def _dr(cls, v): return SiteProtection._dr(v)
+
+    @model_validator(mode="after")
+    def _uniq(self):
+        ids = [f.id for f in self.threat_feeds]
+        if len(ids) != len(set(ids)):
+            raise V.ValidationError("Списки угроз: идентификаторы повторяются")
+        rids = [r.id for r in self.custom_rules]
+        if len(rids) != len(set(rids)):
+            raise V.ValidationError("Свои правила: идентификаторы повторяются")
+        return self
+
+    def mode(self, cat: str) -> str:
+        from .protection.rules import CATEGORIES
+        if not self.waf_enabled:
+            return "off"
+        return self.waf_modes.get(cat) or CATEGORIES[cat]["default"]
+
+
 SITE_TABS = [
     ("main", "Основное"), ("backends", "Бэкенды"), ("ssl", "SSL / HTTPS"), ("locations", "Локации"),
-    ("proxy", "Проксирование"), ("cache", "Кэш"), ("security", "Безопасность"),
+    ("proxy", "Проксирование"), ("cache", "Кэш"), ("security", "Безопасность"), ("protection", "Защита от атак"),
     ("performance", "Производительность"), ("errors", "Ошибки и обслуживание"), ("advanced", "Дополнительно"),
 ]
 
@@ -833,6 +1180,7 @@ class Site(Model):
                                     show={"type": ["proxy"]}, directive="proxy_set_header")
     cache: CacheSettings = F(factory=CacheSettings, label="Кэширование", tab="cache", show={"type": ["proxy"]})
     security: SecuritySettings = F(factory=SecuritySettings, label="Безопасность", tab="security")
+    protection: SiteProtection = F(factory=SiteProtection, label="Защита от атак", tab="protection")
     performance: PerformanceSettings = F(factory=PerformanceSettings, label="Производительность", tab="performance")
     error_pages: ErrorPagesSettings = F(factory=ErrorPagesSettings, label="Страницы ошибок", tab="errors")
     maintenance: MaintenanceSettings = F(factory=MaintenanceSettings, label="Обслуживание", tab="errors")
@@ -1449,12 +1797,13 @@ class PanelSettings(Model):
     event_channels: List[int] = F(factory=list, label="Каналы", tab="events", ui="channels",
                                   help="Пусто — уведомления о событиях выключены (события остаются в журнале «События»)")
     event_sources: List[Literal["certs", "config", "watchdog", "health", "auth", "panel", "backup", "geoip", "bans",
-                                "insights", "reports"]] = F(
-        factory=lambda: ["certs", "config", "watchdog", "auth", "panel", "backup", "geoip"],
+                                "insights", "reports", "protection"]] = F(
+        factory=lambda: ["certs", "config", "watchdog", "auth", "panel", "backup", "geoip", "protection"],
         label="Источники", tab="events",
         labels={"certs": "Сертификаты", "config": "Применение конфигурации", "watchdog": "Сторож nginx",
                 "health": "Бэкенды", "auth": "Вход в панель", "panel": "Сервис панели", "backup": "Резервные копии",
-                "geoip": "GeoIP", "bans": "Блокировки IP", "insights": "Анализ", "reports": "Отчёты"})
+                "geoip": "GeoIP", "bans": "Блокировки IP", "insights": "Анализ", "reports": "Отчёты",
+                "protection": "Защита от атак"})
     event_min_level: Literal["error", "warning", "info"] = F(
         "warning", label="Минимальный уровень", tab="events",
         labels={"error": "Только ошибки", "warning": "Ошибки и предупреждения", "info": "Все события"})
@@ -1544,6 +1893,8 @@ ALERT_METRICS = {
     "rate_limited": ("Отклонено лимитами (429/503 limit_req)", "/мин"),
     "autobans": ("Автоблокировок IP за окно", "шт."),
     "insights_crit": ("Проблем по встроенному анализу (последние 15 минут)", "шт."),
+    "attacks_blocked": ("Отражено атак защитой", "/мин"),
+    "under_attack": ("Режим «Под атакой» включён (1 — да)", ""),
 }
 
 
@@ -1761,8 +2112,9 @@ MODELS = {
     "site": Site, "stream": Stream, "global": GlobalSettings, "panel": PanelSettings,
     "alert_rule": AlertRule, "alert_channel": AlertChannel, "certificate": CertificateRequest,
     "location": Location, "backend": Backend, "dns_account": DnsAccount,
+    "protection": ProtectionSettings, "custom_rule": CustomRule, "threat_feed": ThreatFeed,
 }
-TABS = {"site": SITE_TABS, "global": GLOBAL_TABS, "panel": PANEL_TABS}
+TABS = {"site": SITE_TABS, "global": GLOBAL_TABS, "panel": PANEL_TABS, "protection": PROTECTION_TABS}
 
 
 # Подробные описания, рекомендации и примеры для подсказок и документации

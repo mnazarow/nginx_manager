@@ -18,7 +18,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Dict, Iterator, List, Optional, Tuple
 
-from ..models import (TLS_PRESETS, Backend, GlobalSettings, Location, PanelSettings, Site, Stream)
+from ..models import (TLS_PRESETS, Backend, GlobalSettings, Location, PanelSettings, ProtectionSettings, Site,
+                      Stream)
 from ..validators import quote, quote_if_needed, quote_multiline
 
 MARKER = "# NGINX-MANAGER: managed file — изменения вручную будут перезаписаны"
@@ -69,6 +70,7 @@ class State:
     panel: PanelSettings
     certs: Dict[int, CertInfo]
     overrides: Dict[str, List[str]] = field(default_factory=dict)  # "site:12" -> ["10.0.0.1:80"] отключённые
+    protection: ProtectionSettings = field(default_factory=ProtectionSettings)
 
     def to_json(self) -> dict:
         return {
@@ -76,6 +78,7 @@ class State:
             "streams": [{"id": i, "data": s.model_dump()} for i, s in self.streams],
             "global": self.glob.model_dump(),
             "panel": self.panel.model_dump(),
+            "protection": self.protection.model_dump(),
             "certs": {str(k): {"id": v.id, "cert_path": v.cert_path, "key_path": v.key_path, "ok": v.ok}
                       for k, v in self.certs.items()},
         }
@@ -88,6 +91,7 @@ class State:
             glob=GlobalSettings.model_validate(d.get("global", {})),
             panel=PanelSettings.model_validate(d.get("panel", {})),
             certs={int(k): CertInfo(**v) for k, v in d.get("certs", {}).items()},
+            protection=ProtectionSettings.model_validate(d.get("protection", {})),
         )
 
 
@@ -103,6 +107,12 @@ class Paths:
     data_dir: str
     bans_file: str = ""      # список блокировок для geo $nm_banned (пусто — блокировки не подключаются)
     geo_file: str = ""       # сети стран для geo $nm_cc (пусто — базы GeoIP нет, правила по странам не действуют)
+    threats_file: str = ""   # списки угроз для geo $nm_threat (раздел «Защита»)
+    attack_file: str = ""    # режим «Под атакой» по сайтам для map $nm_chal_auto
+    challenge_secret: str = ""  # секрет пропусков проверки браузера (secure_link_md5)
+    challenge_key: str = ""     # ключ, которым nginx подписывает запросы к панели за страницей проверки
+    panel_host: str = "127.0.0.1"
+    panel_scheme: str = "http"
 
 
 class ConfigError(Exception):
@@ -166,6 +176,8 @@ class Generator:
                           if s.enabled and s.ssl.enabled and s.ssl.http2 and state.glob.http2_global}
         if state.panel.panel_domain:
             self._h2_ports.add(443)
+        from ..protection.nginx import ProtectionConf
+        self.pc = ProtectionConf(state, paths, caps)
 
     # ------------------------------------------------------------------
     @property
@@ -187,6 +199,8 @@ class Generator:
     # ------------------------------------------------------------------
     def render(self) -> Dict[str, str]:
         self.files["http.d/00-base.conf"] = self.render_http_base()
+        self.files["http.d/05-protection.conf"] = self.pc.http_conf()
+        self.warnings += self.pc.warnings
         self.files["http.d/10-default.conf"] = self.render_default()
         for sid, site in self.st.sites:
             if not site.enabled:
@@ -423,6 +437,8 @@ class Generator:
                 self.listen(c, "", port, default=port not in taken_http)
             c.d("server_name", "_")
             c.d("set", "$nm_site", '"-"')
+            for v in ("$nm_waf", "$nm_wact", "$nm_wchk", "$nm_chk"):
+                c.d("set", v, '""')
             self.ban_check(c)
             self.acme_location(c)
             with c.block("location /"):
@@ -700,6 +716,7 @@ class Generator:
             c.d("set", "$nm_site", f'"{sid}"')
             self.ban_check(c)
             self.geo_check(c, sid, s)
+            self.pc.server(c, sid, s, https)
             c.line()
             if https:
                 c.d("ssl_certificate", cert.cert_path)
@@ -733,7 +750,8 @@ class Generator:
             if sec.conn_limit:
                 c.d("limit_conn", f"nm_cl_{sid}", sec.conn_limit)
                 c.d("limit_conn_status", 429)
-            if sec.rate_limit or any(loc.enabled and loc.rate_limit == "custom" for loc in s.locations):
+            if sec.rate_limit or any(loc.enabled and loc.rate_limit == "custom" for loc in s.locations) or \
+                    (s.protection.enabled and s.protection.login_protection):
                 c.d("limit_req_status", sec.limit_status)
             self.access_rules(c, sec.access_mode == "allowlist" and sec.allow or [], sec.deny)
             if sec.basic_auth and sec.basic_auth_users:
@@ -799,6 +817,7 @@ class Generator:
             c.line()
             if http:
                 self.acme_location(c)
+            self.pc.locations(c, sid, s)
             if sec.block_hidden_files:
                 with c.block("location ~ /\\.(?!well-known)"):
                     c.d("return", 404)
@@ -893,6 +912,7 @@ class Generator:
             c.d("proxy_set_header", "Connection", "$connection_upgrade")
         else:
             c.d("proxy_set_header", "Connection", '""')
+        self.pc.strip_headers(c, s)
         for h in s.proxy_headers + (extra_headers or []):
             c.d("proxy_set_header", h.name, quote(h.value))
         c.d("proxy_connect_timeout", px.connect_timeout or self.g.proxy_connect_timeout)
@@ -973,6 +993,7 @@ class Generator:
         c.line()
         with c.block("location /"):
             self.site_rate_limit(c, sid, s)
+            self.pc.login_limit(c, sid, s)
             if s.performance.static_expires and s.type == "proxy":
                 c.d("expires", f"$nm_exp_{sid}")
             if s.type == "proxy":
@@ -1007,6 +1028,7 @@ class Generator:
                 c.d("limit_req", f"zone=nm_rl_{sid}_l{i}", f"burst={loc.burst}", "nodelay")
             elif loc.rate_limit == "inherit":
                 self.site_rate_limit(c, sid, s)
+            self.pc.login_limit(c, sid, s)
             if loc.basic_auth == "off":
                 c.d("auth_basic", "off")
             elif loc.basic_auth == "on" and s.security.basic_auth_users:
@@ -1092,8 +1114,10 @@ class Generator:
 
     # ------------------------------------------------------------------
     def render_pages(self) -> None:
+        from ..protection.nginx import BLOCKED_PAGE
         for code, (title, text) in ERROR_PAGES.items():
             self.files[f"pages/error-{code}.html"] = page_html(code, title, text)
+        self.files["pages/blocked.html"] = BLOCKED_PAGE
         for sid, s in self.st.sites:
             if s.enabled and s.maintenance.enabled:
                 self.files[f"pages/maintenance-{sid}.html"] = page_html(
@@ -1107,7 +1131,8 @@ LOG_FORMAT_HTTP = r"""log_format nm_json escape=json '{'
     '"ua":"$upstream_addr","us":"$upstream_status","urt":"$upstream_response_time",'
     '"uct":"$upstream_connect_time","uht":"$upstream_header_time",'
     '"ref":"$http_referer","agent":"$http_user_agent","cache":"$upstream_cache_status",'
-    '"sch":"$scheme","tls":"$ssl_protocol","rid":"$request_id","cr":"$connection_requests","bn":"$nm_banned","gb":"$nm_gb"'
+    '"sch":"$scheme","tls":"$ssl_protocol","rid":"$request_id","cr":"$connection_requests","bn":"$nm_banned","gb":"$nm_gb",'
+    '"wf":"$nm_waf","wa":"$nm_wchk","ch":"$nm_chk"'
     '}';"""
 
 LOG_FORMAT_STREAM = r"""log_format nm_stream escape=json '{'

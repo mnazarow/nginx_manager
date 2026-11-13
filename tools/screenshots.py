@@ -24,6 +24,12 @@ PAGES = [
     ("analytics-heatmap", "#/analytics?view=heatmap", 3000), ("certs-dns", "#/certs?tab=dns", 2000),
     ("settings-acme", "#/settings?tab=acme", 1500), ("settings-events", "#/settings?tab=events", 1500),
     ("settings-monitor", "#/settings?tab=monitor", 1500),
+    ("protection", "#/protection", 4000), ("protection-waf", "#/protection?tab=waf", 2500),
+    ("protection-challenge", "#/protection?tab=challenge", 2500), ("protection-rules", "#/protection?tab=rules", 2000),
+    ("protection-threats", "#/protection?tab=threats", 2000), ("protection-auto", "#/protection?tab=auto", 2000),
+    ("protection-log", "#/protection?tab=log", 3000), ("protection-selftest", "#/protection?tab=selftest&site=1", 3000),
+    ("protection-score", "#/protection?tab=score", 3000), ("protection-server", "#/protection?tab=server", 3000),
+    ("site-editor-protection", "#/sites?edit=1&tab=protection", 2500),
 ]
 SCENES = {"geo-site", "sites-bulk", "backup-s3", "backup-restore"}  # снимки с действиями: --only geo-site,sites-bulk или --extras
 

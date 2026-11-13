@@ -138,6 +138,13 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
 .g3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .g4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .g6 { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.kpi5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.grade { display: inline-grid; place-items: center; width: 52px; height: 52px; border-radius: 12px; font-size: 26px; font-weight: 700; color: #fff; flex: none; }
+.grade-A, .grade-B { background: var(--good-ink); } .grade-C { background: var(--warning-ink); } .grade-D, .grade-F { background: var(--critical-ink); }
+.checklist { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.checklist li { display: grid; grid-template-columns: 18px 1fr; gap: 2px 8px; align-items: start; }
+.checklist li > div { grid-column: 2; }
+.checklist li.ok svg { color: var(--good-ink); } .checklist li.no svg { color: var(--critical-ink); }
 .span2 { grid-column: span 2; } .span3 { grid-column: span 3; }
 @media (max-width: 1280px) { .g6 { grid-template-columns: repeat(3, 1fr); } .g4 { grid-template-columns: repeat(2, 1fr); } }
 .menu-btn, .nav-backdrop { display: none; }
@@ -321,7 +328,7 @@ pre.code .errline { background: color-mix(in srgb, var(--critical) 22%, transpar
 
 /* ---------- Состояния, разное ---------- */
 .empty { padding: 38px 16px; text-align: center; color: var(--muted); }
-.empty svg { width: 36px; height: 36px; opacity: .5; margin-bottom: 6px; }
+.empty > svg { width: 36px; height: 36px; opacity: .5; margin-bottom: 6px; }
 .empty h1, .empty h2, .empty h3 { color: var(--ink-2); margin-bottom: 4px; font-size: 15px; }
 .loading { padding: 30px; text-align: center; color: var(--muted); }
 .spinner { width: 18px; height: 18px; border: 2px solid var(--line-2); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; display: inline-block; vertical-align: middle; }

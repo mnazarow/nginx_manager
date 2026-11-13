@@ -152,11 +152,14 @@ def test_metrics_format(admin):
     r = admin.get("/metrics")
     assert r.status_code == 200 and r.headers["content-type"].startswith("text/plain")
     assert "nginx_manager_info{" in r.text and "# TYPE nm_bans_active gauge" in r.text
+    assert "# TYPE nm_attacks_total counter" in r.text and 'nm_under_attack{site_id="*"' in r.text
+    assert 'nm_challenge_total{result="solved"}' in r.text
 
 
 def test_docs_and_traversal(admin):
     docs = admin.get("/api/docs").json()
     assert any(d["name"] == "18-insights.md" for d in docs)
+    assert any(d["name"] == "19-protection.md" for d in docs)
     assert admin.get("/api/docs/17-bans.md").status_code == 200
     assert admin.get("/api/docs/..%2f..%2fetc%2fpasswd").status_code == 404
     assert admin.get("/api/backup/download/..%2fnginx-manager.db").status_code == 404

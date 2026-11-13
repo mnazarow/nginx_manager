@@ -170,14 +170,17 @@ export async function searchDocs(query, limit = 60) {
 const TAB_HEADINGS = {
   sites: { main: 'Вкладка «Основное»', backends: 'Вкладка «Бэкенды»', ssl: 'Вкладка «SSL / HTTPS»', locations: 'Вкладка «Локации»',
     proxy: 'Вкладка «Проксирование»', cache: 'Вкладка «Кэш»', security: 'Вкладка «Безопасность»', performance: 'Вкладка «Производительность»',
-    errors: 'Вкладка «Ошибки и обслуживание»', advanced: 'Вкладка «Дополнительно»' },
+    errors: 'Вкладка «Ошибки и обслуживание»', advanced: 'Вкладка «Дополнительно»', protection: 'Вкладка «Защита от атак»' },
+  protection: { waf: 'Фильтр запросов (WAF)', challenge: 'Проверка браузера и режим «Под атакой»', rules: 'Свои правила',
+    threats: 'Списки угроз', auto: 'Автоматика и ловушки', log: 'Журнал атак', selftest: 'Самопроверка',
+    score: 'Оценка защищённости', server: 'Сеть и сервер' },
 };
 const PAGE_HELP = {
   '/': ['09-monitoring.md', 'Дашборд (реальное время)'], '/analytics': ['09-monitoring.md', 'Аналитика (история)'],
   '/requests': ['09-monitoring.md', 'Журнал запросов'], '/errors': ['09-monitoring.md', 'Журнал ошибок nginx'],
   '/backends': ['09-monitoring.md', 'Бэкенды'], '/system': ['09-monitoring.md', 'Сервер'],
   '/sites': ['05-sites.md', ''], '/streams': ['06-streams.md', ''], '/certs': ['07-certificates.md', ''],
-  '/bans': ['17-bans.md', ''], '/global': ['08-global-settings.md', 'Справочник параметров'],
+  '/bans': ['17-bans.md', ''], '/protection': ['19-protection.md', ''], '/global': ['08-global-settings.md', 'Справочник параметров'],
   '/versions': ['15-backup-versions.md', 'Версии конфигурации'], '/diagnostics': ['10-diagnostics.md', ''],
   '/alerts': ['11-alerts.md', ''], '/events': ['10-diagnostics.md', 'Автоматическое восстановление'],
   '/users': ['12-security.md', 'Пользователи и роли'], '/audit': ['12-security.md', 'Аудит'],
@@ -190,6 +193,7 @@ export function helpFor(route, params = {}) {
   if (route === '/sites' && params.edit && params.tab && TAB_HEADINGS.sites[params.tab]) sec = slugify(TAB_HEADINGS.sites[params.tab]);
   else if (route === '/sites' && params.edit) sec = slugify(TAB_HEADINGS.sites.main);
   else if (route === '/bans' && params.tab === 'countries') sec = slugify('Доступ по странам');
+  else if (route === '/protection' && TAB_HEADINGS.protection[params.tab]) sec = slugify(TAB_HEADINGS.protection[params.tab]);
   else if (route === '/analytics' && params.view === 'sla') sec = slugify('Доступность сайтов (SLA)');
   else if (route === '/analytics' && params.view === 'heatmap') sec = slugify('Нагрузка по дням недели и часам');
   return { page, sec, tab: (route === '/global' || route === '/settings') ? params.tab || '' : '' };

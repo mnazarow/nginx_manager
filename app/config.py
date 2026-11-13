@@ -139,6 +139,16 @@ class Settings:
         return self.managed_dir / "bans.conf"
 
     @property
+    def threats_file(self) -> Path:
+        """Списки угроз для geo $nm_threat (раздел «Защита»); обновляется панелью по расписанию."""
+        return self.managed_dir / "threats.conf"
+
+    @property
+    def attack_file(self) -> Path:
+        """Режим «Под атакой» по сайтам для map $nm_chal_auto; меняется кнопкой и автоматикой."""
+        return self.managed_dir / "attack-mode.conf"
+
+    @property
     def geo_file(self) -> Path:
         """Сети стран для geo $nm_cc (доступ по странам); собирается панелью из базы GeoIP."""
         return self.managed_dir / "geo-countries.conf"
@@ -174,6 +184,12 @@ class Settings:
             if self.managed_dir.is_dir() and not self.bans_file.exists():
                 self.bans_file.write_text("# Nginx Manager: заблокированные IP (раздел «Блокировки»)\n")
                 os.chmod(self.bans_file, 0o644)
+            if self.managed_dir.is_dir() and not self.threats_file.exists():
+                self.threats_file.write_text("# Nginx Manager: списки угроз (раздел «Защита»)\n")
+                os.chmod(self.threats_file, 0o644)
+            if self.managed_dir.is_dir() and not self.attack_file.exists():
+                self.attack_file.write_text('# Nginx Manager: режим «Под атакой»\ndefault "";\n')
+                os.chmod(self.attack_file, 0o644)
             if self.managed_dir.is_dir() and not self.geo_file.exists():
                 from .services.geoblock import empty_file
                 self.geo_file.write_text(empty_file())
