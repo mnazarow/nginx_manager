@@ -14,6 +14,9 @@
     nmctl versions                    история применённых конфигураций
     nmctl rollback <id>               откат к версии
     nmctl sites                       список сайтов
+    nmctl vulns status                базы защиты: источники, число записей, карта путей эксплойтов
+    nmctl vulns update                обновить базу уязвимостей (и правила OWASP CRS, если источник — GitHub)
+    nmctl vulns search ТЕКСТ          поиск по базе уязвимостей; nmctl vulns show CVE — карточка
 """
 from __future__ import annotations
 
@@ -406,6 +409,64 @@ def cmd_sites(a) -> int:
     return 0
 
 
+def cmd_vulns(a) -> int:
+    from .core import App
+    from .protection.vulndb import SOURCES
+    app = App()
+    db = app.protection.vulndb
+    if a.action == "update":
+        res = asyncio.run(db.update(force=True, user="nmctl"))
+        a.action = "status"
+        if not res.get("ok") or not (res.get("map") or {}).get("ok", True) or \
+                not (res.get("crs") or {}).get("ok", True):
+            cmd_vulns(a)
+            return 1
+    if a.action == "status":
+        s = db.summary()
+        mp = app.db.kv_get("vulndb_map", {}) or {}
+        print(f"{C['b']}База уязвимостей{C['r']} ({'обновляется' if s['enabled'] else 'обновление выключено'}): "
+              f"всего {s['total']}, эксплуатируемых {s['kev']} (+{s['kev_week']} за неделю), "
+              f"атаковали ваши сайты: {s['seen']}")
+        print(f"Карта путей эксплойтов: {mp.get('entries', 0)} путей, {mp.get('cves', 0)} уязвимостей, "
+              f"режим «{s['mode']}»")
+        order = ["kev", "nuclei", "templates", "cvelist", "epss", "exploitdb", "crs"]
+        for k, st in sorted(s["sources"].items(), key=lambda kv: order.index(kv[0]) if kv[0] in order else 99):
+            title = SOURCES.get(k, ("nuclei-templates: шаблоны", ""))[0]
+            when = time.strftime("%Y-%m-%d %H:%M", time.localtime(st["updated"])) if st.get("updated") else "ещё нет"
+            mark = "fail" if st.get("error") else "ok" if st.get("ok") else "skip"
+            line = f"{C[mark]}{ICON[mark]}{C['r']} {title:<36} {str(st.get('count') or st.get('tag') or ''):>7}  {when}"
+            print(line + (f"  {st['error'][:120]}" if st.get("error") else ""))
+        return 1 if any((v or {}).get("error") for v in s["sources"].values()) else 0
+    if a.action == "show":
+        if not a.query:
+            raise ValueError("укажите номер CVE: nmctl vulns show CVE-2021-44228")
+        v = db.get(a.query)
+        if not v:
+            raise ValueError(f"{a.query.upper()}: нет в базе")
+        print(f"{C['b']}{v['cve']}{C['r']} {v['name']}")
+        for label, val in (("Продукт", f"{v['vendor']} {v['product']}".strip()),
+                           ("CVSS", f"{v['cvss'] or '—'} {v['cvss_vector']}".strip()),
+                           ("EPSS", f"{v['epss'] * 100:.1f}%" if v["epss"] else "—"),
+                           ("CISA KEV", f"добавлена {v['kev_added']}, срок {v['kev_due'] or '—'}" if v["kev"] else "нет"),
+                           ("Вымогатели", "да" if v["ransomware"] else "нет"), ("Тип", v["cwe"] or "—"),
+                           ("Затронутые версии", v["affected"] or "—"),
+                           ("Эксплойты Exploit-DB", ", ".join(f"EDB-{x}" for x in v["exploits"]) or "—"),
+                           ("Пути эксплойта", ", ".join(v["paths"]) or "—"),
+                           ("В фильтре путей", "исключена" if v["excluded"] else "да" if v["active"] else "нет"),
+                           ("Попыток на сайтах", sum(h["n"] for h in v["hits"]))):
+            print(f"  {label + ':':<22} {val}")
+        if v["description"]:
+            print(f"  {v['description'][:600]}")
+        return 0
+    r = db.search(q=a.query or "", flt=a.filter, sort=a.sort, limit=a.limit)
+    for v in r["rows"]:
+        flags = ("KEV " if v["kev"] else "") + ("путь " if v["active"] else "") + ("R " if v["ransomware"] else "")
+        print(f"{v['cve']:<16} {str(v['cvss'] or ''):>4}  {flags:<14} {(v['vendor'] + ' ' + v['product']).strip()[:30]:<30} "
+              f"{v['name'][:70]}")
+    print(f"Найдено: {r['total']}" + (f", показано {len(r['rows'])}" if r["total"] > len(r["rows"]) else ""))
+    return 0
+
+
 def main(argv=None) -> int:
     import os
     os.umask(0o022)
@@ -438,6 +499,13 @@ def main(argv=None) -> int:
     p = sub.add_parser("rollback", help="откат к версии")
     p.add_argument("id", type=int)
     sub.add_parser("sites", help="список сайтов")
+    p = sub.add_parser("vulns", help="база уязвимостей и обновление баз защиты")
+    p.add_argument("action", choices=["status", "update", "search", "show"])
+    p.add_argument("query", nargs="?", default="", help="текст поиска или номер CVE")
+    p.add_argument("--filter", default="", choices=["", "kev", "patched", "covered", "uncovered", "seen", "exploit",
+                                                     "ransomware", "critical", "epss"])
+    p.add_argument("--sort", default="kev", choices=["kev", "new", "cvss", "epss", "seen", "cve"])
+    p.add_argument("--limit", type=int, default=30)
     a = ap.parse_args(argv)
     if not a.cmd:
         ap.print_help()
@@ -445,7 +513,7 @@ def main(argv=None) -> int:
     cmd = {"status": cmd_status, "apply": cmd_apply, "test": cmd_test, "diag": cmd_diag, "user": cmd_user,
            "allowlist": cmd_allowlist, "backup": cmd_backup, "restore": cmd_restore, "export": cmd_export,
            "import": cmd_import,
-           "versions": cmd_versions, "rollback": cmd_rollback, "sites": cmd_sites}[a.cmd]
+           "versions": cmd_versions, "rollback": cmd_rollback, "sites": cmd_sites, "vulns": cmd_vulns}[a.cmd]
     from .nginx.manager import ApplyError
     try:
         return cmd(a)

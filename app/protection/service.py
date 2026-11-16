@@ -456,6 +456,13 @@ class ProtectionAnalytics:
                 feeds[rule.split("/", 1)[-1].split(":")[0]] += n
         feed_names = {f.id: f.name for f in self.svc.settings().threat_feeds}
         rl = Counter({rule.split("/", 1)[-1]: n for (kind, rule), n in rule_tot.items() if kind == "ratelimit"})
+        vul = Counter({rule[5:]: n for (kind, rule), n in rule_tot.items() if kind == "waf" and rule.startswith("vuln/")})
+        vul_rows = []
+        for cve, n in vul.most_common(10):
+            v = self.db.one("SELECT name, vendor, product, kev, cvss FROM vulns WHERE cve=?", (cve,)) or {}
+            vul_rows.append({"cve": cve, "n": n, "ips": rule_ips.get(f"vuln/{cve}", 0), "name": v.get("name") or "",
+                             "product": f"{v.get('vendor') or ''} {v.get('product') or ''}".strip(),
+                             "kev": v.get("kev") or 0, "cvss": v.get("cvss") or 0})
         pcd, pca = self._cond(since, site=site)
         ch = {r["key"]: {"n": r["n"], "ms": r["ms"]} for r in self.db.query(
             f"SELECT key, SUM(n) AS n, SUM(ms) AS ms FROM prot_minute WHERE {pcd} AND metric='challenge' GROUP BY key",
@@ -494,7 +501,7 @@ class ProtectionAnalytics:
             "heat": heat, "categories": [{"key": k, "n": n} for k, n in cats.most_common()],
             "tools": [{"key": k, "title": TOOL_TITLES.get(k, k), "n": n} for k, n in tools.most_common()],
             "methods": methods, "statuses": statuses, "paths": paths, "hosts": hosts, "countries": countries,
-            "rules": top_rules,
+            "rules": top_rules, "vulns": vul_rows, "vulns_total": len(vul),
             "feeds": [{"id": k, "name": feed_names.get(k, k), "n": n} for k, n in feeds.most_common()],
             "ratelimit": [{"id": k, "title": self.svc.rule_title("ratelimit", "ratelimit/" + k), "n": n}
                           for k, n in rl.most_common()],
@@ -861,7 +868,7 @@ class ProtectionService:
         return {"ok": ok, "output": out[-1000:] if not ok else "", "state": self.attack_state()}
 
     def alert_metric(self, m: str, site: str, window: int) -> Tuple[Optional[float], str]:
-        """Значение метрик оповещений attacks_blocked (в минуту за окно) и under_attack (1/0)."""
+        """Значение метрик оповещений attacks_blocked и vuln_attempts (в минуту за окно) и under_attack (1/0)."""
         now = time.time()
         if m == "under_attack":
             glob, sites = self.active_attack(now)
@@ -869,6 +876,18 @@ class ProtectionService:
             return (1.0 if on else 0.0), ("для всех сайтов" if glob else
                                           ", ".join(self.site_name(x) for x in sites) if on else "")
         start = int((now - window) // 60) * 60
+        if m == "vuln_attempts":
+            q = "SELECT rule, SUM(n) AS n FROM attack_minute WHERE ts>=? AND kind='waf' AND rule LIKE 'vuln/%'"
+            args = [start]
+            if site != "*":
+                q += " AND site=?"
+                args.append(str(site))
+            by = Counter({r["rule"][5:]: r["n"] or 0 for r in self.db.query(q + " GROUP BY rule", tuple(args))})
+            for (ts, s, kind, rule, _act), n in self.counts.items():
+                if ts >= start and kind == "waf" and rule.startswith("vuln/") and (site == "*" or s == str(site)):
+                    by[rule[5:]] += n
+            minutes = max(1.0, (now - start) / 60)
+            return round(sum(by.values()) / minutes, 2), ", ".join(f"{k}: {v}" for k, v in by.most_common(5))
         q = "SELECT kind, SUM(n) AS n FROM attack_minute WHERE ts>=? AND action='blocked'"
         args: list = [start]
         if site != "*":
@@ -1647,6 +1666,8 @@ class ProtectionService:
         """Обновить источники, срок которых подошёл; карту путей пересобрать при новых данных или раз в сутки
         (меняются пути, которые сайты обслуживают)."""
         p = self.settings()
+        if p.crs_source == "package" and self.vulndb.active_crs():
+            self.vulndb.use_package_crs()  # выпуск с GitHub выбран вручную или осталась старая настройка
         st = self.vulndb.status()
         now = time.time()
         srcs = (("kev", p.vulndb_kev), ("nuclei", p.vulndb_nuclei), ("epss", p.vulndb_epss),
@@ -1686,6 +1707,7 @@ class ProtectionService:
                     last_clean = now
                     await asyncio.to_thread(self.cleanup)
                     await asyncio.to_thread(self.vulndb.record_seen)
+                    await asyncio.to_thread(self.vulndb.prune_templates)
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001 — фоновая задача не должна останавливаться

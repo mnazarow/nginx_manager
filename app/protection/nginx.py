@@ -82,6 +82,19 @@ def find_crs(prefer: str = "") -> Tuple[str, str]:
     return "", ""
 
 
+def crs_label(crs_dir: str) -> str:
+    """Версия CRS для показа: «3.3.5», «4.30.0» ('' — каталог не найден)."""
+    from pathlib import Path
+    if not crs_dir:
+        return ""
+    try:
+        m = re.search(r"ver\.(\d+\.\d+\.\d+)", (Path(crs_dir) / "REQUEST-901-INITIALIZATION.conf")
+                      .read_text(errors="replace")[:20000])
+    except OSError:
+        return ""
+    return m.group(1) if m else ""
+
+
 def modsec_ready(caps) -> bool:
     return bool(getattr(caps, "modsecurity", False))
 

@@ -21,9 +21,12 @@ import gzip
 import io
 import json
 import logging
+import os
 import re
 import shutil
+import subprocess
 import tarfile
+import tempfile
 import time
 import urllib.parse
 import urllib.request
@@ -49,6 +52,8 @@ ENRICH_TTL = 30 * 86400
 MAX_ENRICH = 2500
 CRS_LATEST = "https://api.github.com/repos/coreruleset/coreruleset/releases/latest"
 CRS_TARBALL = "https://github.com/coreruleset/coreruleset/archive/refs/tags/{tag}.tar.gz"
+CRS_GIT = "https://github.com/coreruleset/coreruleset"  # запасной путь: git ls-remote и git clone выпуска
+CRS_KEEP = 2  # сколько скачанных выпусков хранить (текущий и предыдущий — для отката)
 
 SOURCES = {
     "kev": ("CISA KEV", "каталог уязвимостей, которые эксплуатируются на практике"),
@@ -738,6 +743,62 @@ class VulnDB:
         dest.chmod(0o755)
         return dest
 
+    @staticmethod
+    def latest_crs_tag() -> str:
+        """Последний выпуск CRS: API GitHub, а если он недоступен — git ls-remote (git есть почти везде)."""
+        try:
+            info = json.loads(fetch_bytes(CRS_LATEST, 30, 2 * 1048576, {"Accept": "application/vnd.github+json"}))
+            if info.get("tag_name"):
+                return str(info["tag_name"])
+        except Exception as e:  # noqa: BLE001
+            api_err = _err(e)
+        else:
+            api_err = "в ответе нет tag_name"
+        if not shutil.which("git"):
+            raise ValueError(f"api.github.com: {api_err}; git не установлен")
+        r = subprocess.run(["git", "ls-remote", "--tags", "--refs", CRS_GIT], capture_output=True, text=True,
+                           timeout=60, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+        tags = re.findall(r"refs/tags/(v\d+\.\d+\.\d+)$", r.stdout, re.M)
+        if r.returncode != 0 or not tags:
+            raise ValueError(f"api.github.com: {api_err}; git ls-remote: {(r.stderr or 'выпусков нет').strip()[-200:]}")
+        return max(tags, key=lambda t: tuple(int(x) for x in t[1:].split(".")))
+
+    @staticmethod
+    def crs_archive(tag: str) -> bytes:
+        """Архив выпуска: с GitHub, а если он недоступен — git clone выпуска и упаковка rules/ и примера настроек."""
+        try:
+            return fetch_bytes(CRS_TARBALL.format(tag=tag), 300, 100 * 1048576)
+        except Exception as e:  # noqa: BLE001
+            if not shutil.which("git"):
+                raise
+            err = _err(e)
+        with tempfile.TemporaryDirectory(prefix="nm-crs-") as tmp:
+            r = subprocess.run(["git", "-c", "advice.detachedHead=false", "clone", "-q", "--depth", "1", "--branch",
+                                tag, CRS_GIT, f"{tmp}/src"], capture_output=True, text=True, timeout=600,
+                               env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_LFS_SKIP_SMUDGE": "1"})
+            if r.returncode != 0:
+                raise ValueError(f"архив: {err}; git clone: {r.stderr.strip()[-200:]}")
+            buf = io.BytesIO()
+            with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+                src = Path(tmp) / "src"
+                for f in sorted((src / "rules").iterdir()):
+                    if f.is_file():
+                        tf.add(str(f), arcname=f"coreruleset-{tag}/rules/{f.name}")
+                ex = src / "crs-setup.conf.example"
+                if ex.is_file():
+                    tf.add(str(ex), arcname=f"coreruleset-{tag}/crs-setup.conf.example")
+            return buf.getvalue()
+
+    def prune_crs(self, keep: str = "") -> None:
+        """Удалить старые скачанные выпуски CRS, кроме выбранного и последних CRS_KEEP."""
+        root = self.crs_root()
+        dirs = sorted((d for d in root.iterdir() if d.is_dir() and not d.name.startswith(".")),
+                      key=lambda d: d.stat().st_mtime, reverse=True)
+        active = {Path(x).name for x in (keep, self.active_crs()) if x}
+        for d in dirs[CRS_KEEP:]:
+            if d.name not in active:
+                shutil.rmtree(d, ignore_errors=True)
+
     async def update_crs(self, force: bool = False, user: str = "system", url: str = "") -> Dict[str, Any]:
         """Скачать последний выпуск CRS и переключиться на него через применение конфигурации (nginx -t);
         при ошибке — вернуть прежний каталог."""
@@ -749,14 +810,13 @@ class VulnDB:
                 m = re.search(r"(v?\d+\.\d+\.\d+)", url)
                 tag = m.group(1) if m else tag
             else:
-                info = json.loads(await asyncio.to_thread(fetch_bytes, CRS_LATEST, 30, 2 * 1048576,
-                                                          {"Accept": "application/vnd.github+json"}))
-                tag = info.get("tag_name") or ""
+                tag = await asyncio.to_thread(self.latest_crs_tag)
             cur = self.active_crs()
             if not force and cur and Path(cur).name == tag:
                 self._set_status("crs", ok=True, tag=tag, updated=now, error="", dir=cur)
                 return {"ok": True, "tag": tag, "changed": False}
-            data = await asyncio.to_thread(fetch_bytes, url or CRS_TARBALL.format(tag=tag), 300, 100 * 1048576)
+            data = await asyncio.to_thread(fetch_bytes, url, 300, 100 * 1048576) if url else \
+                await asyncio.to_thread(self.crs_archive, tag)
             dest = await asyncio.to_thread(self.install_crs, data, tag)
         except Exception as e:  # noqa: BLE001
             self._set_status("crs", ok=False, error=_err(e)[:400], tried=now)
@@ -783,6 +843,7 @@ class VulnDB:
             return {"ok": False, "error": err}
         self._set_status("crs", ok=True, tag=tag, updated=now, error="", dir=str(dest))
         self.db.event("info", "protection", f"Правила OWASP CRS обновлены до {tag}")
+        await asyncio.to_thread(self.prune_crs, str(dest))
         return {"ok": True, "tag": tag, "changed": True}
 
     def use_package_crs(self) -> None:
@@ -832,6 +893,18 @@ class VulnDB:
                       "template": f"https://github.com/projectdiscovery/nuclei-templates/blob/main/{r['template']}"
                       if r.get("template") else ""}
         return r
+
+    def prune_templates(self, days: int = 90) -> int:
+        """Удалить из кэша шаблоны, которые не обновлялись дольше срока (уязвимость вышла из охвата)."""
+        cut, n = time.time() - days * 86400, 0
+        for f in (self.dir() / "tpl").glob("*.yaml"):
+            try:
+                if f.stat().st_mtime < cut:
+                    f.unlink()
+                    n += 1
+            except OSError:
+                pass
+        return n
 
     def record_seen(self) -> None:
         """Сколько раз уязвимость пытались эксплуатировать на сайтах (по журналу атак) — для сортировки и анализа."""

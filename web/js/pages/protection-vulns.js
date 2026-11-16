@@ -6,6 +6,7 @@ import { h, mount, icon, toast, modal, loading, card, kpi, badge, table, fmtInt,
   debounce, confirmDlg } from '../ui.js';
 import { model, renderFields, errorsToMap } from '../forms.js';
 import { can, refreshState } from '../app.js';
+import { openIp } from './protection-more.js';
 
 const GROUPS = { threats: 'Список угроз', bots: 'Адреса робота', vulns: 'База уязвимостей', crs: 'Правила ModSecurity' };
 const FILTERS = [['', 'Все'], ['kev', 'Эксплуатируемые'], ['patched', 'В фильтре путей'], ['covered', 'Встроенные правила'],
@@ -216,6 +217,13 @@ export async function openVuln(cve, { sites = [] } = {}) {
         { title: 'Раз', num: true, render: (r) => fmtInt(r.n) },
         { title: 'Последняя', render: (r) => h('span', { class: 'small muted' }, fmtAgo(r.last)) },
       ], hits) : empty('Не было', 'Запросов по путям этой уязвимости не приходило', null, 'shield'), { flush: !!hits.length })),
+    (v.events || []).length ? card('Последние попытки', table([
+      { title: 'Время', render: (e) => h('span', { class: 'small nowrap' }, fmtDate(e.ts)) },
+      { title: 'Адрес', render: (e) => h('a', { href: '#', onclick: (ev) => { ev.preventDefault(); m.close(); openIp(e.ip, { sites }); } }, e.ip) },
+      { title: 'Сайт', render: (e) => h('span', { class: 'small' }, siteName(e.site)) },
+      { title: 'Запрос', render: (e) => h('code', { class: 'small', style: { wordBreak: 'break-all' } }, `${e.method} ${e.uri}`) },
+      { title: 'Ответ', num: true, render: (e) => e.status || '—' },
+    ], v.events.slice(0, 10)), { flush: true, cls: 'mt' }) : null,
     links.length ? h('div', { class: 'row mt small', style: { gap: '12px' } }, links.map(([l, u]) => h('a', { href: u, target: '_blank', rel: 'noopener noreferrer' }, l, ' ↗'))) : null,
     actions.length ? h('div', { class: 'row mt' }, actions) : null);
 }

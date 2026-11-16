@@ -371,6 +371,97 @@ def test_crs_install_and_prefer(vapp, tmp_path):
     assert db.active_crs() == ""
 
 
+def test_crs_from_git_fallback(vapp, tmp_path, monkeypatch):
+    """API GitHub и архив недоступны — последний выпуск через git ls-remote, правила — git clone выпуска."""
+    if not shutil.which("git"):
+        pytest.skip("нужен git")
+    app, _src = vapp
+    db = app.protection.vulndb
+    repo = tmp_path / "crs-repo"
+    (repo / "rules").mkdir(parents=True)
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+           "GIT_COMMITTER_EMAIL": "t@t"}
+
+    def git(*a):
+        subprocess.run(["git", "-C", str(repo), *a], check=True, capture_output=True, env=env)
+    git("init", "-q")
+    for ver in ("4.9.0", "4.10.0"):
+        (repo / "rules" / "REQUEST-901-INITIALIZATION.conf").write_text(f"# OWASP CRS ver.{ver}\n")
+        (repo / "rules" / "REQUEST-942-APPLICATION-ATTACK-SQLI.conf").write_text("SecRule x\n")
+        (repo / "crs-setup.conf.example").write_text("# setup\n")
+        (repo / "README.md").write_text("не нужен\n")
+        git("add", "-A")
+        git("commit", "-qm", ver)
+        git("tag", f"v{ver}")
+    monkeypatch.setattr(V, "CRS_LATEST", "https://api.github.invalid/latest")
+    monkeypatch.setattr(V, "CRS_TARBALL", "https://archive.invalid/{tag}.tar.gz")
+    monkeypatch.setattr(V, "CRS_GIT", str(repo))
+    assert V.VulnDB.latest_crs_tag() == "v4.10.0"  # сравнение версий, а не строк
+    r = asyncio.run(db.update_crs())
+    assert r["ok"] and r["tag"] == "v4.10.0" and r["changed"]
+    from app.protection.nginx import crs_label
+    rules = app.nginx.crs()[0]
+    assert rules.endswith("v4.10.0/rules") and crs_label(rules) == "4.10.0" and app.nginx.crs()[1] == "4100"
+    assert not (Path(rules).parent / "README.md").exists()
+    st = db.status()["crs"]
+    assert st["ok"] and st["tag"] == "v4.10.0"
+    again = asyncio.run(db.update_crs())
+    assert again["ok"] and not again["changed"]
+    # старые выпуски удаляются, текущий и предыдущий остаются
+    root = db.crs_root()
+    for old in ("v4.1.0", "v4.2.0", "v4.3.0"):
+        (root / old / "rules").mkdir(parents=True)
+        os.utime(root / old, (1, 1))
+    db.prune_crs()
+    left = sorted(d.name for d in root.iterdir() if d.is_dir())
+    assert "v4.10.0" in left and len(left) == V.CRS_KEEP
+
+
+def test_nmctl_vulns(vapp, capsys):
+    from app import cli
+    assert cli.main(["vulns", "update"]) == 0
+    out = capsys.readouterr().out
+    assert "эксплуатируемых 4" in out and "CISA KEV" in out and "Карта путей эксплойтов" in out
+    assert cli.main(["vulns", "search", "fortinet"]) == 0
+    out = capsys.readouterr().out
+    assert "CVE-2018-13379" in out and "KEV" in out and "Найдено: 1" in out
+    assert cli.main(["vulns", "search", "--filter", "exploit"]) == 0 and "CVE-2024-4577" in capsys.readouterr().out
+    assert cli.main(["vulns", "show", "cve-2024-4577"]) == 0
+    out = capsys.readouterr().out
+    assert "PHP Group PHP" in out and "EDB-50001" in out and "8.1.29" in out
+    assert cli.main(["vulns", "show", "CVE-1999-0001"]) == 1
+    assert cli.main(["vulns", "show"]) == 1
+
+
+def test_vuln_alert_metric_and_probed_insight(vapp):
+    app, _src = vapp
+    db = app.protection.vulndb
+    db._update_sync(force=True)
+    pr = app.protection
+    now = time.time()
+    base = {"method": "GET", "status": 200, "host": "s.test", "ustatus": "", "ua": "Mozilla/5.0", "wa": "detect"}
+    for i in range(6):
+        pr.observe({**base, "ip": f"198.51.100.{i % 3}", "uri": "/remote/fgt_lang", "wf": "vuln/CVE-2018-13379",
+                    "rid": f"v{i}"}, "1", "", now - 30)
+    val, det = pr.alert_metric("vuln_attempts", "*", 300)  # до записи в базу — из счётчиков в памяти
+    assert val > 0 and "CVE-2018-13379: 6" in det
+    pr.flush()
+    val, det = pr.alert_metric("vuln_attempts", "1", 300)
+    assert "CVE-2018-13379: 6" in det and pr.alert_metric("vuln_attempts", "2", 300)[0] == 0
+    an = pr.analytics.analytics(1)
+    assert an["vulns"][0]["cve"] == "CVE-2018-13379" and an["vulns"][0]["n"] == 6 and an["vulns"][0]["ips"] == 3
+    assert an["vulns"][0]["product"] == "Fortinet FortiOS" and an["vulns_total"] == 1
+    found = {x[0]: x for x in pr.analytics.insights()}
+    assert "vuln_probed" in found and found["vuln_probed"][2] == "1" and found["vuln_probed"][5] == 6
+    v = db.get("CVE-2018-13379")
+    assert v["hits"][0]["n"] == 6 and v["events"][0]["uri"] == "/remote/fgt_lang"
+    # база не обновлялась больше трёх суток — подсказка
+    st = db.status()
+    st["kev"]["updated"] = now - 5 * 86400
+    app.db.kv_set("vulndb_status", st)
+    assert "vulndb_stale" in {x[0] for x in pr.analytics.insights()}
+
+
 # =============================================================================
 #  Живая проверка: карта путей эксплойтов на настоящем nginx
 # =============================================================================

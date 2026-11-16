@@ -14,7 +14,7 @@ from fastapi import Body, Depends, HTTPException, Query, Request
 from ..auth import admin, operator, viewer
 from ..models import MODSEC_APPS, THREAT_PRESETS, VERIFIED_BOTS, GlobalSettings, ProtectionSettings, Site
 from ..protection import rules as W
-from ..protection.nginx import challenge_ready, modsec_ready, site_modes
+from ..protection.nginx import challenge_ready, crs_label, modsec_ready, site_modes
 from ..protection.service import ACTIONS, CRS_GROUPS, KINDS, SYSCTL, SYSCTL_FILE, TOOL_TITLES, sysctl_report
 
 from .routes import audit as _audit_fn
@@ -60,14 +60,15 @@ async def protection_get(request: Request, user=Depends(viewer)):
 
 def _modsec_status(app) -> Dict[str, Any]:
     caps = app.nginx.caps()
-    crs_dir, ver = app.nginx.crs()
+    crs_dir, _ver = app.nginx.crs()
     log = app.protection.modsec_log()
     try:
         size = log.stat().st_size
     except OSError:
         size = None
     return {"module": modsec_ready(caps), "crs_dir": crs_dir,
-            "crs_version": ".".join(ver) if ver and len(ver) == 3 else ver, "audit_log": str(log), "audit_size": size,
+            "crs_version": crs_label(crs_dir), "crs_source": app.protection.settings().crs_source,
+            "crs_status": app.protection.vulndb.status().get("crs") or {}, "audit_log": str(log), "audit_size": size,
             "apps": MODSEC_APPS, "groups": {k: v[1] for k, v in CRS_GROUPS.items()},
             "install": "apt install libnginx-mod-http-modsecurity modsecurity-crs"}
 
@@ -449,7 +450,7 @@ async def protection_sources(request: Request, user=Depends(viewer)):
     st = app.protection.feed_status()
     db = app.protection.vulndb
     vs = db.status()
-    crs_dir, ver = app.nginx.crs()
+    crs_dir, _ver = app.nginx.crs()
     rows = []
     for f in p.threat_feeds:
         s = st.get(f.id) or {}
@@ -474,5 +475,5 @@ async def protection_sources(request: Request, user=Depends(viewer)):
                  "ok": s.get("ok") if p.crs_source == "github" else bool(crs_dir), "count": None,
                  "updated": s.get("updated"), "error": s.get("error", "") if p.crs_source == "github" else "",
                  "every": p.vulndb_update_hours if p.crs_source == "github" else None,
-                 "version": ".".join(ver) if ver and len(ver) == 3 else ver, "source": p.crs_source, "dir": crs_dir})
+                 "version": crs_label(crs_dir), "source": p.crs_source, "dir": crs_dir})
     return {"rows": rows, "running": db.running, "progress": db.progress}

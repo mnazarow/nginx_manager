@@ -323,7 +323,7 @@ class App:
             return float(self.insights.last["counts"].get("crit", 0)), "\n".join(
                 f"{f['site_name']}: {f['title']} — {f['summary']}" for f in self.insights.last["findings"]
                 if f["level"] == "crit")[:1500]
-        if m in ("attacks_blocked", "under_attack"):
+        if m in ("attacks_blocked", "under_attack", "vuln_attempts"):
             return self.protection.alert_metric(m, site, rule.window)
         if m == "autobans":
             n = self.db.scalar("SELECT COUNT(*) FROM events WHERE source='bans' AND ts>=? AND message LIKE "

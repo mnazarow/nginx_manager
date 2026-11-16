@@ -202,9 +202,10 @@ class Settings:
             if self.managed_dir.is_dir() and not self.threats_file.exists():
                 self.threats_file.write_text("# Nginx Manager: списки угроз (раздел «Защита»)\n")
                 os.chmod(self.threats_file, 0o644)
-            for f in (self.bots_file, self.bots_ua_file, self.vuln_file):
+            for f, what in ((self.bots_file, "проверка роботов"), (self.bots_ua_file, "проверка роботов"),
+                            (self.vuln_file, "пути эксплойтов известных уязвимостей")):
                 if self.managed_dir.is_dir() and not f.exists():
-                    f.write_text("# Nginx Manager: проверка роботов (раздел «Защита»)\n")
+                    f.write_text(f"# Nginx Manager: {what} (раздел «Защита»)\n")
                     os.chmod(f, 0o644)
             if self.managed_dir.is_dir() and not self.attack_file.exists():
                 self.attack_file.write_text('# Nginx Manager: режим «Под атакой»\ndefault "";\n')
