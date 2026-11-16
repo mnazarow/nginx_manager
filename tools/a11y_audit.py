@@ -71,12 +71,14 @@ async def theme_run(browser, a, axe, theme, out):
             await check(page, axe, f"{theme}: окно восстановления копии", out)
         finally:
             await page.keyboard.press("Escape")
-    # окна раздела «Защита от атак»: профиль адреса и карточка правила
+    # окна раздела «Защита от атак»: профиль адреса, карточка правила и карточка уязвимости
     for hash_, sel, ready, title in (
             ("#/protection?tab=attackers&hours=720", "table.t tbody tr button:has-text('Профиль')", ".modal .kpi",
              "профиль адреса"),
             ("#/protection?tab=analytics&hours=720", ".card:has-text('Эффективность правил') table.t tbody tr a",
-             ".modal .facts", "карточка правила")):
+             ".modal .facts", "карточка правила"),
+            ("#/protection?tab=vulns", ".card:has-text('Чаще всего пытаются эксплуатировать') table.t tbody tr a",
+             ".modal .facts", "карточка уязвимости")):
         await page.goto(f"{a.url}/{hash_}")
         await page.wait_for_timeout(2500)
         btn = page.locator(sel).first

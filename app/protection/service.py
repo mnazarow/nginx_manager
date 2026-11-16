@@ -132,6 +132,22 @@ def fetch_feed(url: str, timeout: int = 60) -> str:
 # =============================================================================
 #  Самопроверка: «сырые» HTTP-запросы к nginx на этом сервере
 # =============================================================================
+def vuln_samples(path: Path, n: int = 3) -> List[Tuple[str, str]]:
+    """Несколько путей из карты эксплойтов (опасных самих по себе) — для самопроверки."""
+    out: List[Tuple[str, str]] = []
+    try:
+        for line in Path(path).read_text().splitlines():
+            # простые пути без служебных символов и скрытых файлов — чтобы их не перехватили другие правила
+            m = re.match(r'^"(/[A-Za-z0-9/_.+-]+)"\s+"(CVE-\d+-\d+):a";', line)
+            if m and "/." not in m.group(1):
+                out.append((m.group(1), m.group(2)))
+            if len(out) >= n:
+                break
+    except OSError:
+        pass
+    return out
+
+
 # Атаки в теле запроса — их видит только глубокая проверка (ModSecurity + OWASP CRS)
 MODSEC_CASES = [
     ("SQL-инъекция в форме", "application/x-www-form-urlencoded", "login=admin&q=1' UNION SELECT password FROM users--"),
@@ -654,6 +670,36 @@ class ProtectionAnalytics:
             out.append(("rate_rule_users", "info", "*", f"{self.svc.rule_title('ratelimit', r['rule'])}: "
                                                         f"{r['ips']} адресов, {r['n']} отказов за час",
                         None, r["ips"], r["rule"]))
+        # эксплойты известных уязвимостей доходят до сайта
+        vrows = self.db.query("SELECT a.site, a.rule, COUNT(*) AS n, COUNT(DISTINCT a.ip) AS ips FROM attack_log a "
+                              "JOIN vulns v ON v.cve=substr(a.rule, 6) AND v.kev=1 WHERE a.ts>=? AND a.test=0 "
+                              "AND a.kind='waf' AND a.rule LIKE 'vuln/%' AND a.action='detected' "
+                              "GROUP BY a.site, a.rule", (now - 86400,))
+        per_site: Dict[str, List[Dict[str, Any]]] = {}
+        for r in vrows:
+            per_site.setdefault(r["site"], []).append(r)
+        for sid, rows in per_site.items():
+            n, ips = sum(r["n"] for r in rows), max(r["ips"] for r in rows)
+            if n >= 5 and ips >= 2:
+                rows.sort(key=lambda r: -r["n"])
+                out.append(("vuln_probed", "warn", sid or "*",
+                            f"{len(rows)} уязв. из каталога CISA KEV, {n} попыток за сутки — запросы дошли до сайта",
+                            {"columns": ["Уязвимость", "Попыток", "Адресов"],
+                             "rows": [[self.svc.rule_title("waf", r["rule"]), r["n"], r["ips"]] for r in rows[:8]]},
+                            n, ""))
+        # новые эксплуатируемые уязвимости в продуктах из списка наблюдения
+        new = self.db.kv_get("vulndb_new", {}) or {}
+        if new.get("watch") and now - (new.get("ts") or 0) < 7 * 86400:
+            out.append(("vuln_watch_new", "warn", "*", ", ".join(new["watch"][:5]) +
+                        (f" и ещё {len(new['watch']) - 5}" if len(new["watch"]) > 5 else ""), None,
+                        len(new["watch"]), ",".join(new["watch"][:20])))
+        # база уязвимостей не обновляется
+        if p.vulndb_enabled and p.vulndb_kev:
+            kst = (self.svc.vulndb.status().get("kev") or {})
+            age = now - (kst.get("updated") or 0)
+            if kst.get("updated") and age > max(3 * p.vulndb_update_hours * 3600, 3 * 86400):
+                out.append(("vulndb_stale", "warn", "*", f"каталог CISA KEV обновлён {age / 86400:.0f} сут назад"
+                            + (f": {kst['error'][:160]}" if kst.get("error") else ""), None, round(age / 86400), ""))
         # «Под атакой» вручную больше суток
         st = self.svc.attack_state()
         for key, v in [("*", st.get("global"))] + list((st.get("sites") or {}).items()):
@@ -698,6 +744,9 @@ class ProtectionAnalytics:
                              "category": W.CATEGORIES.get(wr.cat, {}).get("title", wr.cat),
                              "mode": self.svc.settings().mode(wr.cat),
                              "disabled": wr.id in self.svc.settings().waf_disabled_rules})
+        if kind == "waf" and rule.startswith("vuln/"):
+            meta.update({"vuln": rule.split("/", 1)[1], "category": W.CATEGORIES["vuln"]["title"],
+                         "mode": self.svc.settings().mode("vuln")})
         if kind == "modsec":
             meta["crs_group"] = CRS_GROUPS.get(rule.split("/", 1)[-1][:3], ("", ""))[1]
         return {"meta": meta, "hours": hours, "step": step, "since": since, "series": series, "totals": tot,
@@ -736,6 +785,9 @@ class ProtectionService:
         self.modsec_pos: Tuple[int, int] = (0, -1)  # (inode, смещение) журнала аудита ModSecurity
         self.modsec_titles: Dict[str, str] = {}
         self.bot_totals: Counter = Counter()        # (робот, ok|fake) → число с запуска (для /metrics)
+        from .vulndb import VulnDB
+        self.vulndb = VulnDB(self)
+        self._vuln_titles: Tuple[float, Dict[str, str]] = (0.0, {})
         self._lock: Optional[asyncio.Lock] = None
         self.feed_task_running = False
 
@@ -1323,7 +1375,19 @@ class ProtectionService:
                 "attack": {"global": glob, "sites": active, "state": self.attack_state()},
                 "challenge": dict(self.challenge_stats), "kinds": KINDS, "actions": ACTIONS}
 
+    def vuln_title(self, cve: str) -> str:
+        ts, cache = self._vuln_titles
+        if time.time() - ts > 300:
+            cache = {r["cve"]: (r["name"] or f"{r['vendor']} {r['product']}".strip())
+                     for r in self.db.query("SELECT cve, name, vendor, product FROM vulns WHERE paths!='' OR kev=1")}
+            self._vuln_titles = (time.time(), cache)
+        return cache.get(cve, "")
+
     def rule_title(self, kind: str, rule: str) -> str:
+        if kind == "waf" and rule.startswith("vuln/"):
+            cve = rule.split("/", 1)[1]
+            t = self.vuln_title(cve)
+            return f"Эксплойт {cve}" + (f": {t}" if t else "")
         if kind == "waf" and "/" in rule:
             r = W.RULE_BY_ID.get(rule.split("/", 1)[1])
             return f"{W.CATEGORIES.get(r.cat, {}).get('title', r.cat)}: {r.title}" if r else rule
@@ -1445,8 +1509,17 @@ class ProtectionService:
                             "payload": case["payload"][:160], "mode": mode, "status": st, "blocked": blocked,
                             "error": err, "ms": ms, "n": n})
         from .nginx import ProtectionConf
-        msmode = ProtectionConf(state, self.app.nginx.paths(str(settings.live_dir)), self.app.nginx.caps()) \
-            .modsec_site(site)
+        pconf = ProtectionConf(state, self.app.nginx.paths(str(settings.live_dir)), self.app.nginx.caps())
+        msmode = pconf.modsec_site(site)
+        vmode = modes.get("vuln", "off") if pconf.vuln_on() else "off"
+        if vmode != "off":
+            for n, (path, cve) in enumerate(vuln_samples(settings.vuln_file, 3)):
+                case = {"path": path, "headers": {}, "method": "GET"}
+                st, h, err, ms = await asyncio.to_thread(run, case, 600 + n)
+                results.append({"rule": f"vuln/{cve}", "cat": "vuln", "title": f"Эксплойт {cve}: {path}",
+                                "method": "GET", "field": "путь", "payload": path[:160], "mode": vmode, "status": st,
+                                "blocked": st in (400, 403, 405, 444) or (st is None and not err), "error": err,
+                                "ms": ms, "n": 600 + n})
         if msmode != "off":
             for n, (title, ctype, body) in enumerate(MODSEC_CASES):
                 case = {"path": "/", "headers": {"Content-Type": ctype}, "method": "POST", "body": body}
@@ -1555,6 +1628,10 @@ class ProtectionService:
             ("modsec", "Проверяется тело запроса (ModSecurity + OWASP CRS)", 6, msmode == "block", "protection",
              "Установите libnginx-mod-http-modsecurity и modsecurity-crs и включите «Глубокую проверку» в режиме "
              "блокировки" if msmode == "off" else "Глубокая проверка в режиме записи — переведите в блокировку"),
+            ("vulndb", "База уязвимостей обновляется, пути эксплойтов проверяются", 3,
+             p.vulndb_enabled and p.mode("vuln") != "off" and bool((self.vulndb.status().get("kev") or {}).get("ok")),
+             "protection", "«Защита → Уязвимости»: включите обновление базы; категория «Эксплойты известных "
+                           "уязвимостей» — запись или блокировка"),
             ("fakebot", "Поддельные поисковые роботы отсекаются", 2, p.fake_bot_action in ("block", "challenge")
              and any(b.enabled for b in p.verified_bots), "protection", "«Защита → Роботы»: блокировать поддельных"),
         ]
@@ -1566,9 +1643,25 @@ class ProtectionService:
                 "checks": [{"id": i, "title": t, "weight": w, "ok": bool(ok), "tab": tab, "hint": hint}
                            for i, t, w, ok, tab, hint in checks]}
 
+    async def vuln_tick(self) -> None:
+        """Обновить источники, срок которых подошёл; карту путей пересобрать при новых данных или раз в сутки
+        (меняются пути, которые сайты обслуживают)."""
+        p = self.settings()
+        st = self.vulndb.status()
+        now = time.time()
+        srcs = (("kev", p.vulndb_kev), ("nuclei", p.vulndb_nuclei), ("epss", p.vulndb_epss),
+                ("cvelist", p.vulndb_cvelist), ("exploitdb", p.vulndb_exploitdb))
+        due = any(self.vulndb.due(k, p, now, st) for k, on in srcs if on)
+        built = (self.db.kv_get("vulndb_map", {}) or {}).get("built") or 0
+        if due:
+            await self.vulndb.update()
+        elif now - built > 86400:
+            await self.vulndb.write_map()
+
     # ------------------------------------------------------------------ фоновые задачи
     async def run(self) -> None:
         last_min = last_feeds = last_clean = 0.0
+        last_vuln = time.time() - 540  # первая проверка базы уязвимостей — через минуту после запуска
         while True:
             try:
                 await asyncio.sleep(5)
@@ -1586,9 +1679,13 @@ class ProtectionService:
                             any(b.enabled for b in ps.verified_bots)
                             and (ps.fake_bot_action != "off" or ps.verified_skip_challenge)):
                         await self.update_feeds()
+                if now - last_vuln >= 600 and self.settings().vulndb_enabled:
+                    last_vuln = now
+                    await self.vuln_tick()
                 if now - last_clean >= 3600:
                     last_clean = now
                     await asyncio.to_thread(self.cleanup)
+                    await asyncio.to_thread(self.vulndb.record_seen)
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001 — фоновая задача не должна останавливаться

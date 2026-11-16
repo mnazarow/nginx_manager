@@ -72,7 +72,8 @@ class NginxManager:
         now = time.time()
         if not hasattr(self, "_crs") or now - self._crs[0] > 300:
             from ..protection.nginx import find_crs
-            self._crs = (now, find_crs())
+            from ..protection.vulndb import VulnDB
+            self._crs = (now, find_crs(VulnDB.active_crs()))
         return self._crs[1]
 
     def caps(self, refresh: bool = False) -> NginxCaps:
@@ -197,6 +198,7 @@ class NginxManager:
                      geo_file=str(settings.geo_file) if self.geo_db() else "",
                      threats_file=str(settings.threats_file), attack_file=str(settings.attack_file),
                      bots_file=str(settings.bots_file), bots_ua_file=str(settings.bots_ua_file),
+                     vuln_file=str(settings.vuln_file),
                      crs_dir=self.crs()[0], crs_version=self.crs()[1],
                      challenge_secret=self.challenge_secret(), challenge_key=self.challenge_key(),
                      panel_host=settings.bind_host if settings.bind_host not in ("", "0.0.0.0", "::") else "127.0.0.1",

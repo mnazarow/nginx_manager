@@ -6,6 +6,7 @@ import { h, mount, icon, toast, modal, loading, card, kpi, badge, table, hbars, 
 import { model, renderFields, errorsToMap } from '../forms.js';
 import { timeChart, setData, chartCard, destroyAll, css } from '../charts.js';
 import { can, refreshState } from '../app.js';
+import { openVuln } from './protection-vulns.js';
 
 // Виды атак в фиксированном порядке категориальной палитры; девятый и далее — нейтральный серый
 export const KIND_ORDER = ['waf', 'modsec', 'custom', 'threat', 'fakebot', 'challenge', 'honeypot', 'ratelimit'];
@@ -361,6 +362,7 @@ export async function openRule(kind, rule, { sites = [] } = {}) {
       await saveSettings(obj, `Правило CRS ${id} отключено`); m.close();
     } }, 'Отключить правило CRS'));
   }
+  if (meta.vuln) actions.unshift(h('button', { class: 'btn primary', onclick: () => { m.close(); openVuln(meta.vuln, { sites }); } }, 'Карточка уязвимости'));
   actions.push(h('a', { class: 'btn', href: `#/protection?tab=log&kind=${kind}&q=${encodeURIComponent(rule)}`, onclick: () => m.close() }, 'Журнал атак'));
   const facts = [
     ['Механизм', meta.kind_title || kind],

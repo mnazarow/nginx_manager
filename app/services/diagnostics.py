@@ -1012,6 +1012,30 @@ class Diagnostics:
             else:
                 res.append(R(f"prot_feed_{f.id}", g, f"Список угроз «{f.name}»", OK,
                              f"{st.get('count', 0)} адресов, обновлён {fmt_dur(now - st['updated'])} назад"))
+        if p.vulndb_enabled:
+            from ..protection.vulndb import SOURCES
+            vst = prot.vulndb.status()
+            vmap = self.app.db.kv_get("vulndb_map", {}) or {}
+            on = [k for k, v in (("kev", p.vulndb_kev), ("nuclei", p.vulndb_nuclei), ("epss", p.vulndb_epss),
+                                 ("cvelist", p.vulndb_cvelist), ("exploitdb", p.vulndb_exploitdb)) if v]
+            bad = [SOURCES[k][0] for k in on if (vst.get(k) or {}).get("error")]
+            fresh = [k for k in on if (vst.get(k) or {}).get("updated")]
+            if not fresh:
+                res.append(R("prot_vulndb", g, "База уязвимостей", WARN if bad else INFO,
+                             "Ещё не загружена" + (f"; ошибки: {', '.join(bad)}" if bad else ""),
+                             hint="Нужен исходящий HTTPS к raw.githubusercontent.com (CISA KEV, nuclei-templates, "
+                                  "CVE Program), www.cisa.gov, epss.empiricalsecurity.com и gitlab.com (Exploit-DB). "
+                                  "«Защита → Уязвимости» → «Обновить всё»."))
+            else:
+                kev_age = now - ((vst.get("kev") or {}).get("updated") or 0)
+                stale = p.vulndb_kev and kev_age > max(3 * p.vulndb_update_hours * 3600, 3 * 86400)
+                res.append(R("prot_vulndb", g, "База уязвимостей", WARN if stale or bad else OK,
+                             f"Источников: {len(fresh)} из {len(on)}, путей эксплойтов в фильтре: "
+                             f"{vmap.get('entries', 0)}"
+                             + (f"; каталог CISA KEV не обновляется {fmt_dur(kev_age)}" if stale else "")
+                             + (f"; ошибки: {', '.join(bad)}" if bad else ""),
+                             hint="Ошибка у источника — подробности на вкладке «Защита → Уязвимости». Недоступный "
+                                  "источник не мешает остальным." if stale or bad else ""))
         for sid, s in state.sites:
             last = self.app.db.kv_get(f"selftest_{sid}", None) if s.enabled else None
             if not last:

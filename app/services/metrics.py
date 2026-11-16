@@ -176,6 +176,22 @@ def render(app) -> str:
         except Exception:  # noqa: BLE001
             pass
         o.metric("nm_threat_feed_entries", "gauge", "Адресов и подсетей в подключённом списке угроз", feeds)
+        vsum, vages = {}, []
+        try:
+            vsum = prot.vulndb.summary()
+            for k, v in (vsum.get("sources") or {}).items():
+                if v.get("updated"):
+                    vages.append(({"source": k}, round(now - v["updated"])))
+        except Exception:  # noqa: BLE001
+            pass
+        o.metric("nm_vulndb_entries", "gauge",
+                 "База уязвимостей: total — всего, kev — эксплуатируемые (CISA KEV), map — уязвимости с путями "
+                 "в фильтре запросов, covered — закрыты встроенными правилами, seen — их пытались эксплуатировать",
+                 [({"set": k}, vsum.get(src, 0)) for k, src in (("total", "total"), ("kev", "kev"),
+                                                                 ("map", "active_paths"), ("covered", "covered"),
+                                                                 ("seen", "seen"))] if vsum else [])
+        o.metric("nm_vulndb_source_age_seconds", "gauge", "Секунд с последнего удачного обновления источника базы "
+                                                         "уязвимостей", vages)
         o.metric("nm_bot_requests_total", "counter",
                  "Запросы с User-Agent проверяемых роботов: ok — с официальных адресов, fake — поддельные",
                  [({"bot": b, "result": r}, v) for (b, r), v in sorted(prot.bot_totals.items())])

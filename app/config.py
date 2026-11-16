@@ -144,6 +144,11 @@ class Settings:
         return self.managed_dir / "threats.conf"
 
     @property
+    def vuln_file(self) -> Path:
+        """Пути эксплойтов известных уязвимостей для map $nm_vuln_raw (раздел «Защита → Уязвимости»)."""
+        return self.managed_dir / "vuln-paths.conf"
+
+    @property
     def bots_file(self) -> Path:
         """Официальные адреса поисковых роботов и ботов ИИ для geo $nm_vbot."""
         return self.managed_dir / "verified-bots.conf"
@@ -197,7 +202,7 @@ class Settings:
             if self.managed_dir.is_dir() and not self.threats_file.exists():
                 self.threats_file.write_text("# Nginx Manager: списки угроз (раздел «Защита»)\n")
                 os.chmod(self.threats_file, 0o644)
-            for f in (self.bots_file, self.bots_ua_file):
+            for f in (self.bots_file, self.bots_ua_file, self.vuln_file):
                 if self.managed_dir.is_dir() and not f.exists():
                     f.write_text("# Nginx Manager: проверка роботов (раздел «Защита»)\n")
                     os.chmod(f, 0o644)

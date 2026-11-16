@@ -1868,19 +1868,275 @@
     },
     {
       "id": 29,
+      "type": "stat",
+      "title": "Эксплуатируемых уязвимостей в базе",
+      "description": "Уязвимостей из каталога CISA KEV в базе панели (раздел «Защита → Уязвимости»)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 65,
+        "w": 6,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "textMode": "auto",
+        "orientation": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(nm_vulndb_entries{instance=~\"$instance\",set=\"kev\"})",
+          "legendFormat": "__auto",
+          "refId": "A",
+          "range": true,
+          "instant": false,
+          "format": "time_series"
+        }
+      ]
+    },
+    {
+      "id": 30,
+      "type": "stat",
+      "title": "Уязвимостей в фильтре путей",
+      "description": "Уязвимости, пути эксплойтов которых проверяет фильтр запросов",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 6,
+        "y": 65,
+        "w": 6,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "textMode": "auto",
+        "orientation": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(nm_vulndb_entries{instance=~\"$instance\",set=\"map\"})",
+          "legendFormat": "__auto",
+          "refId": "A",
+          "range": true,
+          "instant": false,
+          "format": "time_series"
+        }
+      ]
+    },
+    {
+      "id": 31,
+      "type": "stat",
+      "title": "Их пытались эксплуатировать",
+      "description": "Уязвимостей, по путям эксплойтов которых приходили запросы к вашим сайтам",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 65,
+        "w": 6,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "textMode": "auto",
+        "orientation": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(nm_vulndb_entries{instance=~\"$instance\",set=\"seen\"})",
+          "legendFormat": "__auto",
+          "refId": "A",
+          "range": true,
+          "instant": false,
+          "format": "time_series"
+        }
+      ]
+    },
+    {
+      "id": 32,
+      "type": "stat",
+      "title": "Каталог CISA KEV обновлён",
+      "description": "Сколько прошло с последнего удачного обновления каталога; больше трёх суток — проверьте доступ сервера к источникам",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 65,
+        "w": 6,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 259200
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "textMode": "auto",
+        "orientation": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(nm_vulndb_source_age_seconds{instance=~\"$instance\",source=\"kev\"})",
+          "legendFormat": "__auto",
+          "refId": "A",
+          "range": true,
+          "instant": false,
+          "format": "time_series"
+        }
+      ]
+    },
+    {
+      "id": 33,
       "type": "row",
       "title": "Сервер и nginx",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 65,
+        "y": 69,
         "w": 24,
         "h": 1
       },
       "panels": []
     },
     {
-      "id": 30,
+      "id": 34,
       "type": "timeseries",
       "title": "Соединения nginx",
       "description": "",
@@ -1890,7 +2146,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 66,
+        "y": 70,
         "w": 8,
         "h": 8
       },
@@ -1946,7 +2202,7 @@
       ]
     },
     {
-      "id": 31,
+      "id": 35,
       "type": "timeseries",
       "title": "Ресурсы сервера",
       "description": "",
@@ -1956,7 +2212,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 66,
+        "y": 70,
         "w": 8,
         "h": 8
       },
@@ -2038,7 +2294,7 @@
       ]
     },
     {
-      "id": 32,
+      "id": 36,
       "type": "timeseries",
       "title": "Load average (1 мин)",
       "description": "",
@@ -2048,7 +2304,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 66,
+        "y": 70,
         "w": 8,
         "h": 8
       },
@@ -2104,7 +2360,7 @@
       ]
     },
     {
-      "id": 33,
+      "id": 37,
       "type": "table",
       "title": "Сертификаты",
       "datasource": {
@@ -2114,7 +2370,7 @@
       "description": "Дней до истечения; «используется» — подключён к сайту или к панели",
       "gridPos": {
         "x": 0,
-        "y": 74,
+        "y": 78,
         "w": 12,
         "h": 8
       },
@@ -2192,7 +2448,7 @@
       ]
     },
     {
-      "id": 34,
+      "id": 38,
       "type": "timeseries",
       "title": "Сборщик статистики",
       "description": "Нераспознанные строки — журнал nginx не в формате панели (см. «Диагностика»)",
@@ -2202,7 +2458,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 74,
+        "y": 78,
         "w": 12,
         "h": 8
       },
@@ -2270,7 +2526,7 @@
       ]
     },
     {
-      "id": 35,
+      "id": 39,
       "type": "stat",
       "title": "Версия панели",
       "description": "Метка version метрики nginx_manager_info",
@@ -2280,7 +2536,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 82,
+        "y": 86,
         "w": 6,
         "h": 3
       },
@@ -2332,7 +2588,7 @@
       ]
     },
     {
-      "id": 36,
+      "id": 40,
       "type": "stat",
       "title": "Панель работает",
       "description": "",
@@ -2342,7 +2598,7 @@
       },
       "gridPos": {
         "x": 6,
-        "y": 82,
+        "y": 86,
         "w": 6,
         "h": 3
       },
@@ -2394,7 +2650,7 @@
       ]
     },
     {
-      "id": 37,
+      "id": 41,
       "type": "stat",
       "title": "Запросов по данным nginx",
       "description": "stub_status: все запросы nginx, включая не попавшие в журналы сайтов",
@@ -2404,7 +2660,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 82,
+        "y": 86,
         "w": 6,
         "h": 3
       },
@@ -2456,7 +2712,7 @@
       ]
     },
     {
-      "id": 38,
+      "id": 42,
       "type": "stat",
       "title": "Принято соединений в секунду",
       "description": "",
@@ -2466,7 +2722,7 @@
       },
       "gridPos": {
         "x": 18,
-        "y": 82,
+        "y": 86,
         "w": 6,
         "h": 3
       },

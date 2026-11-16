@@ -35,7 +35,7 @@ def exprs(d):
 PROMQL_WORDS = {"sum", "by", "rate", "max", "min", "count", "or", "vector", "histogram_quantile", "label_values",
                 "instance", "site", "code", "le", "backup", "used", "name", "backend", "source", "state",
                 "cache_status", "version", "without", "on", "and", "unless", "avg", "increase", "kind", "action",
-                "result", "site_id", "bot"}
+                "result", "site_id", "bot", "set"}
 
 
 def test_dashboard_up_to_date():

@@ -1116,7 +1116,7 @@ class RateRule(Model):
 MODSEC_APPS = {"wordpress": "WordPress", "drupal": "Drupal", "nextcloud": "Nextcloud", "dokuwiki": "DokuWiki",
                "cpanel": "cPanel", "xenforo": "XenForo"}
 
-PROTECTION_TABS = [("waf", "Фильтр запросов"), ("modsec", "Глубокая проверка (ModSecurity)"),
+PROTECTION_TABS = [("waf", "Фильтр запросов"), ("modsec", "Глубокая проверка (ModSecurity)"), ("vulns", "Уязвимости"),
                    ("challenge", "Проверка браузера"), ("bots", "Роботы"), ("auto", "Автоматика и ловушки"),
                    ("threats", "Списки угроз"), ("log", "Журнал атак")]
 
@@ -1188,6 +1188,48 @@ class ProtectionSettings(Model):
                                       help="Настоящие Googlebot, Bingbot и другие проходят без страницы проверки — "
                                            "в режиме «Под атакой» сайт не выпадет из поиска")
     rate_rules: List[RateRule] = F(factory=list, label="Правила ограничения частоты", ui="hidden")
+    vulndb_enabled: bool = F(True, label="Обновлять базу уязвимостей автоматически", tab="vulns",
+                             help="CISA KEV, nuclei-templates, FIRST EPSS — по расписанию; карта путей эксплойтов для "
+                                  "nginx строится из базы",
+                             doc="База знает все уязвимости, которые эксплуатируются на практике (каталог CISA KEV), и "
+                                 "тысячи CVE с открытыми шаблонами проверки (ProjectDiscovery nuclei-templates): "
+                                 "продукт, критичность CVSS, вероятность эксплуатации EPSS, использование вымогателями, "
+                                 "и как именно выглядит эксплойт. Из шаблонов строится карта путей эксплойтов для "
+                                 "фильтра запросов (категория «Эксплойты известных уязвимостей»).")
+    vulndb_update_hours: int = F(24, label="Обновлять каждые (ч)", tab="vulns", ge=1, le=168,
+                                 show={"vulndb_enabled": [True]},
+                                 rec="24: CISA добавляет уязвимости в каталог несколько раз в неделю.")
+    vulndb_kev: bool = F(True, label="CISA KEV (эксплуатируемые уязвимости)", tab="vulns",
+                         show={"vulndb_enabled": [True]})
+    vulndb_nuclei: bool = F(True, label="nuclei-templates (CVSS, описание, эксплойты)", tab="vulns",
+                            show={"vulndb_enabled": [True]})
+    vulndb_epss: bool = F(True, label="FIRST EPSS (вероятность эксплуатации)", tab="vulns",
+                          show={"vulndb_enabled": [True]})
+    vulndb_cvelist: bool = F(True, label="CVE Program (CVSS, тип, затронутые версии)", tab="vulns",
+                             show={"vulndb_enabled": [True]},
+                             help="Записи cvelistV5 для эксплуатируемых уязвимостей: оценка CVSS от производителя "
+                                  "или CISA, тип (CWE), затронутые версии")
+    vulndb_exploitdb: bool = F(True, label="Exploit-DB (публичные эксплойты)", tab="vulns",
+                               show={"vulndb_enabled": [True]},
+                               help="Отмечает уязвимости, для которых опубликован готовый эксплойт")
+    vulndb_scope: Literal["kev", "critical", "high"] = F(
+        "kev", label="Пути эксплойтов в фильтр запросов", tab="vulns", show={"vulndb_enabled": [True]},
+        labels={"kev": "Эксплуатируемые (CISA KEV)", "critical": "Эксплуатируемые и критические (CVSS 9+)",
+                "high": "Эксплуатируемые, критические и высокие (CVSS 7+)"},
+        help="Чем шире охват, тем больше путей проверяет nginx (поиск по хэш-таблице — без потерь скорости)")
+    vulndb_skip_legit: bool = F(True, label="Не включать пути, которые сайты обслуживают", tab="vulns",
+                                show={"vulndb_enabled": [True]},
+                                help="Пути с успешными ответами (2xx/3xx) хотя бы трём адресам за 14 дней по журналу "
+                                     "запросов — законные страницы ваших приложений")
+    vulndb_watch: List[str] = F(factory=list, label="Ваши продукты (уведомлять о новых уязвимостях)", tab="vulns",
+                                ui="tags", show={"vulndb_enabled": [True]}, ph="wordpress, confluence, fortinet",
+                                help="Слова из производителя или продукта: новая уязвимость из CISA KEV с ними — "
+                                     "событие уровня «внимание» и подсказка анализа")
+    vulndb_exclude: List[str] = F(factory=list, label="Исключённые уязвимости (CVE)", tab="vulns", ui="tags",
+                                  show={"vulndb_enabled": [True]}, ph="CVE-2021-44228",
+                                  help="Их пути не попадают в карту (ложные срабатывания)")
+    vulndb_exclude_paths: List[str] = F(factory=list, label="Исключённые пути (префиксы)", tab="vulns", ui="lines",
+                                        show={"vulndb_enabled": [True]}, ph="/remote/\n/api/v1/")
     modsec_enabled: bool = F(False, label="Глубокая проверка включена", tab="modsec",
                              help="ModSecurity v3 с OWASP Core Rule Set: проверяет и тело запроса (формы, JSON, "
                                   "загрузку файлов)",
@@ -1215,6 +1257,16 @@ class ProtectionSettings(Model):
     modsec_apps: List[Literal["wordpress", "drupal", "nextcloud", "dokuwiki", "cpanel", "xenforo"]] = F(
         factory=list, label="Исключения для приложений", tab="modsec", show={"modsec_enabled": [True]},
         labels=MODSEC_APPS, help="Готовые наборы исключений CRS для популярных движков")
+    crs_source: Literal["package", "github"] = F(
+        "package", label="Источник правил OWASP CRS", tab="modsec", show={"modsec_enabled": [True]},
+        labels={"package": "Пакет дистрибутива (modsecurity-crs)", "github": "Последний выпуск с GitHub (обновлять "
+                                                                             "автоматически)"},
+        help="С GitHub — новые правила раньше, чем в дистрибутиве; переход проверяется nginx -t, при ошибке остаются "
+             "прежние правила",
+        doc="Пакеты дистрибутивов обновляют CRS редко (Ubuntu 24.04 — 3.3.5). «Последний выпуск с GitHub»: панель "
+            "по расписанию базы уязвимостей проверяет выпуски coreruleset/coreruleset, скачивает новый в "
+            "/var/lib/nginx-manager/crs/ и применяет конфигурацию; если nginx не принял правила — возвращает прежние.",
+        rec="Пакет дистрибутива — для максимальной стабильности; GitHub — для самых свежих правил.")
     modsec_disabled_ids: List[int] = F(factory=list, label="Отключённые правила CRS (номера)", tab="modsec",
                                        show={"modsec_enabled": [True]}, ph="942100 941100",
                                        help="Номера правил, ложно срабатывающих на всех сайтах")
@@ -1256,6 +1308,17 @@ class ProtectionSettings(Model):
         if any(i < 1 or i > 9999999 for i in self.modsec_disabled_ids):
             raise V.ValidationError("Отключённые правила CRS: номера правил от 1 до 9999999")
         self.modsec_disabled_ids = sorted(set(self.modsec_disabled_ids))
+        ex = []
+        for c in self.vulndb_exclude:
+            c = c.strip().upper()
+            if c and not re.match(r"^CVE-\d{4}-\d{4,}$", c):
+                raise V.ValidationError(f"Исключённые уязвимости: «{c}» — номер CVE вида CVE-2021-44228")
+            if c and c not in ex:
+                ex.append(c)
+        self.vulndb_exclude = ex
+        self.vulndb_watch = [w.strip().lower() for w in self.vulndb_watch if w.strip()]
+        self.vulndb_exclude_paths = [x for x in (_prot_path(v, "исключённый путь") for v in self.vulndb_exclude_paths)
+                                     if x and not x.startswith("~")]
         return self
 
     def mode(self, cat: str) -> str:
@@ -1569,6 +1632,11 @@ class GlobalSettings(Model):
                                         ge=512, le=65536, directive="server_names_hash_max_size")
     types_hash_max_size: int = F(2048, label="types_hash_max_size", tab="http", adv=True, ge=1024, le=65536,
                                  directive="types_hash_max_size")
+    map_hash_bucket_size: int = F(256, label="map_hash_bucket_size", tab="http", adv=True, ge=32, le=1024,
+                                  directive="map_hash_bucket_size",
+                                  help="Увеличьте при ошибке «could not build map_hash»")
+    map_hash_max_size: int = F(8192, label="map_hash_max_size", tab="http", adv=True, ge=1024, le=262144,
+                               directive="map_hash_max_size")
     http2_global: bool = F(True, label="Разрешить HTTP/2", tab="http", help="Глобальный выключатель HTTP/2")
     proxy_protocol: bool = F(False, label="Принимать PROXY protocol на HTTP-портах", tab="http", adv=True,
                              directive="listen ... proxy_protocol",

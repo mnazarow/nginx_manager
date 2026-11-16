@@ -354,6 +354,21 @@ SCHEMA: List[str] = [
     );
     CREATE INDEX IF NOT EXISTS attack_periods_start ON attack_periods(start);
     """,
+    # ---- v8: база уязвимостей (CISA KEV, nuclei-templates, FIRST EPSS) ---------------------------
+    """
+    CREATE TABLE IF NOT EXISTS vulns (
+        cve TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', vendor TEXT NOT NULL DEFAULT '',
+        product TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', severity TEXT NOT NULL DEFAULT '',
+        cvss REAL NOT NULL DEFAULT 0, epss REAL NOT NULL DEFAULT 0, epss_pct REAL NOT NULL DEFAULT 0,
+        kev INTEGER NOT NULL DEFAULT 0, kev_added TEXT NOT NULL DEFAULT '', kev_due TEXT NOT NULL DEFAULT '',
+        ransomware INTEGER NOT NULL DEFAULT 0, kev_action TEXT NOT NULL DEFAULT '', cwe TEXT NOT NULL DEFAULT '',
+        template TEXT NOT NULL DEFAULT '', tags TEXT NOT NULL DEFAULT '', paths TEXT NOT NULL DEFAULT '',
+        covered TEXT NOT NULL DEFAULT '', active INTEGER NOT NULL DEFAULT 0, seen INTEGER NOT NULL DEFAULT 0,
+        last_seen REAL, updated REAL, cvss_vector TEXT NOT NULL DEFAULT '', published TEXT NOT NULL DEFAULT '',
+        affected TEXT NOT NULL DEFAULT '', exploits TEXT NOT NULL DEFAULT '', enriched REAL
+    );
+    CREATE INDEX IF NOT EXISTS vulns_kev ON vulns(kev, kev_added);
+    """,
 ]
 
 

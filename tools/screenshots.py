@@ -33,8 +33,9 @@ PAGES = [
     ("protection-analytics", "#/protection?tab=analytics&hours=168", 4500),
     ("protection-attackers", "#/protection?tab=attackers&hours=168", 3000),
     ("protection-bots", "#/protection?tab=bots", 3000), ("protection-modsec", "#/protection?tab=modsec", 3500),
+    ("protection-vulns", "#/protection?tab=vulns", 3500),
 ]
-SCENES = {"protection-ip", "protection-rule", "protection-ratelimit", "geo-site", "sites-bulk", "backup-s3", "backup-restore"}  # снимки с действиями: --only geo-site,sites-bulk или --extras
+SCENES = {"protection-ip", "protection-rule", "protection-ratelimit", "protection-vuln", "geo-site", "sites-bulk", "backup-s3", "backup-restore"}  # снимки с действиями: --only geo-site,sites-bulk или --extras
 
 
 async def main(a):
@@ -135,6 +136,16 @@ async def scenes(page, a, only):
         await page.screenshot(path=f"{a.out}/protection-rule.png")
         await page.keyboard.press("Escape")
         print("protection-rule: ok")
+    if not only or "protection-vuln" in only:
+        # карточка уязвимости: самая атакуемая на вкладке «Уязвимости»
+        await page.goto(f"{a.url}/#/protection?tab=vulns")
+        await page.wait_for_timeout(3000)
+        await page.locator(".card", has_text="Чаще всего пытаются эксплуатировать").locator("table.t tbody tr a").first.click()
+        await page.wait_for_selector(".modal .facts", timeout=15000)
+        await page.wait_for_timeout(1000)
+        await page.screenshot(path=f"{a.out}/protection-vuln.png")
+        await page.keyboard.press("Escape")
+        print("protection-vuln: ok")
     if not only or "protection-ratelimit" in only:
         await page.goto(f"{a.url}/#/protection?tab=rules")
         await page.wait_for_timeout(2000)

@@ -341,7 +341,8 @@ def waf_categories():
     for k, c in CATEGORIES.items():
         n1 = sum(1 for r in RULES if r.cat == k and r.level == 1)
         n2 = sum(1 for r in RULES if r.cat == k and r.level == 2)
-        out.append(f"| **{c['title']}** (`{k}`) | {MODES[c['default']]} | {n1} / {n2} | {c['doc']} |")
+        cnt = "база уязвимостей" if k == "vuln" else f"{n1} / {n2}"
+        out.append(f"| **{c['title']}** (`{k}`) | {MODES[c['default']]} | {cnt} | {c['doc']} |")
     return "\n".join(out)
 
 
@@ -350,6 +351,11 @@ def waf_rules():
     out = [f"Всего правил: **{len(RULES)}**.", ""]
     for k, c in CATEGORIES.items():
         rules = [r for r in RULES if r.cat == k]
+        if not rules:
+            out += [f"#### {c['title']}", "", "Записи этой категории строятся из базы уязвимостей и обновляются "
+                                              "автоматически — см. [базу уязвимостей](#база-уязвимостей-и-обновление-баз).",
+                    ""]
+            continue
         out += [f"#### {c['title']}", "", "| Правило | Ур. | Поля | Пример атаки | CVE |", "|---|---|---|---|---|"]
         for r in rules:
             ex = (r.examples[0] if r.examples else "")[:90].replace("|", "\\|").replace("`", "'")
@@ -386,6 +392,27 @@ def crs_groups():
     return "\n".join(out)
 
 
+def vuln_sources():
+    from app.protection import vulndb as V
+    rows = [("kev", "Каталог CISA Known Exploited Vulnerabilities: производитель, продукт, дата добавления, срок "
+                    "устранения, использование вымогателями, что делать", " или ".join(V.KEV_URLS)),
+            ("nuclei", "Индекс CVE шаблонов nuclei-templates (название, критичность, CVSS, описание) и шаблоны "
+                       "эксплуатируемых уязвимостей — из них берутся пути эксплойтов",
+             f"{V.NUCLEI_INDEX}; шаблоны — архив {V.NUCLEI_TARBALL} или по одному"),
+            ("epss", "Вероятность эксплуатации в ближайшие 30 дней и процентиль (ежедневный CSV)",
+             " или ".join(V.EPSS_URLS)),
+            ("cvelist", "Записи CVE JSON 5 для эксплуатируемых уязвимостей: CVSS производителя или CISA-ADP, CWE, "
+                        "затронутые версии, дата публикации", V.CVELIST_RAW.replace("{year}/{group}xxx/{cve}",
+                                                                                   "<год>/<N>xxx/<CVE>")),
+            ("exploitdb", "Номера опубликованных эксплойтов (EDB-ID) для CVE", " или ".join(V.EXPLOITDB_URLS)),
+            ("crs", "Последний выпуск OWASP Core Rule Set (если источник правил — GitHub)",
+             f"{V.CRS_LATEST} → архив выпуска")]
+    out = ["| Источник | Что даёт | Адрес |", "|---|---|---|"]
+    for k, what, url in rows:
+        out.append(f"| {V.SOURCES[k][0]} | {what} | `{url}` |")
+    return "\n".join(out)
+
+
 def attack_tools():
     from app.protection.service import TOOLS
     out = ["| Инструмент | Признак в User-Agent |", "|---|---|"]
@@ -413,6 +440,7 @@ BLOCKS = {
     "bot_presets": bot_presets,
     "crs_groups": crs_groups,
     "attack_tools": attack_tools,
+    "vuln_sources": vuln_sources,
     "rate_rule": lambda: plain(M.RateRule, 3, "rate_rule"),
     "verified_bot": lambda: plain(M.VerifiedBot, 3, "verified_bot"),
     "alert_rule": lambda: plain(M.AlertRule, 3, "alert_rule"),

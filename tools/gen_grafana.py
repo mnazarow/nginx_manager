@@ -198,8 +198,19 @@ def build():
                    "B")], 14, y, w=10, unit="reqps",
             desc="served — показана страница проверки, solved — задача решена, failed — неверное решение, "
                  "passed — запросы с действующим пропуском"),
+        stat("Эксплуатируемых уязвимостей в базе", f'max(nm_vulndb_entries{{{SEL},set="kev"}})', 0, y + 16, w=6,
+             desc="Уязвимостей из каталога CISA KEV в базе панели (раздел «Защита → Уязвимости»)"),
+        stat("Уязвимостей в фильтре путей", f'max(nm_vulndb_entries{{{SEL},set="map"}})', 6, y + 16, w=6,
+             desc="Уязвимости, пути эксплойтов которых проверяет фильтр запросов"),
+        stat("Их пытались эксплуатировать", f'max(nm_vulndb_entries{{{SEL},set="seen"}})', 12, y + 16, w=6,
+             desc="Уязвимостей, по путям эксплойтов которых приходили запросы к вашим сайтам",
+             thresholds=[{"color": "green", "value": None}, {"color": "orange", "value": 1}]),
+        stat("Каталог CISA KEV обновлён", f'max(nm_vulndb_source_age_seconds{{{SEL},source="kev"}})', 18, y + 16, w=6,
+             unit="s", desc="Сколько прошло с последнего удачного обновления каталога; больше трёх суток — проверьте "
+                            "доступ сервера к источникам",
+             thresholds=[{"color": "green", "value": None}, {"color": "orange", "value": 3 * 86400}]),
     ]
-    y += 16
+    y += 20
     p.append(row("Сервер и nginx", y))
     y += 1
     p += [

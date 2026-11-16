@@ -116,6 +116,7 @@ class Paths:
     panel_scheme: str = "http"
     bots_file: str = ""         # официальные адреса роботов для geo $nm_vbot
     bots_ua_file: str = ""      # User-Agent проверяемых роботов для map $nm_bot_claim
+    vuln_file: str = ""         # пути эксплойтов известных уязвимостей для map $nm_vuln_raw
     crs_dir: str = ""           # каталог правил OWASP CRS (пусто — не найден)
     crs_version: str = ""       # версия CRS цифрами («335»)
 
@@ -261,6 +262,9 @@ class Generator:
         with c.block("http"):
             c.d("include", self.caps.mime_types)
             c.d("default_type", "application/octet-stream")
+            # до первой директивы map: таблицы карт строятся при разборе блока
+            c.d("map_hash_bucket_size", g.map_hash_bucket_size)
+            c.d("map_hash_max_size", g.map_hash_max_size)
             c.d("include", f"{self.p.include_root}/http.d/*.conf")
             c.d("include", f"{self.p.include_root}/sites/*.conf")
             if g.include_conf_d:

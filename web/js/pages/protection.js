@@ -7,10 +7,11 @@ import { model, renderFields, errorsToMap } from '../forms.js';
 import { timeChart, setData, chartCard, destroyAll } from '../charts.js';
 import { can, refreshState } from '../app.js';
 import { KIND_ORDER, kindColor, analyticsTab, attackersTab, botsTab, modsecTab, rateRulesCard, liveFeed, openIp, openRule, banIp } from './protection-more.js';
+import { vulnsTab } from './protection-vulns.js';
 
 const TABS = [
   ['overview', 'Обзор'], ['analytics', 'Аналитика'], ['attackers', 'Атакующие'], ['log', 'Журнал атак'],
-  ['waf', 'Фильтр запросов'], ['modsec', 'Глубокая проверка'], ['challenge', 'Проверка браузера'], ['bots', 'Роботы'],
+  ['waf', 'Фильтр запросов'], ['modsec', 'Глубокая проверка'], ['vulns', 'Уязвимости'], ['challenge', 'Проверка браузера'], ['bots', 'Роботы'],
   ['rules', 'Свои правила'], ['threats', 'Списки угроз'], ['auto', 'Автоматика и ловушки'], ['selftest', 'Самопроверка'],
   ['score', 'Оценка защищённости'], ['server', 'Сеть и сервер'],
 ];
@@ -40,7 +41,7 @@ export async function render(root, c) {
       attack.global.until ? `До ${fmtDate(attack.global.until)}. ` : 'Без срока. ', `Включил: ${attack.global.auto ? 'автоматика' : attack.global.by}.`) : null,
     !cfg.challenge_ready ? h('div', { class: 'alert warn mb' }, 'В установленном nginx нет модуля secure_link — проверка браузера и режим «Под атакой» недоступны. Остальные механизмы работают.') : null,
     tabs(TABS.map(([id, label]) => ({ id, label })), tab, (t) => go(t)), view);
-  const R = { overview, analytics: analyticsTab, attackers: attackersTab, modsec: modsecTab, bots: botsTab, waf, challenge,
+  const R = { overview, analytics: analyticsTab, attackers: attackersTab, modsec: modsecTab, vulns: vulnsTab, bots: botsTab, waf, challenge,
     rules, threats, auto, log, selftest, score, server }[tab] || overview;
   await R(view, { cfg, sites, charts, c });
   return () => destroyAll(charts);
@@ -190,7 +191,8 @@ async function waf(view, { cfg }) {
         h('tbody', {}, cat.categories.map(c => h('tr', {},
           h('td', {}, h('b', {}, c.title), h('div', { class: 'small muted' }, h('code', {}, c.id))),
           h('td', {}, modeSel(c)),
-          h('td', { class: 'num' }, `${(counts[c.id] || [0, 0])[0]}`, (counts[c.id] || [0, 0])[1] ? h('span', { class: 'muted' }, ` + ${counts[c.id][1]}`) : null),
+          c.id === 'vuln' ? h('td', { class: 'num' }, h('a', { href: '#/protection?tab=vulns', title: 'Путей эксплойтов в карте — вкладка «Уязвимости»' }, 'база'))
+            : h('td', { class: 'num' }, `${(counts[c.id] || [0, 0])[0]}`, (counts[c.id] || [0, 0])[1] ? h('span', { class: 'muted' }, ` + ${counts[c.id][1]}`) : null),
           h('td', { class: 'small' }, c.doc))))))),
     { sub: 'Режим по умолчанию для всех сайтов; сайт может переопределить его на вкладке «Защита от атак» своего редактора. «+N» — правила уровня строгости 2', flush: true }),
     card('Параметры фильтра', form, { cls: 'mt', actions: can('admin') ? h('button', { class: 'btn primary', onclick: async () => {

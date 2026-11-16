@@ -67,10 +67,10 @@ CRS_DIRS = ["/usr/share/modsecurity-crs", "/usr/share/owasp-modsecurity-crs", "/
             "/opt/coreruleset"]
 
 
-def find_crs() -> Tuple[str, str]:
-    """(каталог правил CRS, версия «335»/«4100») или ("", "")."""
+def find_crs(prefer: str = "") -> Tuple[str, str]:
+    """(каталог правил CRS, версия «335»/«4100») или ("", ""). prefer — выпуск, скачанный панелью с GitHub."""
     from pathlib import Path
-    for d in CRS_DIRS:
+    for d in ([prefer] if prefer else []) + CRS_DIRS:
         rules = Path(d) / "rules"
         init = rules / "REQUEST-901-INITIALIZATION.conf"
         if init.is_file():
@@ -134,6 +134,9 @@ class ProtectionConf:
         p = self.prot
         return bool(getattr(self.p, "bots_file", "")) and any(b.enabled for b in p.verified_bots) and \
             (p.fake_bot_action != "off" or p.verified_skip_challenge)
+
+    def vuln_on(self) -> bool:
+        return bool(getattr(self.p, "vuln_file", "")) and self.prot.vulndb_enabled and self.prot.mode("vuln") != "off"
 
     def modsec_on(self) -> bool:
         return self.prot.modsec_enabled and modsec_ready(self.caps) and bool(self.crs_dir)
@@ -240,6 +243,24 @@ class ProtectionConf:
         a("    default 0;")
         a('    "~^([a-z0-9]+):\\1$" 1;')
         a("}")
+        if self.vuln_on():
+            from .vulndb import PAYLOAD_RE
+            a("")
+            a("# --- пути эксплойтов известных уязвимостей (CISA KEV, nuclei-templates; файл обновляет панель):")
+            a("# «CVE:a» — опасен сам путь, «CVE:p» — нужен ещё признак атаки в параметрах")
+            a("map $uri $nm_vuln_raw {")
+            a('    default "";')
+            a(f"    include {self.p.vuln_file};")
+            a("}")
+            a("map $args $nm_vuln_pl {")
+            a("    default 0;")
+            a(f"    {W.nginx_quote('~*' + PAYLOAD_RE)} 1;")
+            a("}")
+            a('map "$nm_vuln_raw:$nm_vuln_pl" $nm_vuln {')
+            a('    default "";')
+            a('    "~^(?<c>CVE-[0-9]+-[0-9]+):a:" $c;')
+            a('    "~^(?<c>CVE-[0-9]+-[0-9]+):p:1$" $c;')
+            a("}")
         a("")
         a("# --- правила ограничения частоты: ключ — IP, если запрос подходит под правило")
         a('map "$request_method:$uri" $nm_rlid {')
@@ -400,6 +421,10 @@ class ProtectionConf:
                 var = W.map_name(cat, target)
                 with c.block(f"if ({var})"):
                     c.d("set", "$nm_waf", var)
+                    c.d("set", "$nm_wact", f'"{want}"')
+            if self.vuln_on() and modes.get("vuln") == want:
+                with c.block('if ($nm_vuln)'):
+                    c.d("set", "$nm_waf", '"vuln/$nm_vuln"')
                     c.d("set", "$nm_wact", f'"{want}"')
         if sp.hotlink and sp.hotlink_ext:
             c.d("valid_referers", "none", "blocked", "server_names", *sp.hotlink_allow)

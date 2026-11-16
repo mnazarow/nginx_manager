@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import subprocess
 import time
 from typing import Any, Dict, Optional
@@ -80,12 +81,24 @@ async def protection_put(request: Request, body: Dict[str, Any] = Body(...), app
     old = app.protection.settings()
     app.protection.save(p)
     _audit(request, user, "protection_settings_updated")
+    if p.crs_source != old.crs_source and p.crs_source == "package":
+        app.protection.vulndb.use_package_crs()
     res = await app.apply(user["username"], "Изменены настройки защиты от атак") if apply else None
+    loop = asyncio.get_running_loop()
+    vuln_keys = ("vulndb_enabled", "vulndb_scope", "vulndb_skip_legit", "vulndb_exclude", "vulndb_exclude_paths")
+    if any(getattr(p, k) != getattr(old, k) for k in vuln_keys) or p.mode("vuln") != old.mode("vuln"):
+        loop.create_task(app.protection.vulndb.write_map())
+    srcs = ("vulndb_enabled", "vulndb_kev", "vulndb_nuclei", "vulndb_epss", "vulndb_cvelist", "vulndb_exploitdb",
+            "vulndb_scope")
+    if any(getattr(p, k) != getattr(old, k) for k in srcs) and p.vulndb_enabled:
+        loop.create_task(app.protection.vulndb.update(force=False))
+    if p.crs_source == "github" and old.crs_source != "github":
+        loop.create_task(app.protection.vulndb.update_crs(user=user["username"]))
     feeds_changed = [f.model_dump() for f in p.threat_feeds] != [f.model_dump() for f in old.threat_feeds] or \
         [b.model_dump() for b in p.verified_bots] != [b.model_dump() for b in old.verified_bots] or \
         (p.fake_bot_action, p.verified_skip_challenge) != (old.fake_bot_action, old.verified_skip_challenge)
     if feeds_changed:
-        asyncio.get_running_loop().create_task(app.protection.update_feeds(force=False))
+        loop.create_task(app.protection.update_feeds(force=False))
     return {"ok": True, "applied": res}
 
 
@@ -363,3 +376,103 @@ async def protection_events_csv(request: Request, limit: int = Query(10000, ge=1
     _audit(request, user, "protection_events_export", details={"rows": len(rows)})
     return Response("\ufeff" + buf.getvalue(), media_type="text/csv; charset=utf-8",
                     headers={"Content-Disposition": f'attachment; filename="attacks-{time.strftime("%Y%m%d-%H%M")}.csv"'})
+
+
+# =============================================================================
+#  База уязвимостей и обновление баз
+# =============================================================================
+@router.get("/protection/vulns")
+async def protection_vulns(request: Request, q: str = "", filter: str = "", sort: str = "kev",
+                           limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0), user=Depends(viewer)):
+    """База уязвимостей: сводка (источники, охват) и страница списка с поиском и фильтром (kev, patched, covered,
+    uncovered, ransomware, critical, epss, seen)."""
+    app = _nm(request)
+    db = app.protection.vulndb
+    await asyncio.to_thread(db.record_seen)
+    out = await asyncio.to_thread(db.search, q.strip()[:100], filter, sort, limit, offset)
+    out["summary"] = await asyncio.to_thread(db.summary)
+    out["map"] = app.db.kv_get("vulndb_map", {}) or {}
+    out["new"] = app.db.kv_get("vulndb_new", {}) or {}
+    return out
+
+
+@router.get("/protection/vulns/{cve}")
+async def protection_vuln(request: Request, cve: str, user=Depends(viewer)):
+    """Карточка уязвимости: описание, источники, пути эксплойта, правила, попытки эксплуатации на сайтах."""
+    app = _nm(request)
+    await asyncio.to_thread(app.protection.flush)
+    r = await asyncio.to_thread(app.protection.vulndb.get, cve)
+    if not r:
+        raise HTTPException(404, "Уязвимости нет в базе")
+    return r
+
+
+@router.post("/protection/vulns/update")
+async def protection_vulns_update(request: Request, body: Dict[str, Any] = Body(default={}), user=Depends(admin)):
+    """Обновить базы сейчас: {what: "all" | "vulns" | "feeds" | "crs"}. Без ожидания — ход виден в сводке."""
+    app = _nm(request)
+    what = body.get("what") or "all"
+    loop = asyncio.get_running_loop()
+    if what in ("all", "vulns"):
+        if app.protection.vulndb.running:
+            raise HTTPException(409, "Обновление базы уязвимостей уже идёт")
+        loop.create_task(app.protection.vulndb.update(force=True, user=user["username"]))
+    if what in ("all", "feeds"):
+        loop.create_task(app.protection.update_feeds(force=True))
+    if what == "crs":
+        loop.create_task(app.protection.vulndb.update_crs(force=True, user=user["username"]))
+    _audit(request, user, "protection_db_update", what)
+    return {"ok": True, "started": what}
+
+
+@router.post("/protection/vulns/{cve}/exclude")
+async def protection_vuln_exclude(request: Request, cve: str, body: Dict[str, Any] = Body(default={}),
+                                  user=Depends(admin)):
+    """Исключить уязвимость из карты путей (ложное срабатывание) или вернуть: {exclude: true/false}."""
+    app = _nm(request)
+    p = app.protection.settings()
+    cve = cve.upper()
+    if not re.match(r"^CVE-\d{4}-\d{4,}$", cve):
+        raise HTTPException(400, "Номер уязвимости — вида CVE-2021-44228")
+    ex = [c for c in p.vulndb_exclude if c != cve] + ([cve] if body.get("exclude", True) else [])
+    app.protection.save(p.model_copy(update={"vulndb_exclude": ex}))
+    _audit(request, user, "vuln_excluded" if body.get("exclude", True) else "vuln_included", cve)
+    ok, out = await app.protection.vulndb.write_map()
+    return {"ok": ok, "output": "" if ok else out[-800:], "excluded": ex}
+
+
+@router.get("/protection/sources")
+async def protection_sources(request: Request, user=Depends(viewer)):
+    """Все обновляемые базы защиты: списки угроз, диапазоны роботов, база уязвимостей, правила OWASP CRS."""
+    app = _nm(request)
+    p = app.protection.settings()
+    st = app.protection.feed_status()
+    db = app.protection.vulndb
+    vs = db.status()
+    crs_dir, ver = app.nginx.crs()
+    rows = []
+    for f in p.threat_feeds:
+        s = st.get(f.id) or {}
+        rows.append({"group": "threats", "id": f.id, "title": f.name or f.id, "enabled": f.enabled,
+                     "ok": s.get("ok"), "count": s.get("count"), "updated": s.get("updated"),
+                     "error": s.get("error", ""), "every": p.threat_update_hours})
+    for b in p.verified_bots:
+        s = st.get(f"bot:{b.id}") or {}
+        rows.append({"group": "bots", "id": b.id, "title": b.name or b.id, "enabled": b.enabled, "ok": s.get("ok"),
+                     "count": s.get("count"), "updated": s.get("updated"), "error": s.get("error", ""),
+                     "every": p.threat_update_hours})
+    from ..protection.vulndb import SOURCES
+    for k, on in (("kev", p.vulndb_kev), ("nuclei", p.vulndb_nuclei), ("templates", p.vulndb_nuclei),
+                  ("epss", p.vulndb_epss), ("cvelist", p.vulndb_cvelist), ("exploitdb", p.vulndb_exploitdb)):
+        s = vs.get(k) or {}
+        title = SOURCES.get(k, ("nuclei-templates: шаблоны эксплойтов", ""))[0]
+        rows.append({"group": "vulns", "id": k, "title": title, "enabled": p.vulndb_enabled and on,
+                     "ok": s.get("ok"), "count": s.get("count"), "updated": s.get("updated"),
+                     "error": s.get("error", ""), "every": p.vulndb_update_hours})
+    s = vs.get("crs") or {}
+    rows.append({"group": "crs", "id": "crs", "title": "OWASP Core Rule Set", "enabled": p.modsec_enabled,
+                 "ok": s.get("ok") if p.crs_source == "github" else bool(crs_dir), "count": None,
+                 "updated": s.get("updated"), "error": s.get("error", "") if p.crs_source == "github" else "",
+                 "every": p.vulndb_update_hours if p.crs_source == "github" else None,
+                 "version": ".".join(ver) if ver and len(ver) == 3 else ver, "source": p.crs_source, "dir": crs_dir})
+    return {"rows": rows, "running": db.running, "progress": db.progress}

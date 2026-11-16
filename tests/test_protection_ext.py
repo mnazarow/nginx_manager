@@ -232,6 +232,7 @@ def test_live_post_block_page(live2):
     port = live2["port"]
     form = {"Content-Type": "application/x-www-form-urlencoded"}
     assert http(port, "/?f=../../etc/passwd", method="POST", headers=form, body=b"a=1") == 403
+    time.sleep(0.2)  # nginx пишет строку журнала после отправки ответа
     assert last(live2)[0]["s"] == "403"
     conf = "".join(live2["files"].values())
     assert "error_page 418 =403 @nm_blocked" in conf
