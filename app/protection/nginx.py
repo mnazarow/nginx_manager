@@ -119,6 +119,9 @@ class ProtectionConf:
         if any(r.enabled and r.field == "country" for r in self.prot.custom_rules) and not self.p.geo_file:
             self.warnings.append("Свои правила по стране не действуют: нет базы GeoIP (раздел «Настройки панели → "
                                  "GeoIP»)")
+        if any(r.enabled and r.field == "asn" for r in self.prot.custom_rules) and not self.asn_ready():
+            self.warnings.append("Свои правила по сети провайдера не действуют: нет базы ASN (включите «Скачивать и "
+                                 "обновлять бесплатные базы DB-IP Lite» в настройках панели)")
         if self.prot.modsec_enabled and not self.modsec_on():
             self.warnings.append("Глубокая проверка (ModSecurity) не действует: " + (
                 "в nginx нет модуля ModSecurity (пакет libnginx-mod-http-modsecurity)" if not modsec_ready(caps)
@@ -133,9 +136,15 @@ class ProtectionConf:
                     used.add(cat)
         return used
 
+    def asn_ready(self) -> bool:
+        return bool(getattr(self.p, "asn_file", ""))
+
     def custom_rules(self, sid: Optional[int] = None) -> List[CustomRule]:
         return [r for r in self.prot.custom_rules if r.enabled and (sid is None or not r.sites or sid in r.sites)
-                and (r.field != "country" or self.p.geo_file)]
+                and (r.field != "country" or self.p.geo_file) and (r.field != "asn" or self.asn_ready())]
+
+    def asn_rules(self) -> List[CustomRule]:
+        return [r for r in self.custom_rules() if r.field == "asn"]
 
     def country_rules(self) -> List[CustomRule]:
         return [r for r in self.custom_rules() if r.field == "country"]
@@ -161,7 +170,9 @@ class ProtectionConf:
         return "detect" if s.protection.modsec == "detect" else self.prot.modsec_mode
 
     def feeds_on(self) -> bool:
-        return bool(self.p.threats_file) and any(f.enabled for f in self.prot.threat_feeds)
+        intel = bool(self.prot.abuseipdb_key and self.prot.abuseipdb_blacklist) or \
+            bool(self.prot.crowdsec_url and self.prot.crowdsec_key)
+        return bool(self.p.threats_file) and (any(f.enabled for f in self.prot.threat_feeds) or intel)
 
     def http_conf(self) -> str:
         out: List[str] = ["# Nginx Manager: защита от атак (раздел «Защита»). Файл генерируется панелью.", ""]
@@ -293,6 +304,12 @@ class ProtectionConf:
             a(f"modsecurity_rules_file {self.p.include_root}/modsec/main.conf;")
             a('modsecurity_transaction_id "$nm_site-$nm_pa-$request_id";')
         a("")
+        if self.asn_rules():
+            a("# --- сети провайдеров (ASN) из своих правил; файл собирает панель из базы ASN")
+            a("geo $nm_asn {")
+            a("    default 0;")
+            a(f"    include {self.p.asn_file};")
+            a("}")
         a("# --- свои правила")
         for r in self.custom_rules():
             self.custom_rule_map(out, r)
@@ -334,6 +351,13 @@ class ProtectionConf:
         a = out.append
         neg = r.op in ("not_contains", "not_regex", "not_in")
         hit, miss = ('""', '"1"') if neg else ('"1"', '""')
+        if r.field == "asn":
+            a(f"map $nm_asn $nm_cr_{r.id} {{")
+            a(f"    default {miss};")
+            for n in r.value.split():
+                a(f"    {n} {hit};")
+            a("}")
+            return
         if r.field == "country":
             a(f"map $nm_cc $nm_cr_{r.id} {{")
             a(f"    default {miss};")

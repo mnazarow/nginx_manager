@@ -21,6 +21,10 @@ from .routes import audit as _audit_fn
 from .routes import router  # маршруты регистрируются в общем роутере /api (модуль импортируется в конце routes.py)
 
 
+MASK = "••••••••"
+PROT_SECRETS = ("abuseipdb_key", "crowdsec_key")
+
+
 def _nm(request: Request):
     return request.app.state.nm
 
@@ -52,7 +56,11 @@ async def protection_get(request: Request, user=Depends(viewer)):
     app = _nm(request)
     p = app.protection.settings()
     caps = app.nginx.caps()
-    return {"settings": p.model_dump(), "effective_modes": {c: p.mode(c) for c in W.CATEGORIES},
+    data = p.model_dump()
+    for k in PROT_SECRETS:
+        if data.get(k):
+            data[k] = MASK
+    return {"settings": data, "effective_modes": {c: p.mode(c) for c in W.CATEGORIES},
             "feed_status": app.protection.feed_status(), "presets": THREAT_PRESETS, "bot_presets": VERIFIED_BOTS,
             "attack": app.protection.attack_state(), "challenge_ready": challenge_ready(caps),
             "modsec": _modsec_status(app), "kinds": KINDS, "actions": ACTIONS}
@@ -78,8 +86,11 @@ async def protection_put(request: Request, body: Dict[str, Any] = Body(...), app
                          user=Depends(admin)):
     """Изменить общие настройки защиты (тело — ProtectionSettings). ?apply=1 — применить конфигурацию сразу."""
     app = _nm(request)
-    p = ProtectionSettings.model_validate(body)
     old = app.protection.settings()
+    for k in PROT_SECRETS:
+        if body.get(k) == MASK:  # секрет не менялся
+            body[k] = getattr(old, k)
+    p = ProtectionSettings.model_validate(body)
     app.protection.save(p)
     _audit(request, user, "protection_settings_updated")
     if p.crs_source != old.crs_source and p.crs_source == "package":
@@ -100,6 +111,8 @@ async def protection_put(request: Request, body: Dict[str, Any] = Body(...), app
         (p.fake_bot_action, p.verified_skip_challenge) != (old.fake_bot_action, old.verified_skip_challenge)
     if feeds_changed:
         loop.create_task(app.protection.update_feeds(force=False))
+    if any(x.enabled and x.protection for x in app.panel().peers):
+        loop.create_task(asyncio.to_thread(app.peers.push_protection))
     return {"ok": True, "applied": res}
 
 
@@ -477,3 +490,90 @@ async def protection_sources(request: Request, user=Depends(viewer)):
                  "every": p.vulndb_update_hours if p.crs_source == "github" else None,
                  "version": crs_label(crs_dir), "source": p.crs_source, "dir": crs_dir})
     return {"rows": rows, "running": db.running, "progress": db.progress}
+
+
+# =============================================================================
+#  Технологии сайтов
+# =============================================================================
+@router.get("/protection/tech")
+async def protection_tech(request: Request, user=Depends(viewer)):
+    """Технологии сайтов (что работает за nginx) с числом эксплуатируемых уязвимостей в найденных продуктах."""
+    db = _nm(request).protection.vulndb
+    return {"sites": await asyncio.to_thread(db.tech_vulns), "watch": db.watch_keywords()}
+
+
+@router.post("/protection/tech/scan")
+async def protection_tech_scan(request: Request, body: Dict[str, Any] = Body(default={}), user=Depends(operator)):
+    """Определить технологии сайтов сейчас: {site: id} — один сайт, без тела — все."""
+    app = _nm(request)
+    site = body.get("site")
+    await asyncio.to_thread(app.protection.vulndb.scan_tech, int(site) if site is not None else None)
+    _audit(request, user, "tech_scan", str(site or "все сайты"))
+    return {"sites": await asyncio.to_thread(app.protection.vulndb.tech_vulns)}
+
+
+# =============================================================================
+#  Обмен данными об угрозах: AbuseIPDB и CrowdSec
+# =============================================================================
+@router.get("/protection/intel")
+async def protection_intel(request: Request, user=Depends(viewer)):
+    """Состояние AbuseIPDB и CrowdSec: списки, жалобы за сутки."""
+    app = _nm(request)
+    p = app.protection.settings()
+    st = app.protection.feed_status()
+    ist = app.protection.intel.status()
+    rep = ist.get("abuseipdb_report") or {}
+    return {"abuseipdb": {"configured": bool(p.abuseipdb_key), "blacklist": st.get("abuseipdb") or {},
+                          "report": p.abuseipdb_report, "sent_today": rep.get("sent", 0)
+                          if rep.get("day") == time.strftime("%Y-%m-%d") else 0,
+                          "last_report": rep.get("last"), "report_error": rep.get("error", ""),
+                          "reported_week": len(app.protection.intel.reported())},
+            "crowdsec": {"configured": bool(p.crowdsec_url and p.crowdsec_key), "url": p.crowdsec_url,
+                         "decisions": st.get("crowdsec") or {}}}
+
+
+@router.post("/protection/intel/test")
+async def protection_intel_test(request: Request, body: Dict[str, Any] = Body(...), user=Depends(admin)):
+    """Проверить подключение: {what: "abuseipdb" | "crowdsec"} (с сохранёнными настройками)."""
+    app = _nm(request)
+    what = body.get("what")
+    if what == "abuseipdb":
+        r = await asyncio.to_thread(app.protection.intel.check, "8.8.8.8", True)
+        if r.get("error"):
+            return {"ok": False, "error": r["error"]}
+        return {"ok": True, "message": f"Ключ работает: 8.8.8.8 — уверенность {r['score']}%, {r['isp']}"}
+    if what == "crowdsec":
+        res = await app.protection.update_intel("crowdsec", force=True)
+        if not res.get("ok"):
+            return {"ok": False, "error": res.get("error", "нет ответа")}
+        return {"ok": True, "message": f"Агент CrowdSec ответил: решений — {res.get('count', 0)}"}
+    raise HTTPException(400, "what: abuseipdb или crowdsec")
+
+
+@router.get("/protection/ip/{ip}/intel")
+async def protection_ip_intel(request: Request, ip: str, user=Depends(viewer)):
+    """Внешние сведения об адресе: AbuseIPDB (если задан ключ и включена проверка), сеть провайдера."""
+    import ipaddress as _ip
+    try:
+        _ip.ip_address(ip)
+    except ValueError:
+        raise HTTPException(400, "Некорректный IP-адрес")
+    app = _nm(request)
+    p = app.protection.settings()
+    out: Dict[str, Any] = {"report_mode": p.abuseipdb_report}
+    if p.abuseipdb_key and p.abuseipdb_check:
+        out["abuseipdb"] = await asyncio.to_thread(app.protection.intel.check, ip)
+    out["reported"] = app.protection.intel.reported().get(ip)
+    return out
+
+
+@router.post("/protection/ip/{ip}/report")
+async def protection_ip_report(request: Request, ip: str, user=Depends(operator)):
+    """Пожаловаться на адрес в AbuseIPDB (категории и текст — по сработавшим правилам за сутки)."""
+    app = _nm(request)
+    try:
+        res = await asyncio.to_thread(app.protection.intel.report, ip, user["username"])
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    _audit(request, user, "abuseipdb_report", ip, {"categories": res.get("categories")})
+    return res

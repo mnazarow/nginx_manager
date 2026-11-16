@@ -2,6 +2,7 @@
 import { api } from '../api.js';
 import { h, mount, icon, badge, toast, modal, confirmDlg, table, tabs, kpi, fmtAgo, fmtDur, fmtInt, fmtDate, empty, downloadText, debounce, countryTag, countryName } from '../ui.js';
 import { can, ctx } from '../app.js';
+import { peersCard, geoDbCard } from './protection-intel.js';
 
 const DURATIONS = [[15, '15 минут'], [60, '1 час'], [360, '6 часов'], [1440, '1 сутки'], [10080, '7 суток'], [43200, '30 суток'], [null, 'Бессрочно']];
 const RULE_KIND = { scan: 'bad', auth: 'bad', default: 'warn', e4xx: 'warn', flood: 'warn', manual: 'outline' };
@@ -86,7 +87,7 @@ function geoTab(box, g, reload) {
 }
 
 export async function render(root) {
-  let tab = ['active', 'suspicious', 'offenders', 'countries', 'history'].includes(ctx.params.tab) ? ctx.params.tab : 'active';
+  let tab = ['active', 'suspicious', 'offenders', 'countries', 'peers', 'history'].includes(ctx.params.tab) ? ctx.params.tab : 'active';
   let q = '', timer = null, data = null;
   const head = h('div', {});
   const kpis = h('div', { class: 'grid g4 mb' });
@@ -120,9 +121,10 @@ export async function render(root) {
       { id: 'suspicious', label: 'Подозрительные', badge: r.suspicious.length || null, badgeKind: st.autoban_enabled ? '' : 'warn' },
       { id: 'offenders', label: 'Нарушители сейчас', badge: r.offenders.length || null },
       { id: 'countries', label: 'Страны' },
+      { id: 'peers', label: 'Другие серверы' },
       { id: 'history', label: 'История' },
     ], tab, (t) => { tab = t; ctx.params.tab = t; history.replaceState(null, '', '#/bans' + (t === 'active' ? '' : '?tab=' + t)); draw(); }));
-    mount(tools, tab === 'countries' ? null : h('div', { class: 'row mb', style: { justifyContent: 'space-between' } }, search,
+    mount(tools, ['countries', 'peers'].includes(tab) ? null : h('div', { class: 'row mb', style: { justifyContent: 'space-between' } }, search,
       h('div', { class: 'row' },
         tab === 'active' && r.items.length ? h('button', { class: 'btn sm', onclick: () => downloadText('banned-ips.txt', r.items.map(b => b.net).join('\n') + '\n', 'text/plain') }, icon('download'), 'Экспорт списка') : null,
         tab === 'active' && can('admin') && s.auto ? h('button', { class: 'btn sm', onclick: async () => {
@@ -176,7 +178,15 @@ export async function render(root) {
         ], rows) : empty('Нарушителей нет', 'В текущем окне нет адресов с заметным числом ошибок или зондирований.', null, 'shield')));
     } else if (tab === 'countries') {
       if (!box.querySelector('.col')) mount(box, h('div', {}, 'Загрузка…'));
-      api('/geo').then(g => { if (tab === 'countries') geoTab(box, g, draw); });
+      api('/geo').then(async (g) => {
+        if (tab !== 'countries') return;
+        geoTab(box, g, draw);
+        const dbs = await geoDbCard();
+        if (dbs && tab === 'countries' && box.firstChild) box.firstChild.appendChild(dbs);
+      });
+    } else if (tab === 'peers') {
+      mount(box, h('div', {}, 'Загрузка…'));
+      peersCard().then(el => { if (tab === 'peers') mount(box, el || empty('Нет данных')); });
     } else {
       mount(box, h('div', {}, 'Загрузка…'));
       api('/events', { query: { source: 'bans', limit: 300 } }).then(ev => {

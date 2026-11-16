@@ -237,6 +237,8 @@ class BanService:
                             (n, reason, source, rule, username, now, expires, det, country))
         self.dirty = True
         self.app.touch()
+        if not source.startswith("sync") and getattr(self.app, "peers", None):
+            self.app.peers.mark()  # отправить другим серверам
         return {"net": n, "expires_at": expires}
 
     def remove(self, ban_id: int) -> Optional[Dict[str, Any]]:
@@ -247,6 +249,8 @@ class BanService:
             self.detector.win.pop(row["net"], None)
             self.dirty = True
             self.app.touch()
+            if getattr(self.app, "peers", None):
+                self.app.peers.mark()
         return row
 
     def expire(self) -> int:

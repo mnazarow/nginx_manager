@@ -141,7 +141,9 @@ restart, start, stop, переоткрыть журналы), сведения �
 Определение страны по IP требует базы в формате MaxMind DB и пакета `maxminddb`:
 
 1. Установите пакет: `/opt/nginx-manager/venv/bin/pip install maxminddb` (или `install.sh --with-geoip`).
-2. Скачайте базу одним из способов и положите в `/var/lib/nginx-manager/geoip/`:
+2. С включённой настройкой «Скачивать и обновлять бесплатные базы DB-IP Lite» (по умолчанию) панель сама скачает
+   базы стран и сетей провайдеров (ASN) и будет обновлять их раз в месяц ([17](17-bans.md#базы-geoip-и-их-обновление)).
+   Или скачайте базу вручную и положите в `/var/lib/nginx-manager/geoip/`:
    - **DB-IP Country Lite** (бесплатно, без регистрации, CC BY 4.0): `dbip-country-lite-ГГГГ-ММ.mmdb.gz` с
      db-ip.com → распаковать как `dbip-country-lite.mmdb`;
    - **MaxMind GeoLite2-Country** (бесплатно, нужна регистрация и лицензионный ключ): `GeoLite2-Country.mmdb`.

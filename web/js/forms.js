@@ -18,7 +18,8 @@ function visible(f, obj, ctx) {
   if (!f.show) return true;
   for (const [k, vals] of Object.entries(f.show)) {
     const v = k.startsWith('^') ? ctx.root[k.slice(1)] : obj[k];
-    if (!vals.includes(v)) return false;
+    // {not: [...]} — поле видно, когда значение НЕ из списка (например, ключ задан)
+    if (Array.isArray(vals) ? !vals.includes(v) : (vals.not || []).includes(v ?? '')) return false;
   }
   return true;
 }

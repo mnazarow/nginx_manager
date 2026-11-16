@@ -117,6 +117,7 @@ class Paths:
     bots_file: str = ""         # официальные адреса роботов для geo $nm_vbot
     bots_ua_file: str = ""      # User-Agent проверяемых роботов для map $nm_bot_claim
     vuln_file: str = ""         # пути эксплойтов известных уязвимостей для map $nm_vuln_raw
+    asn_file: str = ""          # сети автономных систем из своих правил для geo $nm_asn ("" — нет базы ASN)
     crs_dir: str = ""           # каталог правил OWASP CRS (пусто — не найден)
     crs_version: str = ""       # версия CRS цифрами («335»)
 

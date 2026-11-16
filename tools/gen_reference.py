@@ -60,6 +60,10 @@ def show_text(f):
     parts = []
     for k, vals in s.items():
         k = k.lstrip("^")
+        if isinstance(vals, dict) and "not" in vals:
+            parts.append(f"`{k}` задан" if vals["not"] == [""] else
+                         f"`{k}` ≠ " + ", ".join(f"`{v}`" for v in vals["not"]))
+            continue
         vs = ", ".join("вкл" if v is True else "выкл" if v is False else f"`{v}`" for v in vals)
         parts.append(f"`{k}` = {vs}")
     return "Показывается, когда " + " и ".join(parts) + "."
@@ -289,6 +293,8 @@ API_GROUPS = [
     ("/api/health", "Бэкенды"), ("/api/diagnostics", "Диагностика"), ("/api/collector", "Диагностика"),
     ("/api/insights", "Анализ и отчёты"), ("/api/reports", "Анализ и отчёты"),
     ("/api/bans", "Блокировки и доступ по странам"), ("/api/geo", "Блокировки и доступ по странам"),
+    ("/api/geoip", "Блокировки и доступ по странам"), ("/api/sync", "Несколько серверов"),
+    ("/api/peers", "Несколько серверов"),
     ("/api/alerts", "Оповещения"),
     ("/api/users", "Пользователи и аудит"), ("/api/audit", "Пользователи и аудит"), ("/api/events", "Пользователи и аудит"),
     ("/api/backup", "Резервные копии и импорт"), ("/api/import", "Резервные копии и импорт"),

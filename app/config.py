@@ -144,6 +144,11 @@ class Settings:
         return self.managed_dir / "threats.conf"
 
     @property
+    def asn_file(self) -> Path:
+        """Сети автономных систем из своих правил «Сеть провайдера» для geo $nm_asn."""
+        return self.managed_dir / "asn-nets.conf"
+
+    @property
     def vuln_file(self) -> Path:
         """Пути эксплойтов известных уязвимостей для map $nm_vuln_raw (раздел «Защита → Уязвимости»)."""
         return self.managed_dir / "vuln-paths.conf"
@@ -210,6 +215,10 @@ class Settings:
             if self.managed_dir.is_dir() and not self.attack_file.exists():
                 self.attack_file.write_text('# Nginx Manager: режим «Под атакой»\ndefault "";\n')
                 os.chmod(self.attack_file, 0o644)
+            if self.managed_dir.is_dir() and not self.asn_file.exists():
+                from .services.asn import empty_file as asn_empty
+                self.asn_file.write_text(asn_empty())
+                os.chmod(self.asn_file, 0o644)
             if self.managed_dir.is_dir() and not self.geo_file.exists():
                 from .services.geoblock import empty_file
                 self.geo_file.write_text(empty_file())

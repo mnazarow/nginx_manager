@@ -352,6 +352,35 @@ class ProtectionAnalytics:
         self.svc = svc
         self.db = svc.db
 
+    def asn(self, ip: str) -> Tuple[int, str]:
+        """Автономная система адреса (0, "" — нет базы ASN или адрес не найден)."""
+        try:
+            return self.svc.app.stats.asn.lookup(ip)
+        except Exception:  # noqa: BLE001
+            return 0, ""
+
+    def networks(self, since: float, site: str = "", limit: int = 10, until: Optional[float] = None
+                 ) -> List[Dict[str, Any]]:
+        """Атакующие сети провайдеров: атаки по адресам → автономные системы."""
+        cond, args = self._cond(since, until, site=site)
+        rows = self.db.query(f"SELECT ip, COUNT(*) AS n, MAX(country) AS country FROM attack_log WHERE {cond} "
+                             "AND test=0 AND ip!='' GROUP BY ip ORDER BY n DESC LIMIT 20000", args)
+        agg: Dict[int, Dict[str, Any]] = {}
+        for r in rows:
+            n, org = self.asn(r["ip"])
+            if not n:
+                continue
+            a = agg.setdefault(n, {"asn": n, "org": org, "n": 0, "ips": 0, "countries": Counter()})
+            a["n"] += r["n"]
+            a["ips"] += 1
+            if r["country"]:
+                a["countries"][r["country"]] += r["n"]
+        out = sorted(agg.values(), key=lambda x: -x["n"])[:limit]
+        for a in out:
+            c = a.pop("countries")
+            a["country"] = c.most_common(1)[0][0] if c else ""
+        return out
+
     def _cond(self, since: float, until: Optional[float] = None, site: str = "", col: str = "ts"):
         cond, args = [f"{col}>=?"], [since]
         if until is not None:
@@ -454,7 +483,8 @@ class ProtectionAnalytics:
         for (kind, rule), n in rule_tot.items():
             if kind == "threat":
                 feeds[rule.split("/", 1)[-1].split(":")[0]] += n
-        feed_names = {f.id: f.name for f in self.svc.settings().threat_feeds}
+        from .intel import INTEL_FEEDS
+        feed_names = {**INTEL_FEEDS, **{f.id: f.name for f in self.svc.settings().threat_feeds}}
         rl = Counter({rule.split("/", 1)[-1]: n for (kind, rule), n in rule_tot.items() if kind == "ratelimit"})
         vul = Counter({rule[5:]: n for (kind, rule), n in rule_tot.items() if kind == "waf" and rule.startswith("vuln/")})
         vul_rows = []
@@ -502,6 +532,7 @@ class ProtectionAnalytics:
             "tools": [{"key": k, "title": TOOL_TITLES.get(k, k), "n": n} for k, n in tools.most_common()],
             "methods": methods, "statuses": statuses, "paths": paths, "hosts": hosts, "countries": countries,
             "rules": top_rules, "vulns": vul_rows, "vulns_total": len(vul),
+            "networks": self.networks(since, site=site),
             "feeds": [{"id": k, "name": feed_names.get(k, k), "n": n} for k, n in feeds.most_common()],
             "ratelimit": [{"id": k, "title": self.svc.rule_title("ratelimit", "ratelimit/" + k), "n": n}
                           for k, n in rl.most_common()],
@@ -517,7 +548,7 @@ class ProtectionAnalytics:
         since = time.time() - hours * 3600
         cond, args = self._cond(since, site=site)
         cond += " AND test=0 AND ip!=''"
-        if q:
+        if q and not re.match(r"^AS\d+$", q.strip(), re.I):
             cond += " AND (ip LIKE ? OR country=? OR ua LIKE ?)"
             args += [f"%{q}%", q.upper(), f"%{q}%"]
         rows = self.db.query(
@@ -537,11 +568,15 @@ class ProtectionAnalytics:
                                    f"({','.join('?' * len(part))}) GROUP BY ip, ua", args + part):
                 uas.setdefault(u["ip"], Counter())[classify_ua(u["ua"] or "")] += u["n"]
         for r in rows:
+            r["asn"], r["org"] = self.asn(r["ip"])
             r["tool"] = pick_tool(uas.get(r["ip"], Counter()))
             r["tool_title"] = TOOL_TITLES.get(r["tool"], r["tool"])
             r["tools"] = [TOOL_TITLES.get(k, k) for k, _ in uas.get(r["ip"], Counter()).most_common(4)]
             r["banned"] = r["ip"] in banned
             r["score"] = self.score_ip(r)
+        m = re.match(r"^AS(\d+)$", q.strip(), re.I) if q else None
+        if m:  # поиск по сети провайдера: «AS14061»
+            rows = [r for r in rows if r["asn"] == int(m.group(1))]
         return rows
 
     @staticmethod
@@ -609,9 +644,16 @@ class ProtectionAnalytics:
         p = self.svc.settings()
         trusted = any(_in_net(ip, n) for n in p.bypass_ips)
         feeds = self.svc.ip_in_feeds(ip)
+        asn, org = self.asn(ip)
+        net = None
+        if asn:
+            same = [x for x in self.networks(since, limit=1000) if x["asn"] == asn]
+            net = {"asn": asn, "org": org, "n": same[0]["n"] if same else 0, "ips": same[0]["ips"] if same else 0,
+                   "rules": [r.name for r in p.custom_rules if r.field == "asn" and str(asn) in r.value.split()]}
         r = {"ip": ip, "hours": hours, "step": step, "since": since, "summary": summ, "ever": ever, "series": series,
              "rules": rules, "sites": sites, "uas": uas, "paths": paths, "events": events, "traffic": traffic,
-             "ban": ban, "trusted": trusted, "feeds": feeds}
+             "ban": ban, "trusted": trusted, "feeds": feeds, "network": net,
+             "network_db": bool(getattr(self.svc.app.stats.asn, "reader", None))}
         r["score"] = self.score_ip({"n": summ.get("n", 0), "rules": summ.get("rules", 0), "sites": summ.get("sites", 0),
                                     "tool": pick_tool(sum((Counter({classify_ua(u["ua"]): u["n"]}) for u in uas),
                                                           Counter())),
@@ -794,6 +836,8 @@ class ProtectionService:
         self.bot_totals: Counter = Counter()        # (робот, ok|fake) → число с запуска (для /metrics)
         from .vulndb import VulnDB
         self.vulndb = VulnDB(self)
+        from .intel import Intel
+        self.intel = Intel(self)
         self._vuln_titles: Tuple[float, Dict[str, str]] = (0.0, {})
         self._lock: Optional[asyncio.Lock] = None
         self.feed_task_running = False
@@ -976,7 +1020,61 @@ class ProtectionService:
                 seen.add(net)
                 lines.append(f'{net} "{f.id}:{f.action}";')
                 total += 1
+        for fid, action, on in self.intel.feeds():
+            path = self.feed_dir() / f"{fid}.txt"
+            if not on or not path.exists():
+                continue
+            for net in path.read_text().split():
+                if net in seen:
+                    continue
+                seen.add(net)
+                lines.append(f'{net} "{fid}:{action}";')
+                total += 1
         return "\n".join(lines) + "\n", total
+
+    async def update_intel(self, fid: str, force: bool = False) -> Dict[str, Any]:
+        """Чёрный список AbuseIPDB (раз в сутки) или решения CrowdSec (раз в несколько минут) → файл списков угроз."""
+        p = self.settings()
+        status = self.feed_status()
+        st = status.get(fid, {})
+        now = time.time()
+        every = max(24, p.threat_update_hours) * 3600 if fid == "abuseipdb" else p.crowdsec_minutes * 60
+        if st.get("error"):
+            every = min(every, 3600)  # после ошибки — повтор не реже раза в час
+        if not force and now - max(st.get("updated") or 0, st.get("tried") or 0) < every:
+            return st
+        path = self.feed_dir() / f"{fid}.txt"
+        try:
+            nets = await asyncio.to_thread(self.intel.fetch_feed, fid)
+            clean = []
+            for n in nets:
+                try:
+                    clean.append(str(ipaddress.ip_network(n, strict=False)) if "/" in n else
+                                 str(ipaddress.ip_address(n)))
+                except ValueError:
+                    continue
+            old = path.read_text() if path.exists() else ""
+            text = "\n".join(clean) + ("\n" if clean else "")
+            path.write_text(text)
+            status[fid] = {"ok": True, "count": len(clean), "updated": now, "error": "", "tried": now}
+            changed = text != old
+        except Exception as e:  # noqa: BLE001
+            status[fid] = {**st, "ok": False, "error": feed_error(e) if not isinstance(e, ValueError) else str(e),
+                           "tried": now}
+            changed = False
+            if not st.get("error"):
+                from .intel import INTEL_FEEDS
+                self.db.event("warning", "protection", f"{INTEL_FEEDS[fid]}: не обновлён — {status[fid]['error']}")
+        self.db.kv_set("threat_status", status)
+        if changed:
+            content, _total = self.render_threats()
+            mgr = self.app.nginx
+            async with mgr.lock:
+                ok, out = await asyncio.to_thread(mgr.write_side_file, settings.threats_file, content)
+            if not ok:
+                self.db.event("error", "protection", "Не удалось подключить списки угроз к nginx",
+                              {"output": out[-1500:]})
+        return status[fid]
 
     def render_bots(self) -> Tuple[str, str]:
         """Файлы для geo $nm_vbot (адрес → робот) и map $nm_bot_claim (User-Agent → робот). В карту User-Agent
@@ -1208,7 +1306,9 @@ class ProtectionService:
             return []
         p = self.settings()
         out = []
+        from .intel import INTEL_FEEDS
         items = [(f"{f.id}.txt", f.name, "threat", f.action) for f in p.threat_feeds if f.enabled] + \
+                [(f"{fid}.txt", INTEL_FEEDS[fid], "threat", act) for fid, act, on in self.intel.feeds() if on] + \
                 [(f"bot-{b.id}.txt", b.name, "bot", "") for b in p.verified_bots if b.enabled]
         for fn, name, typ, action in items:
             path = self.feed_dir() / fn
@@ -1418,6 +1518,9 @@ class ProtectionService:
             return rule
         if kind == "threat":
             fid = rule.split("/", 1)[-1].split(":")[0]
+            from .intel import INTEL_FEEDS
+            if fid in INTEL_FEEDS:
+                return f"Список угроз: {INTEL_FEEDS[fid]}"
             for f in self.settings().threat_feeds:
                 if f.id == fid:
                     return f"Список угроз: {f.name}"
@@ -1678,10 +1781,13 @@ class ProtectionService:
             await self.vulndb.update()
         elif now - built > 86400:
             await self.vulndb.write_map()
+        last_tech = max((r.get("ts") or 0) for r in self.vulndb.tech().values()) if self.vulndb.tech() else 0
+        if p.vulndb_watch_auto and now - last_tech > 86400:
+            await asyncio.to_thread(self.vulndb.scan_tech)
 
     # ------------------------------------------------------------------ фоновые задачи
     async def run(self) -> None:
-        last_min = last_feeds = last_clean = 0.0
+        last_min = last_feeds = last_clean = last_intel = 0.0
         last_vuln = time.time() - 540  # первая проверка базы уязвимостей — через минуту после запуска
         while True:
             try:
@@ -1700,6 +1806,13 @@ class ProtectionService:
                             any(b.enabled for b in ps.verified_bots)
                             and (ps.fake_bot_action != "off" or ps.verified_skip_challenge)):
                         await self.update_feeds()
+                ps = self.settings()
+                for fid, _act, on in self.intel.feeds():
+                    if on:
+                        await self.update_intel(fid)
+                if now - last_intel >= 600 and ps.abuseipdb_report == "auto" and ps.abuseipdb_key:
+                    last_intel = now
+                    await asyncio.to_thread(self.intel.auto_report)
                 if now - last_vuln >= 600 and self.settings().vulndb_enabled:
                     last_vuln = now
                     await self.vuln_tick()

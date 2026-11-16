@@ -7,6 +7,7 @@ import { model, renderFields, errorsToMap } from '../forms.js';
 import { timeChart, setData, chartCard, destroyAll, css } from '../charts.js';
 import { can, refreshState } from '../app.js';
 import { openVuln } from './protection-vulns.js';
+import { networkBlock, abuseBlock } from './protection-intel.js';
 
 // Виды атак в фиксированном порядке категориальной палитры; девятый и далее — нейтральный серый
 export const KIND_ORDER = ['waf', 'modsec', 'custom', 'threat', 'fakebot', 'challenge', 'honeypot', 'ratelimit'];
@@ -177,7 +178,12 @@ export async function analyticsTab(view, { sites, charts, c }) {
           { title: 'Путь', render: (r) => h('code', { class: 'small', style: { wordBreak: 'break-all' } }, r.key || '/') },
           { title: 'Атак', num: true, render: (r) => fmtInt(r.n) }, { title: 'Адресов', num: true, render: (r) => fmtInt(r.ips) },
         ], d.paths) : empty('Нет данных'), { flush: true, sub: 'пути без параметров' }),
-        card('Атакуемые домены', (d.hosts || []).length ? hbars(d.hosts.map(r => ({ label: r.key, value: r.n }))) : empty('Нет данных'), { sub: 'заголовок Host запросов атакующих' })),
+        card('Атакующие сети', (d.networks || []).length ? table([
+          { title: 'Сеть', render: (r) => h('a', { href: `#/protection?tab=attackers&hours=${hours}&q=AS${r.asn}` }, `AS${r.asn}`) },
+          { title: 'Провайдер', render: (r) => h('span', { class: 'small' }, countryTag(r.country), ' ', r.org || '—') },
+          { title: 'Атак', num: true, render: (r) => fmtInt(r.n) }, { title: 'Адресов', num: true, render: (r) => fmtInt(r.ips) },
+        ], d.networks) : empty('Нет данных', 'Нужна база сетей провайдеров (ASN) — включите автообновление баз DB-IP Lite в настройках панели', null, 'globe'), { flush: !!(d.networks || []).length, sub: 'автономные системы (ASN) атакующих адресов' })),
+      card('Атакуемые домены', (d.hosts || []).length ? hbars(d.hosts.map(r => ({ label: r.key, value: r.n }))) : empty('Нет данных'), { cls: 'mt', sub: 'заголовок Host запросов атакующих' }),
       card('Эффективность правил', ruleTable, { flush: true, cls: 'mt', sub: 'сколько раз сработало правило, от скольких адресов и на скольких сайтах; щелчок — карточка правила' }),
       h('div', { class: 'grid g3 mt' },
         card('Списки угроз', d.feeds.length ? hbars(d.feeds.map(r => ({ label: r.name, value: r.n }))) : empty('Списки не срабатывали', '', null, 'list')),
@@ -228,7 +234,7 @@ export async function attackersTab(view, { sites, c }) {
   let q = (c.params || {}).q || '';
   let sort = 'score';
   const body = h('div', {});
-  const search = h('input', { type: 'search', placeholder: 'IP, страна (RU) или User-Agent', value: q, 'aria-label': 'Поиск атакующих', style: { maxWidth: '280px' },
+  const search = h('input', { type: 'search', placeholder: 'IP, страна (RU), сеть (AS14061) или User-Agent', value: q, 'aria-label': 'Поиск атакующих', style: { maxWidth: '280px' },
     oninput: debounce((e) => { q = e.target.value.trim(); load(); }, 400) });
   mount(view, h('div', { class: 'toolbar' },
     segmented(PERIODS, String(hours), (v) => { hours = Number(v); load(); }),
@@ -243,6 +249,7 @@ export async function attackersTab(view, { sites, c }) {
     mount(body, card(`Адреса (${rows.length})`, rows.length ? table([
       { title: 'IP', render: (r) => h('a', { href: '#', onclick: (e) => { e.preventDefault(); openIp(r.ip, { sites }); } }, h('code', {}, r.ip)) },
       { title: '', srTitle: 'Страна', render: (r) => countryTag(r.country) },
+      { title: 'Сеть', render: (r) => r.asn ? h('a', { href: '#', class: 'small', title: r.org, onclick: (e) => { e.preventDefault(); q = `AS${r.asn}`; search.value = q; load(); } }, `AS${r.asn}`, h('div', { class: 'muted ellipsis', style: { maxWidth: '160px' } }, r.org)) : h('span', { class: 'muted' }, '—') },
       { title: 'Угроза', render: (r) => badge(String(r.score), r.score >= 70 ? 'bad' : r.score >= 40 ? 'warn' : '') },
       { title: 'Атак', num: true, render: (r) => fmtInt(r.n) },
       { title: 'Правил', num: true, render: (r) => fmtInt(r.rules) },
@@ -316,6 +323,7 @@ export async function openIp(ip, { sites = [] } = {}) {
         { title: 'Код', render: (r) => r.status || '444' }, { title: 'Раз', num: true, render: (r) => fmtInt(r.n) },
       ], d.paths) : empty('Нет данных'), { flush: !!d.paths.length }),
       card('Сайты', hbars(d.sites.map(r => ({ label: r.name, value: r.n }))))),
+    h('div', { class: 'grid g2 mt' }, networkBlock(d, () => m.close()), abuseBlock(ip)),
     card('Последние события', d.events.length ? table([
       { title: 'Время', render: (r) => h('span', { class: 'nowrap small' }, fmtDate(r.ts)) },
       { title: 'Правило', render: (r) => h('span', { class: 'small' }, r.title || r.rule) },

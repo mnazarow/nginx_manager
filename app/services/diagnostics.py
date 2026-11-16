@@ -1036,6 +1036,29 @@ class Diagnostics:
                              + (f"; ошибки: {', '.join(bad)}" if bad else ""),
                              hint="Ошибка у источника — подробности на вкладке «Защита → Уязвимости». Недоступный "
                                   "источник не мешает остальным." if stale or bad else ""))
+        fst = prot.feed_status()
+        from ..protection.intel import INTEL_FEEDS
+        for fid, _act, on in prot.intel.feeds():
+            if not on:
+                continue
+            st = fst.get(fid) or {}
+            if st.get("error"):
+                res.append(R(f"prot_intel_{fid}", g, INTEL_FEEDS[fid], WARN, st["error"][:300],
+                             hint="«Защита → Списки угроз → Обмен данными об угрозах»: проверьте ключ и доступ "
+                                  "сервера к api.abuseipdb.com или к агенту CrowdSec («Проверить…»)."))
+            elif st.get("updated"):
+                res.append(R(f"prot_intel_{fid}", g, INTEL_FEEDS[fid], OK,
+                             f"{st.get('count', 0)} адресов, обновлён {fmt_dur(now - st['updated'])} назад"))
+        peers = [x for x in self.app.panel().peers if x.enabled]
+        if peers:
+            pst = self.app.peers.status()
+            bad = [f"{x.name}: {(pst.get(x.id) or {}).get('bans_error')}" for x in peers
+                   if (pst.get(x.id) or {}).get("bans_error")]
+            res.append(R("peers", g, "Другие серверы", WARN if bad else OK,
+                         ("Не отправляются блокировки — " + "; ".join(bad))[:400] if bad else
+                         f"Блокировки отправляются на {len(peers)} серв.",
+                         hint="«Блокировки IP → Другие серверы» → «Проверить связь»: адрес панели, API-токен "
+                              "(роль «оператор» или выше), сертификат." if bad else ""))
         for sid, s in state.sites:
             last = self.app.db.kv_get(f"selftest_{sid}", None) if s.enabled else None
             if not last:

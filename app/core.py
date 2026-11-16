@@ -89,12 +89,16 @@ class App:
         self.alerts = AlertEngine(self.db, self.metric, self.broadcast)
         self.diag = Diagnostics(self)
         self.bans = BanService(self)
+        from .services.peers import PeerSync
+        self.peers = PeerSync(self)
         self.insights = Analyzer(self)
         from .services.events import EventNotifier
         self.events = EventNotifier(self)
         self.stats.agg.detector = self.bans.detector
         from .protection.service import ProtectionService
         self.protection = ProtectionService(self)
+        from .services.geoupdate import GeoUpdater
+        self.geoupdate = GeoUpdater(self)
         self.stats.agg.protection = self.protection
         self.alerts.site_name = self._site_name
         self.clients: Set[WSClient] = set()
@@ -161,7 +165,8 @@ class App:
         self.tasks += [loop.create_task(self.ticker(), name="ticker"),
                        loop.create_task(self.watchdog(), name="watchdog"),
                        loop.create_task(self.periodic(), name="periodic"),
-                       loop.create_task(self.protection.run(), name="protection")]
+                       loop.create_task(self.protection.run(), name="protection"),
+                       loop.create_task(self.peers.run(), name="peers")]
         try:  # режим «Под атакой» мог закончиться, пока панель не работала
             await self.protection.sync_attack_file()
         except Exception:  # noqa: BLE001
@@ -518,10 +523,22 @@ class App:
             mt = os.path.getmtime(g.path) if g.path else 0.0
         except OSError:
             mt = 0.0
-        if g.path and mt and mt != getattr(g, "mtime", mt):
+        a = self.stats.asn
+        try:
+            amt = os.path.getmtime(a.path) if a.path else 0.0
+        except OSError:
+            amt = 0.0
+        changed = bool(g.path and mt and mt != getattr(g, "mtime", mt)) or bool(a.path and amt != a.mtime)
+        if changed or not g.path or not a.path:  # обновлена база или могла появиться новая (автообновление)
+            before = (g.path, a.path)
             self.stats.reload_geoip()
-            self.db.event("info", "geoip", "База GeoIP обновлена — перечитана", {"path": g.path})
-        g.mtime = mt
+            if changed or (g.path, a.path) != before:
+                self.db.event("info", "geoip", "Базы GeoIP перечитаны", {"country": g.path, "asn": a.path})
+        g.mtime = os.path.getmtime(g.path) if g.path and os.path.exists(g.path) else mt
+        async with self.nginx.lock:
+            ares = await asyncio.to_thread(self.nginx.refresh_asn)
+        if ares is not None and not ares[0]:
+            self.db.event("error", "geoip", "Не удалось обновить сети провайдеров в nginx", {"output": ares[1][-2000:]})
         async with self.nginx.lock:
             res = await asyncio.to_thread(self.nginx.refresh_geo, force)
         if res is not None:
@@ -558,6 +575,8 @@ class App:
                 await self._guard("диагностика", self.diag.run_all())
             if now - last_geo > 600:
                 last_geo = now
+                if p.geoip_auto_update:
+                    await self._guard("обновление баз GeoIP", self.geoupdate.tick())
                 await self._guard("сети стран GeoIP", self.refresh_geo())
             if now - last_cert > 3600:  # ежечасно: сертификаты внутренних центров живут и сутки
                 last_cert = now

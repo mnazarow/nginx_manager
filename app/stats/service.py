@@ -30,12 +30,15 @@ class StatsService:
         ]
         self.tasks: List[asyncio.Task] = []
         self.started = time.time()
+        from ..services.asn import ASNLookup
+        self.asn = ASNLookup()  # сети провайдеров для аналитики атак и профиля адреса
         self.last_cleanup = 0.0
         self.last_sys_minute = int(time.time()) // 60 * 60
 
     def reload_geoip(self) -> None:
         p = self.get_panel()
         self.geoip.load(p.geoip_path, str(settings.geoip_dir))
+        self.asn.load(p.asn_path, str(settings.geoip_dir))
 
     def start(self) -> None:
         self.reload_geoip()

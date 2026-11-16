@@ -7,9 +7,10 @@ import { h, mount, icon, toast, modal, loading, card, kpi, badge, table, fmtInt,
 import { model, renderFields, errorsToMap } from '../forms.js';
 import { can, refreshState } from '../app.js';
 import { openIp } from './protection-more.js';
+import { techCard } from './protection-intel.js';
 
 const GROUPS = { threats: 'Список угроз', bots: 'Адреса робота', vulns: 'База уязвимостей', crs: 'Правила ModSecurity' };
-const FILTERS = [['', 'Все'], ['kev', 'Эксплуатируемые'], ['patched', 'В фильтре путей'], ['covered', 'Встроенные правила'],
+const FILTERS = [['', 'Все'], ['mine', 'Ваши продукты'], ['kev', 'Эксплуатируемые'], ['patched', 'В фильтре путей'], ['covered', 'Встроенные правила'],
   ['uncovered', 'Без защиты'], ['seen', 'Атаковали'], ['exploit', 'Есть эксплойт'], ['ransomware', 'Вымогатели'], ['critical', 'Критические']];
 const SORTS = [['kev', 'Сначала эксплуатируемые'], ['new', 'Новые в каталоге KEV'], ['cvss', 'По CVSS'], ['epss', 'По EPSS'],
   ['seen', 'По попыткам на ваших сайтах'], ['cve', 'По номеру CVE']];
@@ -117,6 +118,11 @@ export async function vulnsTab(view, { cfg, sites }) {
   const sortSel = h('select', { 'aria-label': 'Сортировка', style: { width: 'auto' }, onchange: (e) => { state.sort = e.target.value; load(); } },
     SORTS.map(([v, l]) => h('option', { value: v }, l)));
 
+  const segBox = h('span', {}, segmented(FILTERS, '', (v) => { state.filter = v; load(); }));
+  const dbCard = card('База уязвимостей', h('div', {},
+    h('div', { class: 'row mb', style: { gap: '8px', flexWrap: 'wrap' } }, search, segBox, sortSel, count),
+    tbl, more), { cls: 'mt', sub: `всего ${fmtInt(s.total)}${s.ransomware ? ` · ${fmtInt(s.ransomware)} используют вымогатели` : ''}${s.exploits ? ` · ${fmtInt(s.exploits)} эксплуатируемых с опубликованным эксплойтом` : ''}` });
+
   // --- чаще всего атакуют
   const top = (await api('/protection/vulns', { query: { filter: 'seen', sort: 'seen', limit: 10 } })).rows;
   const watchNew = (data.new && data.new.watch) || [];
@@ -134,7 +140,7 @@ export async function vulnsTab(view, { cfg, sites }) {
       kpi('В фильтре путей', fmtInt(s.active_paths), { foot: `${fmtInt(mp.entries || 0)} путей · режим «${{ off: 'выключено', detect: 'запись', block: 'блокировать' }[s.mode] || s.mode}»`, cls: s.active_paths ? 'good' : '' }),
       kpi('Встроенные правила', fmtInt(s.covered), { foot: 'CVE в каталоге фильтра запросов' }),
       kpi('Атаковали ваши сайты', fmtInt(s.seen), { foot: s.seen_hits ? `${fmtInt(s.seen_hits)} попыток` : 'попыток не было', cls: s.seen ? 'warn' : '' }),
-      kpi('Всего в базе', fmtInt(s.total), { foot: [s.ransomware ? `${fmtInt(s.ransomware)} у вымогателей` : '', s.exploits ? `${fmtInt(s.exploits)} с эксплойтом` : ''].filter(Boolean).join(' · ') })),
+      kpi('В ваших продуктах', fmtInt(s.mine_kev || 0), { foot: s.watch && s.watch.length ? `эксплуатируемых; продуктов: ${s.watch.length}` : 'продукты сайтов не определены', cls: s.mine_kev ? 'warn' : '', tip: (s.watch || []).join(', ') })),
     card('Источники и обновление', srcBody, { flush: true, sub: s.next && s.enabled ? `следующая проверка базы уязвимостей — ${fmtDate(s.next)}` : '',
       actions: can('admin') ? [
         h('button', { class: 'btn', onclick: () => update('vulns') }, icon('refresh'), 'Только уязвимости'),
@@ -156,10 +162,8 @@ export async function vulnsTab(view, { cfg, sites }) {
         h('div', { class: 'small muted mt' }, 'Не попали в карту, чтобы не задеть обычных посетителей:'),
         h('ul', { class: 'small', style: { margin: '4px 0 0', paddingLeft: '18px' } }, reasons.map(([k, l]) => h('li', {}, `${l}: ${fmtInt(mp[k] || 0)}`))),
         h('div', { class: 'small mt' }, 'Режим категории «Эксплойты известных уязвимостей» — на вкладке ', h('a', { href: '#/protection?tab=waf' }, 'Фильтр запросов'), '.')), { sub: 'точное совпадение пути, без потерь скорости' })),
-    card('База уязвимостей', h('div', {},
-      h('div', { class: 'row mb', style: { gap: '8px', flexWrap: 'wrap' } }, search,
-        segmented(FILTERS, '', (v) => { state.filter = v; load(); }), sortSel, count),
-      tbl, more), { cls: 'mt' }),
+    await techCard((f) => { state.filter = f; mount(segBox, segmented(FILTERS, f, (v) => { state.filter = v; load(); })); load(); dbCard.scrollIntoView({ behavior: 'smooth' }); }),
+    dbCard,
     card('Настройки', h('div', {}, form, can('admin') ? h('div', { class: 'row mt' }, h('button', { class: 'btn primary', onclick: async () => {
       try { await saveSettings(obj, 'Настройки базы уязвимостей сохранены. Карта путей пересобирается'); errors = {}; } catch (e) { errors = errorsToMap(e); drawForm(); }
     } }, icon('check'), 'Сохранить')) : null), { cls: 'mt', sub: 'включение и выключение категории в nginx — после применения конфигурации' }));
@@ -181,6 +185,7 @@ export async function openVuln(cve, { sites = [] } = {}) {
     ['EPSS', v.epss ? `${epssText(v)}${v.epss_pct ? ` (выше, чем у ${fmtNum(v.epss_pct * 100, 0)}% уязвимостей)` : ''}` : '—'],
     ['Каталог CISA KEV', v.kev ? `добавлена ${v.kev_added}${v.kev_due ? `, срок устранения для госорганов США — ${v.kev_due}` : ''}` : 'нет'],
     v.ransomware ? ['Вымогатели', h('b', { class: 'bad-text' }, 'используется в атаках вымогателей')] : null,
+    v.on_sites && v.on_sites.length ? ['На ваших сайтах', h('b', { class: 'bad-text' }, v.on_sites.map(x => `${x.name}: ${x.tech}${x.version ? ' ' + x.version : ''}`).join('; '))] : null,
     v.cwe ? ['Тип (CWE)', v.cwe] : null,
     v.exploits && v.exploits.length ? ['Публичные эксплойты', h('span', {}, v.exploits.slice(0, 6).map((id, i) => [i ? ', ' : '', h('a', { href: `https://www.exploit-db.com/exploits/${id}`, target: '_blank', rel: 'noopener noreferrer' }, `EDB-${id}`)]))] : null,
     v.tags ? ['Метки шаблона', h('span', { class: 'small' }, v.tags.split(',').join(', '))] : null,

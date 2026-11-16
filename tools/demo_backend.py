@@ -9,6 +9,24 @@ import random
 import sys
 
 
+# «Лица» приложений для определения технологий сайтов (раздел «Защита → Уязвимости → Технологии ваших сайтов»)
+PROFILES = {
+    # интернет-магазин: 1С-Битрикс на PHP
+    9001: ("Server: Apache/2.4.58 (Ubuntu)\r\nX-Powered-By: PHP/8.1.27\r\nX-Powered-CMS: Bitrix Site Manager\r\n"
+           "Set-Cookie: PHPSESSID=demo; path=/\r\nSet-Cookie: BITRIX_SM_GUEST_ID=1; path=/\r\n",
+           b'<html><head><title>Shop</title><script src="/bitrix/js/main/core/core.js"></script></head><body>'),
+    9002: ("Server: Apache/2.4.58 (Ubuntu)\r\nX-Powered-By: PHP/8.1.27\r\nSet-Cookie: PHPSESSID=demo; path=/\r\n",
+           b'<html><head><title>Shop</title><script src="/bitrix/js/main/core/core.js"></script></head><body>'),
+    # API: Next.js на Node.js
+    9003: ("X-Powered-By: Next.js\r\n", b'<html><head><title>API</title><script id="__NEXT_DATA__"></script></head><body>'),
+    9005: ("X-Powered-By: Next.js\r\n", b'<html><head><title>API</title><script id="__NEXT_DATA__"></script></head><body>'),
+    # блог: WordPress на PHP за Apache
+    9004: ("Server: Apache/2.4.58 (Ubuntu)\r\nX-Powered-By: PHP/8.2.12\r\n",
+           b'<html><head><title>Blog</title><meta name="generator" content="WordPress 6.4.2" />'
+           b'<link rel="stylesheet" href="/wp-content/themes/twentytwentyfour/style.css"></head><body>'),
+}
+
+
 async def handle(reader, writer, port):
     try:
         while True:
@@ -41,11 +59,16 @@ async def handle(reader, writer, port):
                 status = 404
             await asyncio.sleep(min(delay, 5))
             body = (b"x" * size) if size > 2 else b"OK"
+            extra = ""
+            if path in ("/", "/index.html") and port in PROFILES:
+                extra, head = PROFILES[port]
+                body = head + body + b"</body></html>"
             reason = {200: "OK", 404: "Not Found", 500: "Internal Server Error", 502: "Bad Gateway",
                       503: "Service Unavailable"}[status]
             ctype = "application/json" if path.startswith("/api/") else "text/html; charset=utf-8"
             hdr = (f"HTTP/1.1 {status} {reason}\r\nContent-Type: {ctype}\r\nContent-Length: {len(body)}\r\n"
-                   f"X-Powered-By: demo/{port}\r\nCache-Control: public, max-age=60\r\nConnection: keep-alive\r\n\r\n")
+                   + (extra or f"X-Powered-By: demo/{port}\r\n")
+                   + "Cache-Control: public, max-age=60\r\nConnection: keep-alive\r\n\r\n")
             writer.write(hdr.encode() + body)
             await writer.drain()
     except Exception:

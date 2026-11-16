@@ -21,6 +21,7 @@ from ..config import settings
 from ..db import Database
 from ..models import GlobalSettings, PanelSettings, Site, Stream
 from ..utils import atomic_write, has_systemd, run, sha256, which
+from ..services import asn as asnmod
 from ..services import geoblock
 from .generator import MARKER, CertInfo, ConfigError, Generator, NginxCaps, Paths, State
 
@@ -199,6 +200,7 @@ class NginxManager:
                      threats_file=str(settings.threats_file), attack_file=str(settings.attack_file),
                      bots_file=str(settings.bots_file), bots_ua_file=str(settings.bots_ua_file),
                      vuln_file=str(settings.vuln_file),
+                     asn_file=str(settings.asn_file) if self.asn_db() else "",
                      crs_dir=self.crs()[0], crs_version=self.crs()[1],
                      challenge_secret=self.challenge_secret(), challenge_key=self.challenge_key(),
                      panel_host=settings.bind_host if settings.bind_host not in ("", "0.0.0.0", "::") else "127.0.0.1",
@@ -237,6 +239,50 @@ class NginxManager:
                 "countries": sorted(geoblock.header_countries(h)), "nets": int(h.get("nets") or 0),
                 "built": float(h.get("built") or 0), "db_mtime": int(h.get("mtime") or 0),
                 "last_build": self.geo_stats}
+
+    # =====================================================================
+    #  Сети провайдеров (ASN): файл для своих правил «Сеть провайдера»
+    # =====================================================================
+    def asn_db(self) -> Optional[str]:
+        try:
+            panel = PanelSettings.model_validate(self.db.kv_get("panel_settings", {}))
+            return asnmod.find_db(panel.asn_path, str(settings.geoip_dir))
+        except Exception:  # pragma: no cover
+            return None
+
+    def asn_status(self) -> Dict[str, Any]:
+        h = asnmod.read_header(str(settings.asn_file))
+        return {"db": self.asn_db(), "file": str(settings.asn_file), "asns": sorted(asnmod.header_asns(h)),
+                "nets": int(h.get("nets") or 0), "built": float(h.get("built") or 0)}
+
+    def prepare_asn(self, state: State) -> None:
+        """Перед применением: в файле сетей провайдеров должны быть все AS из своих правил."""
+        want = asnmod.referenced_rules(state.protection)
+        db = self.asn_db()
+        if not want or not db or not asnmod.needs_rebuild(str(settings.asn_file), db, want):
+            return
+        try:
+            text, stats = asnmod.build(db, want)
+        except Exception as e:
+            raise ApplyError(f"Не удалось подготовить сети провайдеров из базы ASN: {e}")
+        atomic_write(settings.asn_file, text, mode=0o644)
+        log.info("файл сетей провайдеров пересобран: %s сетей", stats["nets"])
+
+    def refresh_asn(self) -> Optional[Tuple[bool, str]]:
+        """База ASN обновилась — пересобрать сети провайдеров действующих правил и перечитать nginx."""
+        last = self.last_applied()
+        db = self.asn_db()
+        if not last or not db:
+            return None
+        try:
+            st = State.from_json(json.loads(last["state"]))
+        except Exception:  # pragma: no cover
+            return None
+        want = asnmod.referenced_rules(st.protection)
+        if not asnmod.needs_rebuild(str(settings.asn_file), db, want):
+            return None
+        text, _stats = asnmod.build(db, want)
+        return self.write_side_file(settings.asn_file, text)
 
     def prepare_geo(self, state: State) -> None:
         """Перед применением: в файле стран должны быть все страны из правил (лишние не мешают)."""
@@ -541,6 +587,7 @@ class NginxManager:
         tag = time.strftime("%Y%m%d-%H%M%S") + f"-{int(t0 * 1000) % 1000:03d}"
         vdir = settings.versions_dir / tag
         self.prepare_geo(state)
+        self.prepare_asn(state)
         try:
             staged_files, warnings = self.render(state, include_root=str(vdir))
             live_files, _ = self.render(state, include_root=str(settings.live_dir))

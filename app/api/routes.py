@@ -791,6 +791,9 @@ async def get_panel(request: Request, user=Depends(viewer)):
     for k in PANEL_SECRETS:
         if d.get(k):
             d[k] = MASK
+    for peer in d.get("peers") or []:
+        if peer.get("token"):
+            peer["token"] = MASK
     return d
 
 
@@ -802,6 +805,10 @@ async def put_panel(request: Request, body: Dict[str, Any] = Body(...), user=Dep
     for k in PANEL_SECRETS:
         if body.get(k) == MASK:  # секрет не менялся
             body[k] = getattr(old, k)
+    old_tokens = {x.id: x.token for x in old.peers}
+    for peer in body.get("peers") or []:
+        if isinstance(peer, dict) and peer.get("token") == MASK:
+            peer["token"] = old_tokens.get(peer.get("id"), "")
     p = PanelSettings.model_validate(body)
     ip = user.get("ip", "")
     if p.require_2fa_admin and not old.require_2fa_admin and not user.get("totp_enabled"):
@@ -1334,6 +1341,27 @@ async def bans_remove(ban_id: int, request: Request, user=Depends(operator)):
     app.db.event("info", "bans", f"Разблокирован {row['net']} ({user['username']})")
     ok, out = await app.bans.sync(force=True)
     return {"ok": ok, "output": out if not ok else ""}
+
+
+@router.get("/geoip/databases")
+async def geoip_databases(request: Request, user=Depends(viewer)):
+    """Базы GeoIP: страны и сети провайдеров (ASN) — какие используются, автообновление DB-IP Lite."""
+    app = nm(request)
+    return {"country": app.stats.geoip.path, "country_error": app.stats.geoip.error, "asn": app.stats.asn.path,
+            "asn_error": app.stats.asn.error, "auto_update": app.panel().geoip_auto_update,
+            "files": app.geoupdate.files(), "running": app.geoupdate.running, "asn_file": app.nginx.asn_status()}
+
+
+@router.post("/geoip/update")
+async def geoip_update(request: Request, user=Depends(admin)):
+    """Скачать бесплатные базы DB-IP Lite (страны и ASN) сейчас."""
+    app = nm(request)
+    if app.geoupdate.running:
+        raise HTTPException(409, "Обновление уже идёт")
+    res = await app.geoupdate.tick(force=True)
+    audit(request, user, "geoip_update")
+    return {"ok": all(v.get("ok") for v in res.values()) if res else False, "results": res,
+            "files": app.geoupdate.files()}
 
 
 @router.get("/geo")
@@ -2101,3 +2129,4 @@ async def ws(websocket: WebSocket):
 
 
 from . import protection as _protection  # noqa: E402,F401 — регистрирует маршруты раздела «Защита»
+from . import sync as _sync  # noqa: E402,F401 — регистрирует маршруты нескольких серверов

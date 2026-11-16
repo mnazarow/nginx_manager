@@ -8,6 +8,7 @@ import { timeChart, setData, chartCard, destroyAll } from '../charts.js';
 import { can, refreshState } from '../app.js';
 import { KIND_ORDER, kindColor, analyticsTab, attackersTab, botsTab, modsecTab, rateRulesCard, liveFeed, openIp, openRule, banIp } from './protection-more.js';
 import { vulnsTab } from './protection-vulns.js';
+import { intelCard } from './protection-intel.js';
 
 const TABS = [
   ['overview', 'Обзор'], ['analytics', 'Аналитика'], ['attackers', 'Атакующие'], ['log', 'Журнал атак'],
@@ -323,7 +324,8 @@ async function threats(view, { cfg }) {
       h('button', { class: 'btn primary', onclick: async () => {
         try { await saveSettings({ ...obj, threat_feeds: obj.threat_feeds.filter(f => f.enabled || !cfg.presets.some(p => p.id === f.id)) }, 'Списки сохранены'); go('threats'); } catch (e) { errors = errorsToMap(e); drawForm(); }
       } }, icon('check'), 'Сохранить')) : null }),
-    card('Расписание', form, { cls: 'mt' }));
+    card('Расписание', form, { cls: 'mt' }),
+    await intelCard(cfg));
 }
 
 // ---------------------------------------------------------------- автоматика и ловушки

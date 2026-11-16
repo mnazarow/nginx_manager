@@ -34,8 +34,15 @@ PAGES = [
     ("protection-attackers", "#/protection?tab=attackers&hours=168", 3000),
     ("protection-bots", "#/protection?tab=bots", 3000), ("protection-modsec", "#/protection?tab=modsec", 3500),
     ("protection-vulns", "#/protection?tab=vulns", 3500),
+    ("bans-peers", "#/bans?tab=peers", 3000), ("settings-peers", "#/settings?tab=peers", 2000),
 ]
-SCENES = {"protection-ip", "protection-rule", "protection-ratelimit", "protection-vuln", "geo-site", "sites-bulk", "backup-s3", "backup-restore"}  # снимки с действиями: --only geo-site,sites-bulk или --extras
+# снимки части страницы: прокрутка к карточке с заголовком
+SCROLL = {"protection-intel": ("#/protection?tab=threats", "Обмен данными об угрозах", 3000),
+          "protection-tech": ("#/protection?tab=vulns", "Технологии ваших сайтов", 3500),
+          "protection-networks": ("#/protection?tab=analytics&hours=168", "Известные уязвимости", 3500),
+          "geo-databases": ("#/bans?tab=countries", "Базы GeoIP", 3000)}
+SCENES = {"protection-ip", "protection-rule", "protection-ratelimit", "protection-vuln", "protection-ip-network",
+          *SCROLL, "geo-site", "sites-bulk", "backup-s3", "backup-restore"}  # снимки с действиями: --only geo-site,sites-bulk или --extras
 
 
 async def main(a):
@@ -136,6 +143,31 @@ async def scenes(page, a, only):
         await page.screenshot(path=f"{a.out}/protection-rule.png")
         await page.keyboard.press("Escape")
         print("protection-rule: ok")
+    for name, (hash_, title, wait) in SCROLL.items():
+        if only and name not in only:
+            continue
+        await page.goto(f"{a.url}/{hash_}")
+        await page.wait_for_timeout(wait)
+        await page.evaluate("""(t) => { const c = [...document.querySelectorAll('.card')].find(x => {
+            const h = x.querySelector('.card-head h2'); return h && h.textContent.startsWith(t); });
+            if (c) { c.scrollIntoView({block: 'start'}); window.scrollBy(0, -90); } }""", title)
+        await page.wait_for_timeout(500)
+        await page.screenshot(path=f"{a.out}/{name}.png")
+        print(f"{name}: ok")
+    if not only or "protection-ip-network" in only:
+        # профиль адреса: сеть провайдера и AbuseIPDB (внизу окна)
+        await page.goto(f"{a.url}/#/protection?tab=attackers&hours=168")
+        await page.wait_for_timeout(2500)
+        await page.locator("table.t tbody tr", has_text="AS645").first.locator("button", has_text="Профиль").click()
+        await page.wait_for_selector(".modal .kpi", timeout=15000)
+        await page.wait_for_timeout(1500)
+        await page.evaluate("""() => { const c = [...document.querySelectorAll('.modal .card')].find(x =>
+            (x.querySelector('.card-head h2') || {}).textContent === 'Сеть провайдера');
+            if (c) c.scrollIntoView({block: 'center'}); }""")
+        await page.wait_for_timeout(500)
+        await page.screenshot(path=f"{a.out}/protection-ip-network.png")
+        await page.keyboard.press("Escape")
+        print("protection-ip-network: ok")
     if not only or "protection-vuln" in only:
         # карточка уязвимости: самая атакуемая на вкладке «Уязвимости»
         await page.goto(f"{a.url}/#/protection?tab=vulns")

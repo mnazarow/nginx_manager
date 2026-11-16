@@ -935,21 +935,25 @@ class CustomRule(Model):
     name: str = F("", label="Название", ph="Закрыть /admin снаружи", min_length=1, max_length=100)
     enabled: bool = F(True, label="Включено")
     sites: List[int] = F(factory=list, label="Сайты", ui="sites", help="Пусто — все сайты")
-    field: Literal["uri", "path", "args", "ua", "referer", "cookie", "host", "method", "header", "ip", "country"] = F(
+    field: Literal["uri", "path", "args", "ua", "referer", "cookie", "host", "method", "header", "ip", "country",
+                   "asn"] = F(
         "path", label="Что проверять",
         labels={"uri": "Строка запроса целиком (путь и параметры)", "path": "Путь (декодированный)",
                 "args": "Параметры запроса", "ua": "User-Agent", "referer": "Referer", "cookie": "Cookie",
                 "host": "Host (домен)", "method": "Метод", "header": "Другой заголовок", "ip": "IP-адрес клиента",
-                "country": "Страна клиента (по базе GeoIP)"})
+                "country": "Страна клиента (по базе GeoIP)",
+                "asn": "Сеть провайдера клиента (номер AS, по базе ASN)"})
     header: str = F("", label="Заголовок", ph="X-Api-Key", show={"field": ["header"]})
     op: Literal["contains", "not_contains", "prefix", "equals", "regex", "not_regex", "in", "not_in"] = F(
         "prefix", label="Условие",
         labels={"contains": "содержит", "not_contains": "не содержит", "prefix": "начинается с",
                 "equals": "равно", "regex": "совпадает с регулярным выражением",
-                "not_regex": "не совпадает с регулярным выражением", "in": "входит в список (IP, подсети, страны)",
-                "not_in": "не входит в список (IP, подсети, страны)"})
+                "not_regex": "не совпадает с регулярным выражением",
+                "in": "входит в список (IP, подсети, страны, сети провайдеров)",
+                "not_in": "не входит в список (IP, подсети, страны, сети провайдеров)"})
     value: str = F("", label="Значение", ui="textarea", ph="/admin",
-                   help="Для IP — адреса и подсети, для страны — коды ISO (RU, CN, US) через пробел или с новой строки")
+                   help="Для IP — адреса и подсети, для страны — коды ISO (RU, CN, US), для сети провайдера — номера "
+                        "AS (AS14061, 16509) через пробел или с новой строки")
     action: Literal["block", "drop", "challenge", "log", "allow"] = F(
         "block", label="Действие",
         labels={"block": "Блокировать (403)", "drop": "Закрыть соединение (444)",
@@ -961,12 +965,19 @@ class CustomRule(Model):
         v = self.value.strip()
         if not v:
             raise V.ValidationError(f"Правило «{self.name}»: задайте значение")
-        if self.field in ("ip", "country") and self.op not in ("in", "not_in"):
-            raise V.ValidationError(f"Правило «{self.name}»: для IP-адреса и страны условие — «входит» или "
-                                    "«не входит в список»")
-        if self.field not in ("ip", "country") and self.op in ("in", "not_in"):
-            raise V.ValidationError(f"Правило «{self.name}»: списки — только для полей «IP-адрес клиента» и «Страна»")
-        if self.field == "country":
+        if self.field in ("ip", "country", "asn") and self.op not in ("in", "not_in"):
+            raise V.ValidationError(f"Правило «{self.name}»: для IP-адреса, страны и сети провайдера условие — "
+                                    "«входит» или «не входит в список»")
+        if self.field not in ("ip", "country", "asn") and self.op in ("in", "not_in"):
+            raise V.ValidationError(f"Правило «{self.name}»: списки — только для полей «IP-адрес клиента», «Страна» и "
+                                    "«Сеть провайдера»")
+        if self.field == "asn":
+            from .services.asn import parse_asns
+            try:
+                self.value = " ".join(map(str, parse_asns(v)))
+            except ValueError as e:
+                raise V.ValidationError(f"Правило «{self.name}»: {e}")
+        elif self.field == "country":
             from .services.geoblock import COUNTRY_SET
             codes = []
             for x in v.replace(",", " ").upper().split():
@@ -1118,7 +1129,7 @@ MODSEC_APPS = {"wordpress": "WordPress", "drupal": "Drupal", "nextcloud": "Nextc
 
 PROTECTION_TABS = [("waf", "Фильтр запросов"), ("modsec", "Глубокая проверка (ModSecurity)"), ("vulns", "Уязвимости"),
                    ("challenge", "Проверка браузера"), ("bots", "Роботы"), ("auto", "Автоматика и ловушки"),
-                   ("threats", "Списки угроз"), ("log", "Журнал атак")]
+                   ("threats", "Списки угроз"), ("intel", "Обмен данными об угрозах"), ("log", "Журнал атак")]
 
 
 class ProtectionSettings(Model):
@@ -1188,6 +1199,47 @@ class ProtectionSettings(Model):
                                       help="Настоящие Googlebot, Bingbot и другие проходят без страницы проверки — "
                                            "в режиме «Под атакой» сайт не выпадет из поиска")
     rate_rules: List[RateRule] = F(factory=list, label="Правила ограничения частоты", ui="hidden")
+    abuseipdb_key: str = F("", label="Ключ API AbuseIPDB", tab="intel", ui="password",
+                           help="Бесплатный ключ: abuseipdb.com → Account → API (1000 проверок и жалоб в сутки)",
+                           doc="AbuseIPDB — общая база жалоб на вредоносные адреса: администраторы со всего мира "
+                               "сообщают об атаках, база считает «уверенность в злонамеренности» адреса 0–100%. С ключом "
+                               "панель показывает эту оценку в профиле атакующего, отправляет жалобы и может подключить "
+                               "чёрный список AbuseIPDB как список угроз.")
+    abuseipdb_check: bool = F(True, label="Проверять адреса в профиле атакующего", tab="intel",
+                              show={"abuseipdb_key": {"not": [""]}})
+    abuseipdb_report: Literal["off", "manual", "auto"] = F(
+        "manual", label="Жалобы на атакующих", tab="intel", show={"abuseipdb_key": {"not": [""]}},
+        labels={"off": "Не отправлять", "manual": "Вручную из профиля адреса",
+                "auto": "Автоматически на адреса с высокой оценкой угрозы"},
+        help="В жалобе — только сработавшие правила (sqli/sqli-union x12…), без доменов и адресов ваших сайтов",
+        rec="«Вручную» для начала; «автоматически» — когда убедитесь, что ложных срабатываний нет.")
+    abuseipdb_report_score: int = F(70, label="Автоматически — от оценки угрозы", tab="intel", ge=30, le=100,
+                                    show={"abuseipdb_report": ["auto"]},
+                                    help="Оценка угрозы адреса 0–100 (вкладка «Атакующие») за последний час")
+    abuseipdb_report_daily: int = F(200, label="Не больше жалоб в сутки", tab="intel", ge=1, le=5000,
+                                    show={"abuseipdb_report": ["auto"]})
+    abuseipdb_blacklist: bool = F(False, label="Чёрный список AbuseIPDB как список угроз", tab="intel",
+                                  show={"abuseipdb_key": {"not": [""]}},
+                                  help="До 10 000 самых активных адресов (бесплатный тариф), обновление раз в сутки")
+    abuseipdb_blacklist_score: int = F(90, label="Уверенность от (%)", tab="intel", ge=25, le=100,
+                                       show={"abuseipdb_blacklist": [True]})
+    abuseipdb_blacklist_action: Literal["block", "challenge", "detect"] = F(
+        "challenge", label="Действие для чёрного списка", tab="intel", show={"abuseipdb_blacklist": [True]},
+        labels={"block": "Блокировать", "challenge": "Проверить браузер", "detect": "Только записать в журнал"},
+        rec="«Проверить браузер»: адреса из списка часто динамические (мобильные сети, NAT).")
+    crowdsec_url: str = F("", label="Адрес локального API CrowdSec (LAPI)", tab="intel", ph="http://127.0.0.1:8080",
+                          help="Агент CrowdSec на этом или другом сервере; решения агента (ban) — список угроз",
+                          doc="CrowdSec анализирует журналы (SSH, почта, веб) на ваших серверах, обменивается "
+                              "сигналами с сообществом и принимает решения о блокировке. Панель работает как "
+                              "«баунсер»: раз в несколько минут забирает действующие решения из LAPI и применяет их "
+                              "в nginx. Ключ: `sudo cscli bouncers add nginx-manager`.")
+    crowdsec_key: str = F("", label="Ключ баунсера CrowdSec", tab="intel", ui="password",
+                          show={"crowdsec_url": {"not": [""]}})
+    crowdsec_action: Literal["block", "challenge", "detect"] = F(
+        "block", label="Действие для решений CrowdSec", tab="intel", show={"crowdsec_url": {"not": [""]}},
+        labels={"block": "Блокировать", "challenge": "Проверить браузер", "detect": "Только записать в журнал"})
+    crowdsec_minutes: int = F(2, label="Забирать решения каждые (мин)", tab="intel", ge=1, le=60,
+                              show={"crowdsec_url": {"not": [""]}})
     vulndb_enabled: bool = F(True, label="Обновлять базу уязвимостей автоматически", tab="vulns",
                              help="CISA KEV, nuclei-templates, FIRST EPSS — по расписанию; карта путей эксплойтов для "
                                   "nginx строится из базы",
@@ -1225,6 +1277,16 @@ class ProtectionSettings(Model):
                                 ui="tags", show={"vulndb_enabled": [True]}, ph="wordpress, confluence, fortinet",
                                 help="Слова из производителя или продукта: новая уязвимость из CISA KEV с ними — "
                                      "событие уровня «внимание» и подсказка анализа")
+    vulndb_watch_auto: bool = F(True, label="Добавлять продукты, найденные на сайтах", tab="vulns",
+                                show={"vulndb_enabled": [True]},
+                                help="Раз в сутки панель определяет, что работает за nginx (CMS, фреймворки, серверы "
+                                     "приложений), — по главной странице каждого сайта",
+                                doc="Панель запрашивает главную страницу сайта прямо у бэкенда (без фильтров защиты) и "
+                                    "сопоставляет заголовки ответа, cookie и HTML с сигнатурами 60+ продуктов — "
+                                    "WordPress, 1С-Битрикс, Drupal, Magento, Laravel, Django, Next.js, Tomcat, IIS, "
+                                    "Confluence, Jira, GitLab, Jenkins, Grafana, Nextcloud и других. Найденные продукты "
+                                    "считаются «вашими»: новые эксплуатируемые уязвимости в них — событие и подсказка "
+                                    "анализа, а фильтр «Ваши продукты» показывает их уязвимости.")
     vulndb_exclude: List[str] = F(factory=list, label="Исключённые уязвимости (CVE)", tab="vulns", ui="tags",
                                   show={"vulndb_enabled": [True]}, ph="CVE-2021-44228",
                                   help="Их пути не попадают в карту (ложные срабатывания)")
@@ -1317,6 +1379,18 @@ class ProtectionSettings(Model):
                 ex.append(c)
         self.vulndb_exclude = ex
         self.vulndb_watch = [w.strip().lower() for w in self.vulndb_watch if w.strip()]
+        self.abuseipdb_key = self.abuseipdb_key.strip()
+        self.crowdsec_key = self.crowdsec_key.strip()
+        if self.abuseipdb_key and not re.match(r"^[A-Za-z0-9]{20,128}$", self.abuseipdb_key):
+            raise V.ValidationError("Ключ AbuseIPDB: латиница и цифры (скопируйте из abuseipdb.com → API)")
+        if self.crowdsec_key and not re.match(r"^[A-Za-z0-9+/=_-]{8,256}$", self.crowdsec_key):
+            raise V.ValidationError("Ключ баунсера CrowdSec: строка из «cscli bouncers add»")
+        cs = self.crowdsec_url.strip().rstrip("/")
+        if cs:
+            u = urllib.parse.urlparse(cs)
+            if u.scheme not in ("http", "https") or not u.netloc:
+                raise V.ValidationError("Адрес CrowdSec LAPI: http://адрес:8080")
+        self.crowdsec_url = cs
         self.vulndb_exclude_paths = [x for x in (_prot_path(v, "исключённый путь") for v in self.vulndb_exclude_paths)
                                      if x and not x.startswith("~")]
         return self
@@ -1832,7 +1906,32 @@ class GlobalSettings(Model):
 # =============================================================================
 PANEL_TABS = [("stats", "Статистика и хранение"), ("network", "Сеть и внешний IP"), ("security", "Безопасность панели"),
               ("bans", "Блокировки IP"), ("acme", "Сертификаты (ACME)"), ("monitor", "Мониторинг"),
-              ("reports", "Отчёты"), ("events", "Уведомления о событиях"), ("backup", "Резервные копии")]
+              ("reports", "Отчёты"), ("events", "Уведомления о событиях"), ("backup", "Резервные копии"),
+              ("peers", "Другие серверы")]
+
+
+class Peer(Model):
+    id: str = F(factory=lambda: secrets.token_hex(4), label="ID", ui="hidden")
+    name: str = F("", label="Название", ph="web-2 (Франкфурт)", min_length=1, max_length=80)
+    url: str = F("", label="Адрес панели", ph="https://203.0.113.20:8088",
+                 help="Адрес панели Nginx Manager другого сервера (как в браузере)")
+    token: str = F("", label="API-токен", ui="password",
+                   help="Токен с ролью «оператор» или «администратор» на том сервере (Мой профиль → API-токены)")
+    enabled: bool = F(True, label="Включён")
+    bans: bool = F(True, label="Блокировки IP", help="Отправлять свои блокировки на этот сервер")
+    protection: bool = F(False, label="Настройки защиты",
+                         help="Отправлять настройки защиты от атак при сохранении (нужен токен администратора)")
+
+    @model_validator(mode="after")
+    def _chk(self):
+        u = urllib.parse.urlparse(self.url.strip().rstrip("/"))
+        if u.scheme not in ("http", "https") or not u.netloc:
+            raise V.ValidationError(f"Сервер «{self.name}»: адрес — https://адрес:порт")
+        self.url = self.url.strip().rstrip("/")
+        self.token = self.token.strip()
+        if self.token and not re.match(r"^nm_[A-Za-z0-9_-]{20,}$", self.token):
+            raise V.ValidationError(f"Сервер «{self.name}»: API-токен начинается с nm_")
+        return self
 
 
 class PanelSettings(Model):
@@ -1856,6 +1955,17 @@ class PanelSettings(Model):
                             help="Нужна база GeoLite2-Country.mmdb / dbip-country.mmdb и пакет maxminddb")
     geoip_path: str = F("", label="Путь к базе GeoIP", tab="stats", adv=True,
                         ph="/var/lib/nginx-manager/geoip/GeoLite2-Country.mmdb")
+    geoip_auto_update: bool = F(True, label="Скачивать и обновлять бесплатные базы DB-IP Lite", tab="stats",
+                                help="Страны и сети провайдеров (ASN), раз в месяц; база в «Путь к базе» и GeoLite2 "
+                                     "остаются в приоритете",
+                                doc="DB-IP Lite — бесплатные базы (CC BY 4.0) стран и автономных систем, обновляются "
+                                    "ежемесячно. Панель скачивает их с download.db-ip.com, а если он недоступен — "
+                                    "из зеркала sapics/ip-location-db на GitHub, проверяет и кладёт в "
+                                    "/var/lib/nginx-manager/geoip/. Сети провайдеров нужны для аналитики атак по "
+                                    "сетям, профиля адреса и своих правил «Сеть (ASN)».")
+    asn_path: str = F("", label="Путь к базе ASN", tab="stats", adv=True,
+                      ph="/var/lib/nginx-manager/geoip/GeoLite2-ASN.mmdb",
+                      help="Пусто — GeoLite2-ASN.mmdb или dbip-asn-lite.mmdb в /var/lib/nginx-manager/geoip/")
     external_ip: str = F("", label="Внешний IP сервера", tab="network", ph="авто",
                          help="Пусто — определить автоматически (интерфейсы + внешний сервис)")
     ip_detect_url: str = F("https://api.ipify.org", label="Сервис определения внешнего IP", tab="network",
@@ -2052,6 +2162,17 @@ class PanelSettings(Model):
                        help="Для нескольких серверов в одном бакете — свой префикс у каждого")
     s3_access_key: str = F("", label="Access key ID", tab="backup", show={"s3_enabled": [True]})
     s3_secret_key: str = F("", label="Secret access key", tab="backup", ui="password", show={"s3_enabled": [True]})
+    peers: List[Peer] = F(factory=list, label="Серверы", tab="peers",
+                          help="Другие серверы с Nginx Manager: общие блокировки IP и настройки защиты",
+                          doc="Каждый сервер раз в минуту и сразу после изменения отправляет другим свои блокировки "
+                              "(кроме полученных от других), получатель сверяет их: добавляет, обновляет сроки, "
+                              "снимает исчезнувшие. Настройки защиты от атак отправляются при сохранении (если "
+                              "включено у сервера) или кнопкой на странице «Блокировки IP». Связь — по HTTPS с "
+                              "API-токеном сервера-получателя. Настройте серверы друг у друга в обе стороны.")
+    peer_name: str = F("", label="Имя этого сервера для других", tab="peers", ph="авто — имя хоста",
+                       help="Так блокировки с этого сервера подписаны на других")
+    peers_verify_tls: bool = F(True, label="Проверять сертификат HTTPS других серверов", tab="peers",
+                               help="Выключите для самоподписанных сертификатов панели")
     s3_path_style: bool = F(True, label="Адресация path-style (endpoint/бакет/ключ)", tab="backup",
                             show={"s3_enabled": [True]}, adv=True,
                             help="Нужна MinIO и большинству совместимых хранилищ; выключите для virtual-hosted (бакет.endpoint)")
@@ -2083,7 +2204,7 @@ class PanelSettings(Model):
     @classmethod
     def _pd(cls, v): return V.domain(v) if v.strip() else ""
 
-    @field_validator("geoip_path")
+    @field_validator("geoip_path", "asn_path")
     @classmethod
     def _gp(cls, v): return V.no_ctrl(v)
 

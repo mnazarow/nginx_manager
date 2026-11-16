@@ -1,7 +1,8 @@
 """Регулярные отчёты: сводка за сутки или неделю в каналы уведомлений (Telegram, e-mail, Slack, Discord, webhook).
 
 Отчёт сравнивает период с предыдущим таким же периодом и включает: нагрузку и ошибки, время ответа, трафик,
-сайты, проблемы по встроенному анализу, бэкенды, сертификаты, блокировки и журнал ошибок nginx.
+сайты, проблемы по встроенному анализу, безопасность (атаки, известные уязвимости, самые активные атакующие, новые
+уязвимости ваших продуктов), бэкенды, сертификаты, блокировки и журнал ошибок nginx.
 """
 from __future__ import annotations
 
@@ -99,6 +100,15 @@ def build(app, period: str = "day", start: Optional[float] = None, end: Optional
             lines.append(f" … и ещё {len(found) - 10}")
     else:
         lines.append("Анализ: серьёзных проблем за период не найдено.")
+    # безопасность
+    try:
+        sec = security_lines(app, start, end, span)
+    except Exception:  # noqa: BLE001 — отчёт отправляется и без раздела безопасности
+        sec = []
+    if sec:
+        lines.append("")
+        lines.append("Безопасность:")
+        lines.extend(sec)
     # текущее состояние
     down = [t for t in app.health.targets.values() if t.state == "down"]
     lines.append("")
@@ -122,6 +132,51 @@ def build(app, period: str = "day", start: Optional[float] = None, end: Optional
                      + "; ".join(f"{v['title']} — {_num(v['count'])}" for _, v in errs[:3]) + ")")
     return {"title": title, "text": "\n".join(lines), "period": period, "from": start, "to": end,
             "counts": res["counts"]}
+
+
+def security_lines(app, start: float, end: float, span: float) -> List[str]:
+    """Раздел «Безопасность»: отражённые атаки, известные уязвимости, атакующие, новые уязвимости ваших продуктов."""
+    prot = app.protection
+    prot.flush()
+    db = app.db
+    out: List[str] = []
+
+    def total(a: float, b: float) -> Dict[str, int]:
+        return {r["action"]: r["n"] or 0 for r in db.query(
+            "SELECT action, SUM(n) AS n FROM attack_minute WHERE ts>=? AND ts<? GROUP BY action", (a, b))}
+    cur, prev = total(start, end), total(start - span, start)
+    n = sum(v for k, v in cur.items() if k in ("blocked", "detected", "challenged", "banned"))
+    pn = sum(v for k, v in prev.items() if k in ("blocked", "detected", "challenged", "banned"))
+    if not n and not pn:
+        return [" • атак за период не было"]
+    ips = db.scalar("SELECT COUNT(DISTINCT ip) FROM attack_log WHERE ts>=? AND ts<? AND test=0", (start, end)) or 0
+    out.append(f" • атак: {_num(n)}{_delta(n, pn)} — заблокировано {_num(cur.get('blocked', 0))}, записано "
+               f"{_num(cur.get('detected', 0))}, проверка браузера {_num(cur.get('challenged', 0))}; адресов: {_num(ips)}")
+    cats = db.query("SELECT kind, rule, SUM(n) AS n FROM attack_minute WHERE ts>=? AND ts<? AND action IN "
+                    "('blocked','detected') GROUP BY kind, rule ORDER BY n DESC LIMIT 5", (start, end))
+    if cats:
+        out.append(" • чаще всего: " + "; ".join(f"{prot.rule_title(r['kind'], r['rule'])} — {_num(r['n'])}"
+                                                for r in cats[:3])[:400])
+    vul = db.query("SELECT rule, SUM(n) AS n FROM attack_minute WHERE ts>=? AND ts<? AND kind='waf' AND "
+                   "rule LIKE 'vuln/%' GROUP BY rule ORDER BY n DESC LIMIT 5", (start, end))
+    if vul:
+        nv = db.scalar("SELECT COUNT(DISTINCT rule) FROM attack_minute WHERE ts>=? AND ts<? AND kind='waf' AND "
+                       "rule LIKE 'vuln/%'", (start, end)) or 0
+        out.append(f" • пытались эксплуатировать известных уязвимостей: {nv} ("
+                   + ", ".join(f"{r['rule'][5:]} — {_num(r['n'])}" for r in vul[:3]) + ")")
+    top = prot.analytics.attackers(max(1, int(span // 3600)), limit=3)
+    top = [r for r in top if r["last"] >= start]
+    if top:
+        out.append(" • самые активные: " + "; ".join(
+            f"{r['ip']}{' (' + r['country'] + ')' if r.get('country') else ''}{' AS' + str(r['asn']) if r.get('asn') else ''}"
+            f" — {_num(r['n'])}, угроза {r['score']}{', заблокирован' if r.get('banned') else ''}" for r in top))
+    new = db.kv_get("vulndb_new", {}) or {}
+    if new.get("watch") and start <= (new.get("ts") or 0) < end:
+        out.append(" • ⚠ новые эксплуатируемые уязвимости в ваших продуктах (CISA KEV): " + ", ".join(new["watch"][:6]))
+    att = db.scalar("SELECT COUNT(*) FROM attack_periods WHERE start>=? AND start<?", (start, end)) or 0
+    if att:
+        out.append(f" • режим «Под атакой» включался: {att} раз")
+    return out
 
 
 async def send(app, report: Dict[str, Any], channel_ids: List[int]) -> List[Dict[str, Any]]:

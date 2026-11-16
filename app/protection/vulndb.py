@@ -378,12 +378,15 @@ class VulnDB:
         new = q("SELECT COUNT(*) AS n FROM vulns WHERE kev=1 AND kev_added>=?", (week,)) or {}
         live = q("SELECT COUNT(*) AS n FROM vulns WHERE active=1") or {}
         seen = q("SELECT COUNT(*) AS n, SUM(seen) AS hits FROM vulns WHERE seen>0") or {}
+        kc, ka = self._kw_sql(self.watch_keywords())
+        mine = q(f"SELECT COUNT(*) AS n, SUM(kev) AS kev FROM vulns WHERE {kc}", ka) or {}
         p = self.svc.settings()
         return {"total": tot.get("n") or 0, "kev": tot.get("kev") or 0, "patched": tot.get("patched") or 0,
                 "covered": tot.get("covered") or 0, "ransomware": tot.get("ransomware") or 0,
                 "exploits": tot.get("exploits") or 0,
                 "kev_week": new.get("n") or 0, "active_paths": live.get("n") or 0,
                 "seen": seen.get("n") or 0, "seen_hits": seen.get("hits") or 0,
+                "mine": mine.get("n") or 0, "mine_kev": mine.get("kev") or 0, "watch": self.watch_keywords(),
                 "map_entries": (self.db.kv_get("vulndb_map", {}) or {}).get("entries", 0),
                 "sources": self.status(), "titles": SOURCES, "running": self.running, "progress": self.progress,
                 "enabled": p.vulndb_enabled, "mode": p.mode("vuln"),
@@ -538,10 +541,70 @@ class VulnDB:
             if new:
                 self._announce_new(new, kev)
 
-    def _announce_new(self, new: List[str], kev: Dict[str, Dict[str, Any]]) -> None:
+    # ------------------------------------------------------------------ технологии сайтов
+    def tech(self) -> Dict[str, Any]:
+        return self.db.kv_get("site_tech", {}) or {}
+
+    def scan_tech(self, only: Optional[int] = None) -> Dict[str, Any]:
+        """Определить технологии сайтов-прокси (по главной странице с бэкенда)."""
+        from .fingerprint import scan_site
+        res = self.tech()
+        live = set()
+        for sid, site in self.app.nginx.load_state().sites:
+            if not site.enabled or (only is not None and sid != only):
+                live.add(str(sid))
+                continue
+            live.add(str(sid))
+            res[str(sid)] = {**scan_site(site), "name": site.name}
+        res = {k: v for k, v in res.items() if k in live}
+        self.db.kv_set("site_tech", res)
+        return res
+
+    def tech_keywords(self) -> List[str]:
+        from .fingerprint import keywords
+        ids = sorted({t["id"] for r in self.tech().values() for t in r.get("tech") or []})
+        return keywords(ids)
+
+    def watch_keywords(self) -> List[str]:
         p = self.svc.settings()
-        watch = [w.lower() for w in p.vulndb_watch]
-        hits = [c for c in new if any(w in f"{kev[c]['vendor']} {kev[c]['product']}".lower() for w in watch)]
+        out = [w.lower() for w in p.vulndb_watch]
+        if p.vulndb_watch_auto:
+            out += [k for k in self.tech_keywords() if k not in out]
+        return out
+
+    @staticmethod
+    def _kw_sql(keywords: List[str]) -> Tuple[str, List[str]]:
+        if not keywords:
+            return "0", []
+        expr = "(' ' || lower(replace(vendor || ' ' || product, '_', ' ')) || ' ')"
+        return "(" + " OR ".join(f"{expr} LIKE ?" for _ in keywords) + ")", [f"%{k}%" for k in keywords]
+
+    def tech_vulns(self) -> List[Dict[str, Any]]:
+        """Сайты → найденные продукты с числом эксплуатируемых уязвимостей и попыток их эксплуатации."""
+        from .fingerprint import TECH_BY_ID
+        cache: Dict[str, Dict[str, int]] = {}
+        out = []
+        for sid, r in sorted(self.tech().items(), key=lambda kv: kv[1].get("name", "")):
+            items = []
+            for t in r.get("tech") or []:
+                tech = TECH_BY_ID.get(t["id"])
+                if t["id"] not in cache:
+                    cond, args = self._kw_sql(list(tech.keywords) if tech and tech.cat != "js" else [])
+                    row = self.db.one(f"SELECT SUM(kev) AS kev, COUNT(*) AS n, SUM(seen) AS seen, "
+                                      f"SUM(CASE WHEN kev=1 AND kev_added>=? THEN 1 ELSE 0 END) AS recent "
+                                      f"FROM vulns WHERE {cond}",
+                                      [time.strftime("%Y-%m-%d", time.gmtime(time.time() - 90 * 86400))] + args) or {}
+                    cache[t["id"]] = {"kev": row.get("kev") or 0, "total": row.get("n") or 0,
+                                      "seen": row.get("seen") or 0, "recent": row.get("recent") or 0}
+                items.append({**t, **cache[t["id"]]})
+            out.append({"site": sid, "name": r.get("name", sid), "ts": r.get("ts"), "error": r.get("error", ""),
+                        "skipped": r.get("skipped", ""), "target": r.get("target", ""), "tech": items})
+        return out
+
+    def _announce_new(self, new: List[str], kev: Dict[str, Dict[str, Any]]) -> None:
+        watch = self.watch_keywords()
+        hits = [c for c in new if any(w in f" {kev[c]['vendor']} {kev[c]['product']} ".lower().replace("_", " ")
+                                      for w in watch)]
         names = ", ".join(f"{c} ({kev[c]['vendor']} {kev[c]['product']})" for c in new[:6])
         self.db.event("warning" if hits else "info", "protection",
                       f"Новые эксплуатируемые уязвимости в каталоге CISA KEV: {len(new)} — {names}"
@@ -863,6 +926,10 @@ class VulnDB:
                    "exploit": "exploits!=''"}
         if flt in flt_sql:
             cond.append(flt_sql[flt])
+        elif flt == "mine":
+            kc, ka = self._kw_sql(self.watch_keywords())
+            cond.append(kc)
+            args += ka
         order = {"kev": "kev DESC, kev_added DESC, cvss DESC", "epss": "epss DESC", "cvss": "cvss DESC, epss DESC",
                  "new": "COALESCE(NULLIF(kev_added,''), '0000') DESC, cve DESC", "seen": "seen DESC, last_seen DESC",
                  "cve": "cve DESC"}.get(sort, "kev DESC, kev_added DESC")
@@ -884,6 +951,12 @@ class VulnDB:
                       for x in r["covered"] if x in W.RULE_BY_ID]
         r["excluded"] = r["cve"] in self.svc.settings().vulndb_exclude
         r["exploits"] = [x for x in (r.get("exploits") or "").split(",") if x]
+        from .fingerprint import TECH_BY_ID
+        name = f" {r['vendor']} {r['product']} ".lower().replace("_", " ")
+        r["on_sites"] = [{"site": sid, "name": t.get("name", sid), "tech": x["name"], "version": x.get("version", "")}
+                         for sid, t in self.tech().items() for x in t.get("tech") or []
+                         if TECH_BY_ID.get(x["id"]) and TECH_BY_ID[x["id"]].cat != "js"
+                         and any(k in name for k in TECH_BY_ID[x["id"]].keywords)]
         r["hits"] = self.db.query("SELECT site, action, SUM(n) AS n, MIN(ts) AS first, MAX(ts) AS last "
                                   "FROM attack_minute WHERE kind='waf' AND rule=? GROUP BY site, action ORDER BY n DESC",
                                   (f"vuln/{r['cve']}",))
