@@ -30,8 +30,11 @@ PAGES = [
     ("protection-log", "#/protection?tab=log", 3000), ("protection-selftest", "#/protection?tab=selftest&site=1", 3000),
     ("protection-score", "#/protection?tab=score", 3000), ("protection-server", "#/protection?tab=server", 3000),
     ("site-editor-protection", "#/sites?edit=1&tab=protection", 2500),
+    ("protection-analytics", "#/protection?tab=analytics&hours=168", 4500),
+    ("protection-attackers", "#/protection?tab=attackers&hours=168", 3000),
+    ("protection-bots", "#/protection?tab=bots", 3000), ("protection-modsec", "#/protection?tab=modsec", 3500),
 ]
-SCENES = {"geo-site", "sites-bulk", "backup-s3", "backup-restore"}  # снимки с действиями: --only geo-site,sites-bulk или --extras
+SCENES = {"protection-ip", "protection-rule", "protection-ratelimit", "geo-site", "sites-bulk", "backup-s3", "backup-restore"}  # снимки с действиями: --only geo-site,sites-bulk или --extras
 
 
 async def main(a):
@@ -110,6 +113,36 @@ async def scenes(page, a, only):
         await page.wait_for_timeout(500)
         await page.screenshot(path=f"{a.out}/backup-s3.png")
         print("backup-s3: ok")
+    if not only or "protection-ip" in only:
+        # профиль атакующего адреса: самый опасный на вкладке «Атакующие»
+        await page.goto(f"{a.url}/#/protection?tab=attackers&hours=168")
+        await page.wait_for_timeout(2500)
+        await page.locator("table.t tbody tr").first.locator("button", has_text="Профиль").click()
+        await page.wait_for_selector(".modal .kpi", timeout=15000)
+        await page.wait_for_timeout(1200)
+        await page.screenshot(path=f"{a.out}/protection-ip.png")
+        await page.keyboard.press("Escape")
+        print("protection-ip: ok")
+    if not only or "protection-rule" in only:
+        # карточка правила из таблицы эффективности правил
+        await page.goto(f"{a.url}/#/protection?tab=analytics&hours=168")
+        await page.wait_for_timeout(3500)
+        links = page.locator(".card", has_text="Эффективность правил").locator("table.t tbody tr a")
+        sqli = links.filter(has_text="SQL-инъекции:")
+        await (sqli.first if await sqli.count() else links.first).click()
+        await page.wait_for_selector(".modal .facts", timeout=15000)
+        await page.wait_for_timeout(1200)
+        await page.screenshot(path=f"{a.out}/protection-rule.png")
+        await page.keyboard.press("Escape")
+        print("protection-rule: ok")
+    if not only or "protection-ratelimit" in only:
+        await page.goto(f"{a.url}/#/protection?tab=rules")
+        await page.wait_for_timeout(2000)
+        await page.evaluate("""() => { const c = [...document.querySelectorAll('.card')].find(x => x.textContent.includes('Правила ограничения частоты'));
+            c.scrollIntoView({block: 'start'}); window.scrollBy(0, -90); }""")
+        await page.wait_for_timeout(400)
+        await page.screenshot(path=f"{a.out}/protection-ratelimit.png")
+        print("protection-ratelimit: ok")
     if not only or "backup-restore" in only:
         # окно проверки копии перед восстановлением (сама копия не восстанавливается — окно закрывается)
         await page.goto(f"{a.url}/#/backup")

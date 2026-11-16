@@ -11,10 +11,10 @@ from typing import Any, Dict, Optional
 from fastapi import Body, Depends, HTTPException, Query, Request
 
 from ..auth import admin, operator, viewer
-from ..models import THREAT_PRESETS, GlobalSettings, ProtectionSettings, Site
+from ..models import MODSEC_APPS, THREAT_PRESETS, VERIFIED_BOTS, GlobalSettings, ProtectionSettings, Site
 from ..protection import rules as W
-from ..protection.nginx import challenge_ready, site_modes
-from ..protection.service import ACTIONS, KINDS, SYSCTL, SYSCTL_FILE, sysctl_report
+from ..protection.nginx import challenge_ready, modsec_ready, site_modes
+from ..protection.service import ACTIONS, CRS_GROUPS, KINDS, SYSCTL, SYSCTL_FILE, TOOL_TITLES, sysctl_report
 
 from .routes import audit as _audit_fn
 from .routes import router  # маршруты регистрируются в общем роутере /api (модуль импортируется в конце routes.py)
@@ -52,9 +52,23 @@ async def protection_get(request: Request, user=Depends(viewer)):
     p = app.protection.settings()
     caps = app.nginx.caps()
     return {"settings": p.model_dump(), "effective_modes": {c: p.mode(c) for c in W.CATEGORIES},
-            "feed_status": app.protection.feed_status(), "presets": THREAT_PRESETS,
+            "feed_status": app.protection.feed_status(), "presets": THREAT_PRESETS, "bot_presets": VERIFIED_BOTS,
             "attack": app.protection.attack_state(), "challenge_ready": challenge_ready(caps),
-            "kinds": KINDS, "actions": ACTIONS}
+            "modsec": _modsec_status(app), "kinds": KINDS, "actions": ACTIONS}
+
+
+def _modsec_status(app) -> Dict[str, Any]:
+    caps = app.nginx.caps()
+    crs_dir, ver = app.nginx.crs()
+    log = app.protection.modsec_log()
+    try:
+        size = log.stat().st_size
+    except OSError:
+        size = None
+    return {"module": modsec_ready(caps), "crs_dir": crs_dir,
+            "crs_version": ".".join(ver) if ver and len(ver) == 3 else ver, "audit_log": str(log), "audit_size": size,
+            "apps": MODSEC_APPS, "groups": {k: v[1] for k, v in CRS_GROUPS.items()},
+            "install": "apt install libnginx-mod-http-modsecurity modsecurity-crs"}
 
 
 @router.put("/protection/settings")
@@ -67,8 +81,10 @@ async def protection_put(request: Request, body: Dict[str, Any] = Body(...), app
     app.protection.save(p)
     _audit(request, user, "protection_settings_updated")
     res = await app.apply(user["username"], "Изменены настройки защиты от атак") if apply else None
-    feeds_changed = [f.model_dump() for f in p.threat_feeds] != [f.model_dump() for f in old.threat_feeds]
-    if feeds_changed and any(f.enabled for f in p.threat_feeds):
+    feeds_changed = [f.model_dump() for f in p.threat_feeds] != [f.model_dump() for f in old.threat_feeds] or \
+        [b.model_dump() for b in p.verified_bots] != [b.model_dump() for b in old.verified_bots] or \
+        (p.fake_bot_action, p.verified_skip_challenge) != (old.fake_bot_action, old.verified_skip_challenge)
+    if feeds_changed:
         asyncio.get_running_loop().create_task(app.protection.update_feeds(force=False))
     return {"ok": True, "applied": res}
 
@@ -274,3 +290,76 @@ async def protection_test(body: Dict[str, Any] = Body(...), user=Depends(viewer)
     hits = W.scan(vals, level)
     return [{"id": r.id, "cat": r.cat, "cat_title": W.CATEGORIES[r.cat]["title"], "title": r.title, "level": r.level,
              "cve": r.cve} for r in hits]
+
+
+# ---------------------------------------------------------------------- аналитика
+@router.get("/protection/analytics")
+async def protection_analytics(request: Request, hours: int = Query(24, ge=1, le=24 * 365), site: str = "",
+                               user=Depends(viewer)):
+    """Аналитика атак за период и сравнение с предыдущим: ряды по механизмам, категориям, действиям и сайтам,
+    доля атак в трафике, уникальные адреса, тепловая карта, инструменты атакующих, методы, коды ответа, цели,
+    эффективность правил и списков угроз, ограничение частоты, воронка проверки браузера, роботы, периоды
+    режима «Под атакой»."""
+    app = _nm(request)
+    await asyncio.to_thread(app.protection.flush)
+    return await asyncio.to_thread(app.protection.analytics.analytics, hours, site)
+
+
+@router.get("/protection/attackers")
+async def protection_attackers(request: Request, hours: int = Query(24, ge=1, le=24 * 365), site: str = "",
+                               q: str = "", limit: int = Query(200, ge=1, le=1000), user=Depends(viewer)):
+    """Атакующие адреса за период: число атак, правила, сайты, инструмент по User-Agent, оценка угрозы 0–100."""
+    app = _nm(request)
+    await asyncio.to_thread(app.protection.flush)
+    return await asyncio.to_thread(app.protection.analytics.attackers, hours, site, q, limit)
+
+
+@router.get("/protection/ip/{ip}")
+async def protection_ip(request: Request, ip: str, hours: int = Query(168, ge=1, le=24 * 365), user=Depends(viewer)):
+    """Профиль адреса: атаки во времени, правила, сайты, пути, User-Agent, обычный трафик, блокировка, списки угроз."""
+    import ipaddress
+    try:
+        ipaddress.ip_address(ip)
+    except ValueError:
+        raise HTTPException(400, "Некорректный IP-адрес")
+    app = _nm(request)
+    await asyncio.to_thread(app.protection.flush)
+    return await asyncio.to_thread(app.protection.analytics.ip_profile, ip, hours)
+
+
+@router.get("/protection/rule")
+async def protection_rule(request: Request, kind: str, rule: str, hours: int = Query(168, ge=1, le=24 * 365),
+                          site: str = "", user=Depends(viewer)):
+    """Карточка правила: описание, срабатывания во времени, сайты, адреса, пути, User-Agent, последние события."""
+    app = _nm(request)
+    if kind not in KINDS:
+        raise HTTPException(400, "Неизвестный вид события")
+    await asyncio.to_thread(app.protection.flush)
+    return await asyncio.to_thread(app.protection.analytics.rule_detail, kind, rule[:120], hours, site)
+
+
+@router.get("/protection/events.csv")
+async def protection_events_csv(request: Request, limit: int = Query(10000, ge=1, le=100000), site: str = "",
+                                ip: str = "", kind: str = "", action: str = "", q: str = "", user=Depends(viewer)):
+    """Журнал атак в CSV (UTF-8 с BOM — открывается в Excel)."""
+    import csv
+    import io
+
+    from fastapi.responses import Response
+    app = _nm(request)
+    await asyncio.to_thread(app.protection.flush)
+    rows = await asyncio.to_thread(app.protection.events, min(limit, 100000), None, site, ip, kind, action, q, "",
+                                   False)
+    buf = io.StringIO()
+    w = csv.writer(buf, delimiter=";")
+    w.writerow(["Время", "Сайт", "IP", "Страна", "Механизм", "Правило", "Название правила", "Действие", "Метод",
+                "Запрос", "User-Agent", "Код", "Номер запроса", "Host", "Инструмент"])
+    from ..protection.service import classify_ua
+    for r in rows:
+        w.writerow([time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(r["ts"])), r.get("site_name") or r["site"],
+                    r["ip"], r["country"], KINDS.get(r["kind"], r["kind"]), r["rule"], r.get("title", ""),
+                    ACTIONS.get(r["action"], r["action"]), r["method"], r["uri"], r["ua"], r["status"], r["rid"],
+                    r["host"], TOOL_TITLES.get(classify_ua(r["ua"]), "")])
+    _audit(request, user, "protection_events_export", details={"rows": len(rows)})
+    return Response("\ufeff" + buf.getvalue(), media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="attacks-{time.strftime("%Y%m%d-%H%M")}.csv"'})

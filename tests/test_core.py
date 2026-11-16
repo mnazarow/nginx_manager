@@ -446,7 +446,9 @@ def test_generator_geo_rules():
     assert "if ($nm_geo_1) {" in deny and "return 444;" in deny
     allow = next(v for k, v in files.items() if k.startswith("sites/site-2-"))
     assert 'map "$nm_acme:$nm_cc" $nm_geo_2 {' in allow and "default 1;" in allow
-    assert '"0:RU" 0;' in allow and '"0:LAN" 0;' in allow and "return 403;" in allow
+    # 403 защиты отдаётся внутренним 418 → error_page превращает в 403 со страницей «Доступ запрещён»
+    assert '"0:RU" 0;' in allow and '"0:LAN" 0;' in allow and "return 418;" in allow
+    assert "error_page 418 =403 @nm_blocked;" in allow
     off = next(v for k, v in files.items() if k.startswith("sites/site-3-"))
     assert "nm_geo" not in off
     assert not any("GeoIP" in w for w in warnings)

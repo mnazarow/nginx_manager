@@ -35,6 +35,7 @@ class NginxCaps:
     stream_available: bool = True
     stream_load: str = ""            # строка load_module, если модуль не подключён системой
     module_includes: List[str] = field(default_factory=list)
+    modsecurity: bool = False        # модуль ModSecurity-nginx подключён
     mime_types: str = "/etc/nginx/mime.types"
     pid_path: str = "/run/nginx.pid"
     default_user: str = "www-data"
@@ -113,6 +114,10 @@ class Paths:
     challenge_key: str = ""     # ключ, которым nginx подписывает запросы к панели за страницей проверки
     panel_host: str = "127.0.0.1"
     panel_scheme: str = "http"
+    bots_file: str = ""         # официальные адреса роботов для geo $nm_vbot
+    bots_ua_file: str = ""      # User-Agent проверяемых роботов для map $nm_bot_claim
+    crs_dir: str = ""           # каталог правил OWASP CRS (пусто — не найден)
+    crs_version: str = ""       # версия CRS цифрами («335»)
 
 
 class ConfigError(Exception):
@@ -200,6 +205,7 @@ class Generator:
     def render(self) -> Dict[str, str]:
         self.files["http.d/00-base.conf"] = self.render_http_base()
         self.files["http.d/05-protection.conf"] = self.pc.http_conf()
+        self.files.update(self.pc.modsec_files())
         self.warnings += self.pc.warnings
         self.files["http.d/10-default.conf"] = self.render_default()
         for sid, site in self.st.sites:
@@ -274,7 +280,8 @@ class Generator:
         c.line(MARKER)
         c.comment("Общие параметры уровня http")
         c.line()
-        c.raw(LOG_FORMAT_HTTP)
+        # $limit_req_status — с nginx 1.17.6
+        c.raw(LOG_FORMAT_HTTP if self.caps.version >= (1, 17, 6) else LOG_FORMAT_HTTP.replace("$limit_req_status", ""))
         c.line()
         c.d(self.access_log_line())
         c.line()
@@ -297,7 +304,7 @@ class Generator:
             c.d("default", "0")
             for gsid in self.geo_sites():
                 c.d(f'"{gsid}"', f"$nm_geo_{gsid}")
-        if self.geo_sites():
+        if self.geo_sites() or self.pc.country_rules():
             c.comment("Доступ по странам: сети выбранных стран из базы GeoIP (файл пересобирает панель)")
             with c.block("geo $nm_cc"):
                 c.d("default", "--")
@@ -688,12 +695,12 @@ class Generator:
     def geo_check(self, c: Conf, sid: int, s: Site) -> None:
         if sid in self.geo_sites():
             with c.block(f"if ($nm_geo_{sid})"):
-                c.d("return", s.security.geo_status)
+                c.d("return", self.pc.deny_code(s, s.security.geo_status))
 
-    def ban_check(self, c: Conf) -> None:
+    def ban_check(self, c: Conf, s: Optional[Site] = None) -> None:
         """Отклонить запрос с заблокированного IP до выбора location (раздел «Блокировки»)."""
         with c.block("if ($nm_banned)"):
-            c.d("return", self.st.panel.ban_response)
+            c.d("return", self.pc.deny_code(s, self.st.panel.ban_response) if s else self.st.panel.ban_response)
 
     def server_block(self, c: Conf, sid: int, s: Site, cert, http: bool, https: bool) -> None:
         sec = s.security
@@ -714,9 +721,10 @@ class Generator:
                     c.d("http3", "on")
             c.d("server_name", " ".join(s.domains))
             c.d("set", "$nm_site", f'"{sid}"')
-            self.ban_check(c)
+            self.ban_check(c, s)
             self.geo_check(c, sid, s)
             self.pc.server(c, sid, s, https)
+            self.pc.modsec_server(c, sid, s)
             c.line()
             if https:
                 c.d("ssl_certificate", cert.cert_path)
@@ -751,7 +759,7 @@ class Generator:
                 c.d("limit_conn", f"nm_cl_{sid}", sec.conn_limit)
                 c.d("limit_conn_status", 429)
             if sec.rate_limit or any(loc.enabled and loc.rate_limit == "custom" for loc in s.locations) or \
-                    (s.protection.enabled and s.protection.login_protection):
+                    self.pc.has_limits(sid, s):
                 c.d("limit_req_status", sec.limit_status)
             self.access_rules(c, sec.access_mode == "allowlist" and sec.allow or [], sec.deny)
             if sec.basic_auth and sec.basic_auth_users:
@@ -1114,10 +1122,8 @@ class Generator:
 
     # ------------------------------------------------------------------
     def render_pages(self) -> None:
-        from ..protection.nginx import BLOCKED_PAGE
         for code, (title, text) in ERROR_PAGES.items():
             self.files[f"pages/error-{code}.html"] = page_html(code, title, text)
-        self.files["pages/blocked.html"] = BLOCKED_PAGE
         for sid, s in self.st.sites:
             if s.enabled and s.maintenance.enabled:
                 self.files[f"pages/maintenance-{sid}.html"] = page_html(
@@ -1132,7 +1138,8 @@ LOG_FORMAT_HTTP = r"""log_format nm_json escape=json '{'
     '"uct":"$upstream_connect_time","uht":"$upstream_header_time",'
     '"ref":"$http_referer","agent":"$http_user_agent","cache":"$upstream_cache_status",'
     '"sch":"$scheme","tls":"$ssl_protocol","rid":"$request_id","cr":"$connection_requests","bn":"$nm_banned","gb":"$nm_gb",'
-    '"wf":"$nm_waf","wa":"$nm_wchk","ch":"$nm_chk"'
+    '"wf":"$nm_waf","wa":"$nm_wchk","ch":"$nm_chk","rs":"$limit_req_status","ri":"$nm_rlid",'
+    '"bt":"$nm_bot_claim:$nm_vbot_ok"'
     '}';"""
 
 LOG_FORMAT_STREAM = r"""log_format nm_stream escape=json '{'

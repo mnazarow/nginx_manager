@@ -144,6 +144,16 @@ class Settings:
         return self.managed_dir / "threats.conf"
 
     @property
+    def bots_file(self) -> Path:
+        """Официальные адреса поисковых роботов и ботов ИИ для geo $nm_vbot."""
+        return self.managed_dir / "verified-bots.conf"
+
+    @property
+    def bots_ua_file(self) -> Path:
+        """User-Agent роботов, чьи адреса загружены, для map $nm_bot_claim."""
+        return self.managed_dir / "verified-bots-ua.conf"
+
+    @property
     def attack_file(self) -> Path:
         """Режим «Под атакой» по сайтам для map $nm_chal_auto; меняется кнопкой и автоматикой."""
         return self.managed_dir / "attack-mode.conf"
@@ -187,6 +197,10 @@ class Settings:
             if self.managed_dir.is_dir() and not self.threats_file.exists():
                 self.threats_file.write_text("# Nginx Manager: списки угроз (раздел «Защита»)\n")
                 os.chmod(self.threats_file, 0o644)
+            for f in (self.bots_file, self.bots_ua_file):
+                if self.managed_dir.is_dir() and not f.exists():
+                    f.write_text("# Nginx Manager: проверка роботов (раздел «Защита»)\n")
+                    os.chmod(f, 0o644)
             if self.managed_dir.is_dir() and not self.attack_file.exists():
                 self.attack_file.write_text('# Nginx Manager: режим «Под атакой»\ndefault "";\n')
                 os.chmod(self.attack_file, 0o644)

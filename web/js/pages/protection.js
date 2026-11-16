@@ -4,20 +4,19 @@ import { api } from '../api.js';
 import { h, mount, icon, toast, tabs, modal, loading, card, kpi, badge, table, hbars, fmtInt, fmtDate, fmtAgo, fmtTime, countryTag,
   confirmDlg, debounce, segmented, empty } from '../ui.js';
 import { model, renderFields, errorsToMap } from '../forms.js';
-import { timeChart, setData, chartCard, destroyAll, css } from '../charts.js';
+import { timeChart, setData, chartCard, destroyAll } from '../charts.js';
 import { can, refreshState } from '../app.js';
+import { KIND_ORDER, kindColor, analyticsTab, attackersTab, botsTab, modsecTab, rateRulesCard, liveFeed, openIp, openRule, banIp } from './protection-more.js';
 
 const TABS = [
-  ['overview', 'Обзор'], ['waf', 'Фильтр запросов'], ['challenge', 'Проверка браузера'], ['rules', 'Свои правила'],
-  ['threats', 'Списки угроз'], ['auto', 'Автоматика и ловушки'], ['log', 'Журнал атак'], ['selftest', 'Самопроверка'],
+  ['overview', 'Обзор'], ['analytics', 'Аналитика'], ['attackers', 'Атакующие'], ['log', 'Журнал атак'],
+  ['waf', 'Фильтр запросов'], ['modsec', 'Глубокая проверка'], ['challenge', 'Проверка браузера'], ['bots', 'Роботы'],
+  ['rules', 'Свои правила'], ['threats', 'Списки угроз'], ['auto', 'Автоматика и ловушки'], ['selftest', 'Самопроверка'],
   ['score', 'Оценка защищённости'], ['server', 'Сеть и сервер'],
 ];
 const MODE = { off: 'выключено', detect: 'запись', block: 'блокировать' };
 const MODE_KIND = { off: '', detect: 'warn', block: 'good' };
 const ACT_KIND = { blocked: 'bad', detected: 'warn', challenged: 'info', banned: 'bad', passed: 'good' };
-// цвета видов атак: фиксированный порядок категориальной палитры
-const KIND_ORDER = ['waf', 'custom', 'threat', 'challenge', 'honeypot', 'ratelimit', 'hotlink', 'sni'];
-const kindColor = (k) => css(`--s${(KIND_ORDER.indexOf(k) % 8) + 1}`) || css('--s1');
 
 const go = (tab, extra = '') => { location.hash = `#/protection?tab=${tab}${extra}`; };
 
@@ -41,7 +40,8 @@ export async function render(root, c) {
       attack.global.until ? `До ${fmtDate(attack.global.until)}. ` : 'Без срока. ', `Включил: ${attack.global.auto ? 'автоматика' : attack.global.by}.`) : null,
     !cfg.challenge_ready ? h('div', { class: 'alert warn mb' }, 'В установленном nginx нет модуля secure_link — проверка браузера и режим «Под атакой» недоступны. Остальные механизмы работают.') : null,
     tabs(TABS.map(([id, label]) => ({ id, label })), tab, (t) => go(t)), view);
-  const R = { overview, waf, challenge, rules, threats, auto, log, selftest, score, server }[tab] || overview;
+  const R = { overview, analytics: analyticsTab, attackers: attackersTab, modsec: modsecTab, bots: botsTab, waf, challenge,
+    rules, threats, auto, log, selftest, score, server }[tab] || overview;
   await R(view, { cfg, sites, charts, c });
   return () => destroyAll(charts);
 }
@@ -94,17 +94,24 @@ async function overview(view, { cfg, sites, charts }) {
       h('div', { class: 'grid kpi5' },
         kpi('Заблокировано', fmtInt(t.blocked || 0), { foot: 'запросов', cls: (t.blocked ? 'bad' : '') }),
         kpi('Записано', fmtInt(t.detected || 0), { foot: 'режим «запись» и правила «записать»' }),
-        kpi('Проверка браузера', fmtInt(t.challenged || 0), { foot: `решено с запуска: ${fmtInt((d.challenge || {}).solved || 0)}` }),
+        kpi('Проверка браузера', fmtInt(t.challenged || 0), { foot: `решено за период: ${fmtInt((d.challenge_period || {}).solved || 0)}` }),
         kpi('Попались в ловушки', fmtInt(t.banned || 0), { foot: 'адреса сразу заблокированы' }),
         kpi('Под атакой', d.attack.global ? 'все сайты' : String(d.attack.sites.length), { foot: 'сайтов в режиме проверки', cls: d.attack.global || d.attack.sites.length ? 'warn' : '' })),
       cc.el,
       h('div', { class: 'grid g2 mt' },
-        card('Сработавшие правила', hbars(d.rules.map(r => ({ label: r.title || r.rule, value: r.n, extra: (d.actions[r.action] || r.action), title: r.rule }))), { sub: 'чаще всего за период' }),
+        card('Сработавшие правила', d.rules.length ? table([
+          { title: 'Правило', render: (r) => h('a', { href: '#', onclick: (e) => { e.preventDefault(); openRule(r.kind, r.rule, { sites }); } }, r.title || r.rule) },
+          { title: 'Действие', render: (r) => badge(d.actions[r.action] || r.action, ACT_KIND[r.action]) },
+          { title: 'Раз', num: true, render: (r) => fmtInt(r.n) },
+        ], d.rules.slice(0, 12)) : empty('Правила не срабатывали', '', null, 'shield'), { flush: !!d.rules.length, sub: 'чаще всего за период; щелчок — карточка правила',
+          actions: h('a', { class: 'btn sm', href: '#/protection?tab=analytics' }, icon('chart'), 'Аналитика') }),
         card('Атакующие адреса', d.ips.length ? table([
-          { title: 'IP', render: (r) => h('code', {}, r.ip) }, { title: '', render: (r) => countryTag(r.country) },
+          { title: 'IP', render: (r) => h('a', { href: '#', onclick: (e) => { e.preventDefault(); openIp(r.ip, { sites }); } }, h('code', {}, r.ip)) }, { title: '', srTitle: 'Страна', render: (r) => countryTag(r.country) },
           { title: 'Запросов', num: true, render: (r) => fmtInt(r.n) }, { title: 'Виды', render: (r) => (r.kinds || '').split(',').map(k => d.kinds[k] || k).join(', ') },
           { title: '', srTitle: 'Действия', render: (r) => can('operator') ? h('button', { class: 'btn sm', onclick: () => banIp(r.ip) }, icon('ban'), 'Блокировать') : null },
-        ], d.ips) : empty('Атак не было', 'За выбранный период защита ничего не отклонила', null, 'shield'), { flush: true })),
+        ], d.ips) : empty('Атак не было', 'За выбранный период защита ничего не отклонила', null, 'shield'), { flush: true,
+          actions: h('a', { class: 'btn sm', href: '#/protection?tab=attackers' }, 'Все атакующие') })),
+      liveFeed(d.kinds),
       h('div', { class: 'grid g3 mt' },
         card('Страны', hbars(d.countries.map(r => ({ label: r.country, value: r.n })))),
         card('Сайты', hbars(d.sites.map(r => ({ label: r.name, value: r.n })))),
@@ -143,11 +150,6 @@ function wafSummary(modes) {
   return h('span', {}, b ? badge(`блок: ${b}`, 'good') : null, ' ', dt ? badge(`запись: ${dt}`, 'warn') : null);
 }
 
-async function banIp(ip) {
-  if (!await confirmDlg(`Заблокировать ${ip} на сутки?`, { ok: 'Заблокировать', danger: true })) return;
-  await api('/bans', { method: 'POST', body: { nets: [ip], minutes: 1440, reason: 'Атаки (раздел «Защита»)' } });
-  toast(`${ip} заблокирован на сутки`, 'good');
-}
 
 // ---------------------------------------------------------------- фильтр запросов
 async function waf(view, { cfg }) {
@@ -275,7 +277,8 @@ async function rules(view, { cfg, sites }) {
           await saveSettings({ ...obj, custom_rules: list.filter(x => x !== r) }, 'Правило удалено'); go('rules');
         } }, icon('trash'))) : null },
     ], list) : empty('Своих правил нет', 'Добавьте правило для того, что не покрывает каталог сигнатур', can('admin') ? h('button', { class: 'btn primary', onclick: () => edit(null) }, icon('plus'), 'Добавить правило') : null, 'shield'),
-    { flush: true, actions: can('admin') && list.length ? h('button', { class: 'btn primary', onclick: () => edit(null) }, icon('plus'), 'Добавить правило') : null }));
+    { flush: true, actions: can('admin') && list.length ? h('button', { class: 'btn primary', onclick: () => edit(null) }, icon('plus'), 'Добавить правило') : null }),
+    rateRulesCard(cfg, sites, () => go('rules')));
 }
 
 // ---------------------------------------------------------------- списки угроз
@@ -283,7 +286,7 @@ async function threats(view, { cfg }) {
   const obj = structuredClone(cfg.settings);
   const status = cfg.feed_status || {};
   const byId = Object.fromEntries(obj.threat_feeds.map(f => [f.id, f]));
-  cfg.presets.forEach(p => { if (!byId[p.id]) { const f = { ...p, enabled: false, action: 'block' }; obj.threat_feeds.push(f); byId[p.id] = f; } });
+  cfg.presets.forEach(p => { if (!byId[p.id]) { const f = { ...p, enabled: false, action: p.action || 'block' }; obj.threat_feeds.push(f); byId[p.id] = f; } });
   let errors = {};
   const form = h('div', {});
   const drawForm = () => { mount(form); renderFields(form, model('protection'), obj, { root: obj, tab: 'threats', advanced: true, errors, rerender: drawForm }); };
@@ -353,15 +356,16 @@ async function log(view, { cfg, sites, c }) {
   mount(view, h('div', { class: 'toolbar' },
     sel('site', 'Все сайты', sites.map(s => [String(s.id), s.name])), sel('kind', 'Все механизмы', Object.entries(cfg.kinds)),
     sel('action', 'Все действия', Object.entries(cfg.actions)), inp('ip', 'IP'), inp('q', 'Текст: URI, User-Agent, правило', '240px'), inp('rid', 'Номер запроса', '220px'),
-    h('label', { class: 'row small' }, testBox, 'самопроверка')), box);
+    h('label', { class: 'row small' }, testBox, 'самопроверка'),
+    h('button', { class: 'btn', onclick: () => { const q = new URLSearchParams(Object.entries(f).filter(([k, v]) => v && k !== 'test' && k !== 'rid')); location.href = `/api/protection/events.csv?limit=50000&${q}`; } }, icon('download'), 'CSV')), box);
   const load = async () => {
     const rows = await api('/protection/events', { query: { ...f, limit: 300 } });
     const name = (sid) => (sites.find(s => String(s.id) === sid) || {}).name || sid;
     mount(box, card(`Записей: ${rows.length}${rows.length === 300 ? '+' : ''}`, table([
       { title: 'Время', render: (r) => h('span', { class: 'nowrap', title: fmtDate(r.ts, { sec: true }) }, fmtTime(r.ts)) },
       { title: 'Сайт', render: (r) => name(r.site) },
-      { title: 'IP', render: (r) => h('span', { class: 'nowrap' }, h('code', {}, r.ip), ' ', countryTag(r.country)) },
-      { title: 'Правило', render: (r) => h('span', { class: 'small' }, r.title) },
+      { title: 'IP', render: (r) => h('span', { class: 'nowrap' }, h('a', { href: '#', onclick: (e) => { e.preventDefault(); e.stopPropagation(); openIp(r.ip, { sites }); } }, h('code', {}, r.ip)), ' ', countryTag(r.country)) },
+      { title: 'Правило', render: (r) => h('a', { href: '#', class: 'small', onclick: (e) => { e.preventDefault(); e.stopPropagation(); openRule(r.kind, r.rule, { sites }); } }, r.title) },
       { title: 'Действие', render: (r) => badge(cfg.actions[r.action] || r.action, ACT_KIND[r.action]) },
       { title: 'Запрос', render: (r) => h('code', { class: 'small ellipsis', style: { maxWidth: '360px', display: 'inline-block' }, title: r.uri }, `${r.method} ${r.uri}`) },
       { title: 'Код', num: true, render: (r) => r.status || '' },

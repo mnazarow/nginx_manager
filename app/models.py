@@ -860,8 +860,17 @@ class SiteProtection(Model):
                             "получив 421, повторяют запрос по новому соединению — посетители ничего не замечают.")
     bypass_ips: List[str] = F(factory=list, label="Доверенные IP (без проверок)", ui="lines", ph="203.0.113.10",
                               show={"enabled": [True]}, help="Офис, мониторинг, партнёрские серверы")
+    modsec: Literal["inherit", "off", "detect"] = F(
+        "inherit", label="Глубокая проверка (ModSecurity)", show={"enabled": [True]},
+        labels={"inherit": "Как в общих настройках", "off": "Выключена", "detect": "Только запись в журнал"},
+        help="Действует, если глубокая проверка включена в разделе «Защита от атак»")
+    modsec_exclude_paths: List[str] = F(factory=list, label="Не проверять глубоко пути", ui="lines",
+                                        show={"enabled": [True], "modsec": ["inherit", "detect"]},
+                                        ph="/api/upload\n~^/admin/editor/")
+    modsec_disabled_ids: List[int] = F(factory=list, label="Отключённые правила CRS на сайте",
+                                       show={"enabled": [True], "modsec": ["inherit", "detect"]}, ph="942100")
 
-    @field_validator("waf_exclude_paths", "challenge_exclude_paths", "login_paths")
+    @field_validator("waf_exclude_paths", "challenge_exclude_paths", "login_paths", "modsec_exclude_paths")
     @classmethod
     def _paths(cls, v): return [x for x in (_prot_path(p, "путь") for p in v) if x]
 
@@ -926,20 +935,21 @@ class CustomRule(Model):
     name: str = F("", label="Название", ph="Закрыть /admin снаружи", min_length=1, max_length=100)
     enabled: bool = F(True, label="Включено")
     sites: List[int] = F(factory=list, label="Сайты", ui="sites", help="Пусто — все сайты")
-    field: Literal["uri", "path", "args", "ua", "referer", "cookie", "host", "method", "header", "ip"] = F(
+    field: Literal["uri", "path", "args", "ua", "referer", "cookie", "host", "method", "header", "ip", "country"] = F(
         "path", label="Что проверять",
         labels={"uri": "Строка запроса целиком (путь и параметры)", "path": "Путь (декодированный)",
                 "args": "Параметры запроса", "ua": "User-Agent", "referer": "Referer", "cookie": "Cookie",
-                "host": "Host (домен)", "method": "Метод", "header": "Другой заголовок", "ip": "IP-адрес клиента"})
+                "host": "Host (домен)", "method": "Метод", "header": "Другой заголовок", "ip": "IP-адрес клиента",
+                "country": "Страна клиента (по базе GeoIP)"})
     header: str = F("", label="Заголовок", ph="X-Api-Key", show={"field": ["header"]})
     op: Literal["contains", "not_contains", "prefix", "equals", "regex", "not_regex", "in", "not_in"] = F(
         "prefix", label="Условие",
         labels={"contains": "содержит", "not_contains": "не содержит", "prefix": "начинается с",
                 "equals": "равно", "regex": "совпадает с регулярным выражением",
-                "not_regex": "не совпадает с регулярным выражением", "in": "входит в список (IP, подсети)",
-                "not_in": "не входит в список (IP, подсети)"})
+                "not_regex": "не совпадает с регулярным выражением", "in": "входит в список (IP, подсети, страны)",
+                "not_in": "не входит в список (IP, подсети, страны)"})
     value: str = F("", label="Значение", ui="textarea", ph="/admin",
-                   help="Для IP — адреса и подсети через пробел или с новой строки")
+                   help="Для IP — адреса и подсети, для страны — коды ISO (RU, CN, US) через пробел или с новой строки")
     action: Literal["block", "drop", "challenge", "log", "allow"] = F(
         "block", label="Действие",
         labels={"block": "Блокировать (403)", "drop": "Закрыть соединение (444)",
@@ -951,11 +961,21 @@ class CustomRule(Model):
         v = self.value.strip()
         if not v:
             raise V.ValidationError(f"Правило «{self.name}»: задайте значение")
-        if self.field == "ip" and self.op not in ("in", "not_in"):
-            raise V.ValidationError(f"Правило «{self.name}»: для IP-адреса условие — «входит» или «не входит в список»")
-        if self.field != "ip" and self.op in ("in", "not_in"):
-            raise V.ValidationError(f"Правило «{self.name}»: списки адресов — только для поля «IP-адрес клиента»")
-        if self.op in ("in", "not_in"):
+        if self.field in ("ip", "country") and self.op not in ("in", "not_in"):
+            raise V.ValidationError(f"Правило «{self.name}»: для IP-адреса и страны условие — «входит» или "
+                                    "«не входит в список»")
+        if self.field not in ("ip", "country") and self.op in ("in", "not_in"):
+            raise V.ValidationError(f"Правило «{self.name}»: списки — только для полей «IP-адрес клиента» и «Страна»")
+        if self.field == "country":
+            from .services.geoblock import COUNTRY_SET
+            codes = []
+            for x in v.replace(",", " ").upper().split():
+                if x not in COUNTRY_SET:
+                    raise V.ValidationError(f"Правило «{self.name}»: «{x}» — не код страны ISO 3166 (RU, CN, US…)")
+                if x not in codes:
+                    codes.append(x)
+            self.value = " ".join(codes)
+        elif self.op in ("in", "not_in"):
             self.value = " ".join(V.cidr(x) for x in v.replace(",", " ").split())
         else:
             V.no_ctrl(v, "значение правила")
@@ -989,6 +1009,33 @@ THREAT_PRESETS = [
      "url": "https://rules.emergingthreats.net/blockrules/compromised-ips.txt"},
     {"id": "dshield", "name": "DShield: самые активные сети атакующих",
      "url": "https://feeds.dshield.org/block.txt"},
+    {"id": "ipsum3", "name": "IPsum (адреса из 3 и более списков угроз)",
+     "url": "https://raw.githubusercontent.com/stamparm/ipsum/master/levels/3.txt", "action": "block"},
+    {"id": "datacenter", "name": "Сети дата-центров и хостингов (X4BNet)",
+     "url": "https://raw.githubusercontent.com/X4BNet/lists_vpn/main/output/datacenter/ipv4.txt", "action": "challenge"},
+    {"id": "vpn", "name": "Публичные VPN (X4BNet)",
+     "url": "https://raw.githubusercontent.com/X4BNet/lists_vpn/main/output/vpn/ipv4.txt", "action": "challenge"},
+]
+
+# Официальные диапазоны адресов поисковых роботов и ботов ИИ (публикуют сами компании). Робот, назвавшийся
+# так в User-Agent, но пришедший с другого адреса, — подделка.
+VERIFIED_BOTS = [
+    {"id": "google", "name": "Googlebot и другие роботы Google",
+     "url": "https://developers.google.com/static/search/apis/ipranges/googlebot.json",
+     "ua": "googlebot|google-inspectiontool|googleother|storebot-google"},
+    {"id": "bing", "name": "Bingbot (Bing, Copilot)", "url": "https://www.bing.com/toolbox/bingbot.json",
+     "ua": "bingbot|adidxbot|bingpreview"},
+    {"id": "apple", "name": "Applebot (Siri, Spotlight)", "url": "https://search.developer.apple.com/applebot.json",
+     "ua": "applebot"},
+    {"id": "duckduckgo", "name": "DuckDuckBot", "url": "https://duckduckgo.com/duckduckbot.json", "ua": "duckduckbot"},
+    {"id": "gptbot", "name": "OpenAI GPTBot (обучение моделей)", "url": "https://openai.com/gptbot.json",
+     "ua": "gptbot"},
+    {"id": "oaisearch", "name": "OpenAI OAI-SearchBot (поиск ChatGPT)", "url": "https://openai.com/searchbot.json",
+     "ua": "oai-searchbot"},
+    {"id": "chatgptuser", "name": "ChatGPT-User (страницы по запросу пользователя)",
+     "url": "https://openai.com/chatgpt-user.json", "ua": "chatgpt-user"},
+    {"id": "perplexity", "name": "PerplexityBot", "url": "https://www.perplexity.com/perplexitybot.json",
+     "ua": "perplexitybot"},
 ]
 
 
@@ -1012,7 +1059,65 @@ class ThreatFeed(Model):
         return self
 
 
-PROTECTION_TABS = [("waf", "Фильтр запросов"), ("challenge", "Проверка браузера"), ("auto", "Автоматика и ловушки"),
+class VerifiedBot(Model):
+    id: str = F("", label="Идентификатор", help="Латиница и цифры")
+    name: str = F("", label="Название", min_length=1, max_length=120)
+    url: str = F("", label="Адрес списка диапазонов (JSON или текст)", ph="https://example.com/bot.json")
+    ua: str = F("", label="User-Agent робота (регулярное выражение, без учёта регистра)", ph="examplebot")
+    enabled: bool = F(True, label="Проверять")
+
+    @model_validator(mode="after")
+    def _chk(self):
+        if not re.match(r"^[a-z0-9]{1,20}$", self.id or ""):
+            raise V.ValidationError(f"Робот «{self.name}»: идентификатор — латиница и цифры, до 20 символов")
+        u = urllib.parse.urlparse(self.url.strip())
+        if u.scheme not in ("https", "http", "file") or (u.scheme != "file" and not u.netloc):
+            raise V.ValidationError(f"Робот «{self.name}»: адрес должен начинаться с https://")
+        self.url = self.url.strip()
+        ua = self.ua.strip()
+        if not ua or '"' in ua or any(c in ua for c in "\n\r;{}"):
+            raise V.ValidationError(f"Робот «{self.name}»: задайте User-Agent без кавычек и ; {{ }}")
+        try:
+            re.compile(ua)
+        except re.error as e:
+            raise V.ValidationError(f"Робот «{self.name}»: ошибка в выражении User-Agent: {e}")
+        self.ua = ua
+        return self
+
+
+class RateRule(Model):
+    id: str = F("", label="Идентификатор", help="Заполняется автоматически")
+    name: str = F("", label="Название", ph="Поиск по сайту", min_length=1, max_length=100)
+    enabled: bool = F(True, label="Включено")
+    sites: List[int] = F(factory=list, label="Сайты", ui="sites", help="Пусто — все сайты")
+    path: str = F("/", label="Путь", ph="/search", help="Префикс пути или ~регулярное выражение; «/» — весь сайт")
+    methods: List[Literal["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]] = F(
+        factory=list, label="Методы", help="Пусто — любые")
+    rate: str = F("60r/m", label="Не больше запросов с одного IP", ph="60r/m",
+                  help="r/s — в секунду, r/m — в минуту")
+    burst: int = F(10, label="Запас (burst)", ge=0, le=100000,
+                   help="Сколько запросов сверх частоты принять подряд, прежде чем отвечать 429")
+
+    @field_validator("rate")
+    @classmethod
+    def _rate(cls, v): return V.rate(v)
+
+    @model_validator(mode="after")
+    def _chk(self):
+        self.path = _prot_path(self.path or "/", f"правило «{self.name}»: путь") or "/"
+        self.methods = list(dict.fromkeys(self.methods))
+        if not self.id:
+            self.id = secrets.token_hex(4)
+        elif not re.match(r"^[a-z0-9]{1,16}$", self.id):
+            raise V.ValidationError("Идентификатор правила: латиница и цифры")
+        return self
+
+
+MODSEC_APPS = {"wordpress": "WordPress", "drupal": "Drupal", "nextcloud": "Nextcloud", "dokuwiki": "DokuWiki",
+               "cpanel": "cPanel", "xenforo": "XenForo"}
+
+PROTECTION_TABS = [("waf", "Фильтр запросов"), ("modsec", "Глубокая проверка (ModSecurity)"),
+                   ("challenge", "Проверка браузера"), ("bots", "Роботы"), ("auto", "Автоматика и ловушки"),
                    ("threats", "Списки угроз"), ("log", "Журнал атак")]
 
 
@@ -1067,6 +1172,52 @@ class ProtectionSettings(Model):
     honeypot_minutes: int = F(1440, label="Блокировать попавших в ловушку (мин)", tab="auto", ge=1, le=525600)
     threat_feeds: List[ThreatFeed] = F(factory=list, label="Списки угроз", tab="threats", ui="hidden")
     threat_update_hours: int = F(6, label="Обновлять списки каждые (ч)", tab="threats", ge=1, le=168)
+    verified_bots: List[VerifiedBot] = F(factory=lambda: [VerifiedBot(**b) for b in VERIFIED_BOTS],
+                                         label="Проверяемые роботы", tab="bots", ui="hidden")
+    fake_bot_action: Literal["off", "detect", "challenge", "block"] = F(
+        "block", label="Поддельные роботы", tab="bots",
+        labels={"off": "Не проверять", "detect": "Только записать в журнал", "challenge": "Проверить браузер",
+                "block": "Блокировать"},
+        help="Запрос с User-Agent известного робота (Googlebot, Bingbot, GPTBot…) не с его официальных адресов",
+        doc="Сканеры и сборщики данных часто представляются Googlebot, чтобы их не ограничивали. Google, Bing, "
+            "Apple, DuckDuckGo, OpenAI и Perplexity публикуют диапазоны адресов своих роботов; панель скачивает "
+            "их по расписанию списков угроз, и nginx сверяет адрес с User-Agent. Проверка действует только для "
+            "роботов, чей список уже загружен.",
+        rec="Блокировать: настоящие роботы приходят только со своих адресов.")
+    verified_skip_challenge: bool = F(True, label="Проверенных роботов не проверять браузером", tab="bots",
+                                      help="Настоящие Googlebot, Bingbot и другие проходят без страницы проверки — "
+                                           "в режиме «Под атакой» сайт не выпадет из поиска")
+    rate_rules: List[RateRule] = F(factory=list, label="Правила ограничения частоты", ui="hidden")
+    modsec_enabled: bool = F(False, label="Глубокая проверка включена", tab="modsec",
+                             help="ModSecurity v3 с OWASP Core Rule Set: проверяет и тело запроса (формы, JSON, "
+                                  "загрузку файлов)",
+                             doc="Фильтр запросов панели видит только адрес и заголовки. ModSecurity с OWASP CRS "
+                                 "разбирает тело POST-запросов, JSON, XML и multipart, нормализует кодировки и "
+                                 "считает «оценку аномальности»: каждое сработавшее правило добавляет баллы, запрос "
+                                 "блокируется, когда сумма достигает порога. Нужны пакеты "
+                                 "libnginx-mod-http-modsecurity и modsecurity-crs (Debian, Ubuntu).",
+                             rec="Включить на сайтах с формами и API; начать с режима «только запись».")
+    modsec_mode: Literal["detect", "block"] = F(
+        "detect", label="Режим", tab="modsec", show={"modsec_enabled": [True]},
+        labels={"detect": "Только запись в журнал (DetectionOnly)", "block": "Блокировать (403)"})
+    modsec_paranoia: Literal[1, 2, 3, 4] = F(
+        1, label="Уровень паранойи CRS", tab="modsec", show={"modsec_enabled": [True]},
+        labels={1: "1 — базовый, почти без ложных срабатываний", 2: "2 — расширенный (банки, госсайты)",
+                3: "3 — строгий, нужна настройка исключений", 4: "4 — максимальный"},
+        rec="1 для большинства сайтов; 2 — после недели в журнале без ложных срабатываний.")
+    modsec_threshold: int = F(5, label="Порог блокировки (баллы аномальности)", tab="modsec", ge=1, le=1000,
+                              show={"modsec_enabled": [True]},
+                              help="Критическое правило — 5 баллов, ошибка — 4, предупреждение — 3",
+                              rec="5 (по умолчанию CRS). Больше — меньше блокировок и ложных срабатываний.")
+    modsec_body_limit_kb: int = F(10240, label="Проверять тело до (КБ)", tab="modsec", ge=16, le=1048576,
+                                  show={"modsec_enabled": [True]},
+                                  help="Больше — тело проверяется частично (без файлов загрузки)")
+    modsec_apps: List[Literal["wordpress", "drupal", "nextcloud", "dokuwiki", "cpanel", "xenforo"]] = F(
+        factory=list, label="Исключения для приложений", tab="modsec", show={"modsec_enabled": [True]},
+        labels=MODSEC_APPS, help="Готовые наборы исключений CRS для популярных движков")
+    modsec_disabled_ids: List[int] = F(factory=list, label="Отключённые правила CRS (номера)", tab="modsec",
+                                       show={"modsec_enabled": [True]}, ph="942100 941100",
+                                       help="Номера правил, ложно срабатывающих на всех сайтах")
     log_days: int = F(30, label="Хранить журнал атак (дней)", tab="log", ge=1, le=365)
     log_per_minute: int = F(2000, label="Записей журнала в минуту, не больше", tab="log", ge=100, le=100000,
                             help="Во время флуда счётчики считаются полностью, а подробные записи — до этого предела")
@@ -1098,6 +1249,13 @@ class ProtectionSettings(Model):
         rids = [r.id for r in self.custom_rules]
         if len(rids) != len(set(rids)):
             raise V.ValidationError("Свои правила: идентификаторы повторяются")
+        if len({r.id for r in self.rate_rules}) != len(self.rate_rules):
+            raise V.ValidationError("Правила ограничения частоты: идентификаторы повторяются")
+        if len({b.id for b in self.verified_bots}) != len(self.verified_bots):
+            raise V.ValidationError("Проверяемые роботы: идентификаторы повторяются")
+        if any(i < 1 or i > 9999999 for i in self.modsec_disabled_ids):
+            raise V.ValidationError("Отключённые правила CRS: номера правил от 1 до 9999999")
+        self.modsec_disabled_ids = sorted(set(self.modsec_disabled_ids))
         return self
 
     def mode(self, cat: str) -> str:
@@ -2113,6 +2271,7 @@ MODELS = {
     "alert_rule": AlertRule, "alert_channel": AlertChannel, "certificate": CertificateRequest,
     "location": Location, "backend": Backend, "dns_account": DnsAccount,
     "protection": ProtectionSettings, "custom_rule": CustomRule, "threat_feed": ThreatFeed,
+    "rate_rule": RateRule, "verified_bot": VerifiedBot,
 }
 TABS = {"site": SITE_TABS, "global": GLOBAL_TABS, "panel": PANEL_TABS, "protection": PROTECTION_TABS}
 

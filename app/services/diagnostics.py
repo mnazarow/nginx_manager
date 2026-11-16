@@ -960,6 +960,33 @@ class Diagnostics:
                          "В nginx нет модуля secure_link — проверка браузера и режим «Под атакой» не работают",
                          hint="Установите сборку nginx с модулем http_secure_link (пакеты nginx из Debian, Ubuntu, "
                               "RHEL и nginx.org его содержат)."))
+        if p.modsec_enabled:
+            from ..protection.nginx import modsec_ready
+            crs_dir, ver = self.app.nginx.crs()
+            if not modsec_ready(caps) or not crs_dir:
+                res.append(R("prot_modsec", g, "Глубокая проверка (ModSecurity)", WARN,
+                             "Включена, но " + ("в nginx нет модуля ModSecurity" if not modsec_ready(caps)
+                                                else "не найден OWASP CRS") + " — тело запросов не проверяется",
+                             hint="Debian/Ubuntu: apt install libnginx-mod-http-modsecurity modsecurity-crs, затем "
+                                  "примените конфигурацию."))
+            else:
+                res.append(R("prot_modsec", g, "Глубокая проверка (ModSecurity)", OK,
+                             f"OWASP CRS {'.'.join(ver) if len(ver) == 3 else ver}, режим "
+                             f"{'блокировки' if p.modsec_mode == 'block' else 'записи'}, паранойя {p.modsec_paranoia}"))
+        if p.fake_bot_action != "off" or p.verified_skip_challenge:
+            bots = [b for b in p.verified_bots if b.enabled]
+            st_all = prot.feed_status()
+            loaded = [b for b in bots if (st_all.get(f"bot:{b.id}") or {}).get("count")]
+            failed = [b.name for b in bots if (st_all.get(f"bot:{b.id}") or {}).get("error")]
+            if bots and not loaded:
+                res.append(R("prot_bots", g, "Проверка роботов", WARN if failed else INFO,
+                             "Адреса роботов ещё не загружены" + (f"; ошибки: {', '.join(failed[:4])}" if failed else ""),
+                             hint="Нужен доступ сервера к developers.google.com, bing.com, openai.com и т. п. "
+                                  "«Защита → Роботы» → «Обновить сейчас»."))
+            elif bots:
+                res.append(R("prot_bots", g, "Проверка роботов", WARN if failed else OK,
+                             f"Загружены адреса {len(loaded)} из {len(bots)}"
+                             + (f"; не обновлены: {', '.join(failed[:4])}" if failed else "")))
         on_global, on_sites = prot.active_attack()
         if on_global or on_sites:
             names = ["все сайты"] if on_global else [prot.site_name(x) for x in on_sites]

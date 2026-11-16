@@ -83,6 +83,7 @@ DOC_PAGES = {
     "certificate": "07-certificates.md", "global": "08-global-settings.md", "alert_rule": "11-alerts.md",
     "alert_channel": "11-alerts.md", "panel": "13-panel-settings.md", "dns_account": "07-certificates.md",
     "protection": "19-protection.md", "custom_rule": "19-protection.md", "threat_feed": "19-protection.md",
+    "rate_rule": "19-protection.md", "verified_bot": "19-protection.md",
 }
 # Элементы списков, у которых в справочнике свой раздел (остальные описаны таблицей внутри поля-списка)
 ITEM_KINDS = {"Location": "location", "Backend": "backend"}

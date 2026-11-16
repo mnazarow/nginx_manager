@@ -67,6 +67,14 @@ class NginxManager:
     def version_output(self) -> str:
         return run([self.binary, "-V"], timeout=10)[1]
 
+    def crs(self) -> Tuple[str, str]:
+        """Каталог правил OWASP CRS и версия (кэш на 5 минут)."""
+        now = time.time()
+        if not hasattr(self, "_crs") or now - self._crs[0] > 300:
+            from ..protection.nginx import find_crs
+            self._crs = (now, find_crs())
+        return self._crs[1]
+
     def caps(self, refresh: bool = False) -> NginxCaps:
         if self._caps and not refresh and time.time() - self._caps_ts < 300:
             return self._caps
@@ -76,6 +84,14 @@ class NginxManager:
         if m:
             caps.version = tuple(int(x) for x in m.groups())  # type: ignore[assignment]
         caps.modules = set(re.findall(r"--with-(\w+?)_module", out))
+        caps.modsecurity = "modsecurity" in out.lower()
+        for incdir in ("/etc/nginx/modules-enabled", "/etc/nginx/conf.modules.d", "/usr/share/nginx/modules"):
+            for f in Path(incdir).glob("*.conf") if Path(incdir).is_dir() else []:
+                try:
+                    if "ngx_http_modsecurity_module" in f.read_text():
+                        caps.modsecurity = True
+                except OSError:
+                    pass
         for incdir in ("/etc/nginx/modules-enabled", "/usr/share/nginx/modules"):
             if Path(incdir).is_dir() and any(Path(incdir).glob("*.conf")):
                 caps.module_includes.append(f"{incdir}/*.conf")
@@ -180,6 +196,8 @@ class NginxManager:
                      bans_file=str(settings.bans_file),
                      geo_file=str(settings.geo_file) if self.geo_db() else "",
                      threats_file=str(settings.threats_file), attack_file=str(settings.attack_file),
+                     bots_file=str(settings.bots_file), bots_ua_file=str(settings.bots_ua_file),
+                     crs_dir=self.crs()[0], crs_version=self.crs()[1],
                      challenge_secret=self.challenge_secret(), challenge_key=self.challenge_key(),
                      panel_host=settings.bind_host if settings.bind_host not in ("", "0.0.0.0", "::") else "127.0.0.1",
                      panel_scheme="https" if settings.tls_cert and settings.tls_key else "http")
@@ -220,7 +238,7 @@ class NginxManager:
 
     def prepare_geo(self, state: State) -> None:
         """Перед применением: в файле стран должны быть все страны из правил (лишние не мешают)."""
-        want = geoblock.referenced(s for _, s in state.sites)
+        want = geoblock.referenced(s for _, s in state.sites) | geoblock.referenced_rules(state.protection)
         db = self.geo_db()
         if not want or not db:
             return
@@ -247,7 +265,7 @@ class NginxManager:
             st = State.from_json(json.loads(last["state"]))
         except Exception:  # pragma: no cover
             return None
-        want = geoblock.referenced(s for _, s in st.sites)
+        want = geoblock.referenced(s for _, s in st.sites) | geoblock.referenced_rules(st.protection)
         if not force and not geoblock.needs_rebuild(str(settings.geo_file), db, want):
             return None
         text, stats = geoblock.build(db, want)

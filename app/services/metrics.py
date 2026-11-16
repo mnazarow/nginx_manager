@@ -176,6 +176,9 @@ def render(app) -> str:
         except Exception:  # noqa: BLE001
             pass
         o.metric("nm_threat_feed_entries", "gauge", "Адресов и подсетей в подключённом списке угроз", feeds)
+        o.metric("nm_bot_requests_total", "counter",
+                 "Запросы с User-Agent проверяемых роботов: ok — с официальных адресов, fake — поддельные",
+                 [({"bot": b, "result": r}, v) for (b, r), v in sorted(prot.bot_totals.items())])
 
     # ---- оповещения, журналы, система
     firing = sum(1 for s in app.alerts.status().values() if s.get("state") == "firing")

@@ -60,6 +60,15 @@ def referenced(sites: Iterable[Any]) -> Set[str]:
     return out
 
 
+def referenced_rules(prot: Any) -> Set[str]:
+    """Страны из своих правил раздела «Защита от атак» (поле «Страна»)."""
+    out: Set[str] = set()
+    for r in getattr(prot, "custom_rules", None) or []:
+        if r.enabled and r.field == "country":
+            out.update(c for c in r.value.split() if c in COUNTRY_SET)
+    return out
+
+
 def read_header(path: str) -> Dict[str, str]:
     """Параметры первой строки файла (db, mtime, countries, nets, built)."""
     try:

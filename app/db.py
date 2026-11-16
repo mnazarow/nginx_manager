@@ -340,6 +340,20 @@ SCHEMA: List[str] = [
     );
     CREATE INDEX IF NOT EXISTS attack_minute_ts ON attack_minute(ts);
     """,
+    # ---- v7: защита — счётчики проверки браузера и роботов, история режима «Под атакой» -------
+    """
+    CREATE TABLE IF NOT EXISTS prot_minute (
+        ts INTEGER NOT NULL, site TEXT NOT NULL, metric TEXT NOT NULL, key TEXT NOT NULL,
+        n INTEGER NOT NULL DEFAULT 0, ms INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (ts, site, metric, key)
+    );
+    CREATE INDEX IF NOT EXISTS prot_minute_ts ON prot_minute(ts);
+    CREATE TABLE IF NOT EXISTS attack_periods (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, site TEXT NOT NULL, start REAL NOT NULL, end REAL,
+        auto INTEGER NOT NULL DEFAULT 0, who TEXT NOT NULL DEFAULT '', reason TEXT NOT NULL DEFAULT ''
+    );
+    CREATE INDEX IF NOT EXISTS attack_periods_start ON attack_periods(start);
+    """,
 ]
 
 

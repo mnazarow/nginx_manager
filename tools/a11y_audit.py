@@ -71,6 +71,24 @@ async def theme_run(browser, a, axe, theme, out):
             await check(page, axe, f"{theme}: окно восстановления копии", out)
         finally:
             await page.keyboard.press("Escape")
+    # окна раздела «Защита от атак»: профиль адреса и карточка правила
+    for hash_, sel, ready, title in (
+            ("#/protection?tab=attackers&hours=720", "table.t tbody tr button:has-text('Профиль')", ".modal .kpi",
+             "профиль адреса"),
+            ("#/protection?tab=analytics&hours=720", ".card:has-text('Эффективность правил') table.t tbody tr a",
+             ".modal .facts", "карточка правила")):
+        await page.goto(f"{a.url}/{hash_}")
+        await page.wait_for_timeout(2500)
+        btn = page.locator(sel).first
+        if not await btn.count():
+            continue
+        await btn.click()
+        try:
+            await page.wait_for_selector(ready, timeout=15000)
+            await page.wait_for_timeout(800)
+            await check(page, axe, f"{theme}: окно «{title}»", out)
+        finally:
+            await page.keyboard.press("Escape")
     await ctx.close()
 
 

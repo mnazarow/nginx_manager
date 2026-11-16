@@ -109,13 +109,13 @@ async def challenge_verify(request: Request):
           and hmac.compare_digest(f.get("s", ""), _sign(secret, nonce, ts, ip, d)) and nonce not in _used
           and leading_zero_bits(hashlib.sha256((nonce + answer).encode()).digest()) >= d)
     if not ok:
-        nm.protection.challenge_stats["failed"] += 1
+        nm.protection.record_challenge(request.headers.get("x-nm-site", ""), "failed")
         return Response("Проверка не пройдена — обновите страницу.", status_code=403,
                         media_type="text/plain; charset=utf-8", headers={"Cache-Control": "no-store"})
     _used[nonce] = now
     while _used and next(iter(_used.values())) < now - NONCE_TTL:
         _used.popitem(last=False)
-    nm.protection.challenge_stats["solved"] += 1
+    nm.protection.record_challenge(request.headers.get("x-nm-site", ""), "solved", max(0.0, now - ts))
     expires = int(now + p.challenge_ttl_hours * 3600)
     token = pass_token(secret, expires, ip if p.challenge_bind_ip else "")
     secure = request.headers.get("x-forwarded-proto") == "https"

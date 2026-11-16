@@ -361,9 +361,37 @@ def waf_rules():
 
 
 def threat_presets():
-    out = ["| Список | Адрес |", "|---|---|"]
+    out = ["| Список | Адрес | Действие по умолчанию |", "|---|---|---|"]
+    acts = {"block": "блокировать", "challenge": "проверить браузер", "detect": "записать"}
     for f in M.THREAT_PRESETS:
-        out.append(f"| {f['name']} (`{f['id']}`) | <{f['url']}> |")
+        out.append(f"| {f['name']} (`{f['id']}`) | <{f['url']}> | {acts.get(f.get('action', 'block'))} |")
+    return "\n".join(out)
+
+
+def bot_presets():
+    out = ["| Робот | User-Agent (выражение) | Официальный список адресов |", "|---|---|---|"]
+    for b in M.VERIFIED_BOTS:
+        ua = b["ua"].replace("|", " \\| ")
+        out.append(f"| {b['name']} (`{b['id']}`) | `{ua}` | <{b['url']}> |")
+    return "\n".join(out)
+
+
+def crs_groups():
+    from app.protection.service import CRS_GROUPS
+    out = ["| Номера правил | Что ловят | Категория в аналитике |", "|---|---|---|"]
+    from app.protection.rules import CATEGORIES
+    for k, (cat, title) in sorted(CRS_GROUPS.items()):
+        ct = CATEGORIES.get(cat, {}).get("title", "Фиксация сессии" if cat == "session" else cat)
+        out.append(f"| {k}xxx | {title} | {ct} |")
+    return "\n".join(out)
+
+
+def attack_tools():
+    from app.protection.service import TOOLS
+    out = ["| Инструмент | Признак в User-Agent |", "|---|---|"]
+    for k, t, rx in TOOLS:
+        rx = rx.replace("|", " \\| ")
+        out.append(f"| {t} | `{rx}` |")
     return "\n".join(out)
 
 
@@ -382,6 +410,11 @@ BLOCKS = {
     "waf_categories": waf_categories,
     "waf_rules": waf_rules,
     "threat_presets": threat_presets,
+    "bot_presets": bot_presets,
+    "crs_groups": crs_groups,
+    "attack_tools": attack_tools,
+    "rate_rule": lambda: plain(M.RateRule, 3, "rate_rule"),
+    "verified_bot": lambda: plain(M.VerifiedBot, 3, "verified_bot"),
     "alert_rule": lambda: plain(M.AlertRule, 3, "alert_rule"),
     "alert_channel": lambda: plain(M.AlertChannel, 3, "alert_channel"),
     "errors": error_categories,

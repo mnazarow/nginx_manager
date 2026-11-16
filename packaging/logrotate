@@ -12,5 +12,8 @@
     create 0640 root adm
     postrotate
         [ -s /run/nginx.pid ] && kill -USR1 "$(cat /run/nginx.pid)" 2>/dev/null || true
+        # журнал аудита ModSecurity nginx по USR1 не переоткрывает — плавная перезагрузка (HUP) открывает новый файл
+        [ -e /var/log/nginx/nm-modsec-audit.log ] && [ -s /run/nginx.pid ] && \
+            kill -HUP "$(cat /run/nginx.pid)" 2>/dev/null || true
     endscript
 }

@@ -182,6 +182,16 @@ def build():
                4, y, w=10, unit="reqps", stack=True,
                desc="Заблокированные защитой запросы в секунду: waf — фильтр запросов, threat — списки угроз, "
                     "custom — свои правила, hotlink — хотлинкинг, honeypot — ловушки"),
+        series("Поддельные и настоящие роботы",
+               [target(f"sum by (bot, result) (rate(nm_bot_requests_total{{{SEL}}}{RI}))", "{{bot}}: {{result}}")],
+               0, y + 8, w=12, unit="reqps",
+               desc="Запросы с User-Agent поисковых роботов и ботов ИИ: ok — с официальных адресов, fake — поддельные"),
+        series("Глубокая проверка и ограничение частоты",
+               [target(f'sum by (action) (rate(nm_attacks_total{{{SITE},kind="modsec"}}{RI}))', "ModSecurity: {{action}}",
+                       "A"),
+                target(f'sum(rate(nm_attacks_total{{{SITE},kind="ratelimit"}}{RI}))', "ограничение частоты (429)", "B")],
+               12, y + 8, w=12, unit="reqps",
+               desc="Запросы, отклонённые или записанные ModSecurity (OWASP CRS), и отклонённые правилами частоты"),
         series("Проверка браузера", [
             target(f"sum by (result) (rate(nm_challenge_total{{{SEL}}}{RI}))", "{{result}}", "A"),
             target(f'sum(rate(nm_attacks_total{{{SITE},action="detected"}}{RI}))', "записано фильтром (обучение)",
@@ -189,7 +199,7 @@ def build():
             desc="served — показана страница проверки, solved — задача решена, failed — неверное решение, "
                  "passed — запросы с действующим пропуском"),
     ]
-    y += 8
+    y += 16
     p.append(row("Сервер и nginx", y))
     y += 1
     p += [

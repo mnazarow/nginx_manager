@@ -197,10 +197,11 @@ scrape_configs:
 | `nm_certificate_expiry_days` | gauge | `id`, `name`, `domain`, `used` | Дней до истечения сертификата |
 | `nm_bans_active` | gauge | `source` (auto, manual) | Активные блокировки IP ([17](17-bans.md)) |
 | `nm_bans_suspicious` | gauge | — | Подозрительные IP за последнее время |
-| `nm_attacks_total` | counter | `site_id`, `site`, `kind` (waf, challenge, threat, custom, hotlink, honeypot, sni, ratelimit), `action` (blocked, detected, challenged, banned) | Запросы, отражённые или записанные защитой от атак ([19](19-protection.md)); запросы самопроверки не считаются |
+| `nm_attacks_total` | counter | `site_id`, `site`, `kind` (waf, modsec, challenge, threat, custom, fakebot, hotlink, honeypot, sni, ratelimit), `action` (blocked, detected, challenged, banned) | Запросы, отражённые или записанные защитой от атак ([19](19-protection.md)); запросы самопроверки не считаются |
 | `nm_challenge_total` | counter | `result` (served, solved, failed, passed) | Проверка браузера: показана страница, задача решена, неверное решение, запросы с действующим пропуском |
 | `nm_under_attack` | gauge | `site_id`, `site` (`*` — для всех сайтов) | 1 — включён режим «Под атакой» |
 | `nm_threat_feed_entries` | gauge | `feed`, `name` | Адресов и подсетей в подключённом списке угроз |
+| `nm_bot_requests_total` | counter | `bot`, `result` (ok, fake) | Запросы с User-Agent проверяемых роботов: с официальных адресов и поддельные |
 | `nm_alerts_firing` | gauge | — | Сработавшие оповещения |
 | `nm_system_cpu_percent`, `nm_system_memory_percent`, `nm_system_disk_percent`, `nm_system_load1` | gauge | — | Ресурсы сервера |
 | `nm_log_lines_parsed_total`, `nm_log_parse_errors_total` | counter | — | Работа сборщика статистики |

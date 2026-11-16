@@ -10,13 +10,18 @@
 отвечает 403/444 или отправляет на проверку браузера. Порядок: доверенные → «пропустить» из своих правил →
 категории «запись» → категории «блокировка» → списки угроз → свои правила → отключённые правила сайта.
 В журнал доступа пишутся поля wf (сработавшее правило), wa (итоговое действие) и ch (проверка браузера).
+
+Дополнительно: проверка поисковых роботов по официальным диапазонам адресов (geo $nm_vbot и карта
+User-Agent → заявленный робот, оба файла обновляет панель), правила ограничения частоты (limit_req_zone на
+правило, ключ — IP, если запрос подходит под правило), ModSecurity v3 + OWASP CRS (файлы modsec/*.conf версии
+конфигурации; номер транзакции «сайт-доверенный-request_id» связывает журнал аудита с журналом доступа).
 """
 from __future__ import annotations
 
 import re
 from typing import Dict, List, Optional, Tuple
 
-from ..models import CustomRule, ProtectionSettings, Site
+from ..models import CustomRule, ProtectionSettings, RateRule, Site
 from . import rules as W
 
 CHALLENGE_PREFIX = "/.nm-challenge"
@@ -56,6 +61,38 @@ def challenge_ready(caps) -> bool:
     return "http_secure_link" in caps.modules
 
 
+# Каталоги OWASP CRS в пакетах дистрибутивов и при ручной установке
+CRS_DIRS = ["/usr/share/modsecurity-crs", "/usr/share/owasp-modsecurity-crs", "/usr/share/mod_modsecurity_crs",
+            "/usr/share/coreruleset", "/etc/nginx/modsec/coreruleset", "/usr/local/owasp-modsecurity-crs",
+            "/opt/coreruleset"]
+
+
+def find_crs() -> Tuple[str, str]:
+    """(каталог правил CRS, версия «335»/«4100») или ("", "")."""
+    from pathlib import Path
+    for d in CRS_DIRS:
+        rules = Path(d) / "rules"
+        init = rules / "REQUEST-901-INITIALIZATION.conf"
+        if init.is_file():
+            try:
+                m = re.search(r"ver\.(\d+)\.(\d+)\.(\d+)", init.read_text(errors="replace")[:20000])
+            except OSError:
+                continue
+            return str(rules), "".join(m.groups()) if m else "335"
+    return "", ""
+
+
+def modsec_ready(caps) -> bool:
+    return bool(getattr(caps, "modsecurity", False))
+
+
+# Внутренний код отказа защиты: error_page превращает его в 403 со страницей «Доступ запрещён»
+BLOCK_CODE = 418
+
+# Номера служебных правил Nginx Manager в ModSecurity (вне диапазонов CRS 900000–999999)
+MODSEC_ID_BASE = 4190000
+
+
 class ProtectionConf:
     def __init__(self, state, paths, caps) -> None:
         self.st = state
@@ -65,6 +102,14 @@ class ProtectionConf:
         self.sites: List[Tuple[int, Site]] = [(i, s) for i, s in state.sites if s.enabled]
         self.maps = W.maps(self.prot.waf_level, self.prot.waf_disabled_rules)
         self.warnings: List[str] = []
+        self.crs_dir, self.crs_ver = (getattr(paths, "crs_dir", ""), getattr(paths, "crs_version", ""))
+        if any(r.enabled and r.field == "country" for r in self.prot.custom_rules) and not self.p.geo_file:
+            self.warnings.append("Свои правила по стране не действуют: нет базы GeoIP (раздел «Настройки панели → "
+                                 "GeoIP»)")
+        if self.prot.modsec_enabled and not self.modsec_on():
+            self.warnings.append("Глубокая проверка (ModSecurity) не действует: " + (
+                "в nginx нет модуля ModSecurity (пакет libnginx-mod-http-modsecurity)" if not modsec_ready(caps)
+                else "не найден OWASP CRS (пакет modsecurity-crs)"))
 
     # ------------------------------------------------------------------ http
     def used_cats(self) -> set:
@@ -76,7 +121,28 @@ class ProtectionConf:
         return used
 
     def custom_rules(self, sid: Optional[int] = None) -> List[CustomRule]:
-        return [r for r in self.prot.custom_rules if r.enabled and (sid is None or not r.sites or sid in r.sites)]
+        return [r for r in self.prot.custom_rules if r.enabled and (sid is None or not r.sites or sid in r.sites)
+                and (r.field != "country" or self.p.geo_file)]
+
+    def country_rules(self) -> List[CustomRule]:
+        return [r for r in self.custom_rules() if r.field == "country"]
+
+    def rate_rules(self, sid: Optional[int] = None) -> List[RateRule]:
+        return [r for r in self.prot.rate_rules if r.enabled and (sid is None or not r.sites or sid in r.sites)]
+
+    def bots_on(self) -> bool:
+        p = self.prot
+        return bool(getattr(self.p, "bots_file", "")) and any(b.enabled for b in p.verified_bots) and \
+            (p.fake_bot_action != "off" or p.verified_skip_challenge)
+
+    def modsec_on(self) -> bool:
+        return self.prot.modsec_enabled and modsec_ready(self.caps) and bool(self.crs_dir)
+
+    def modsec_site(self, s: Site) -> str:
+        """Итоговый режим ModSecurity сайта: off / detect / block."""
+        if not self.modsec_on() or not s.protection.enabled or s.protection.modsec == "off":
+            return "off"
+        return "detect" if s.protection.modsec == "detect" else self.prot.modsec_mode
 
     def feeds_on(self) -> bool:
         return bool(self.p.threats_file) and any(f.enabled for f in self.prot.threat_feeds)
@@ -155,6 +221,44 @@ class ProtectionConf:
                 self.warnings.append("Проверка браузера недоступна: в nginx нет модуля secure_link "
                                      "(--with-http_secure_link_module)")
         a("")
+        a("# --- проверка роботов: заявленный в User-Agent робот и его официальные адреса (файлы обновляет панель)")
+        a("geo $nm_vbot {")
+        a('    default "";')
+        if self.bots_on():
+            a(f"    include {self.p.bots_file};")
+        a("}")
+        a("map $http_user_agent $nm_bot_claim {")
+        a('    default "";')
+        if self.bots_on():
+            a(f"    include {self.p.bots_ua_file};")
+        a("}")
+        a('map "$nm_bot_claim:$nm_vbot" $nm_fakebot {')
+        a("    default 0;")
+        a('    "~^([a-z0-9]+):(?!\\1$)" 1;')
+        a("}")
+        a('map "$nm_bot_claim:$nm_vbot" $nm_vbot_ok {')
+        a("    default 0;")
+        a('    "~^([a-z0-9]+):\\1$" 1;')
+        a("}")
+        a("")
+        a("# --- правила ограничения частоты: ключ — IP, если запрос подходит под правило")
+        a('map "$request_method:$uri" $nm_rlid {')
+        a('    default "";')
+        for r in self.rate_rules():
+            a(f"    {self.rate_key(r)} {q(r.id)};")
+        a("}")
+        for r in self.rate_rules():
+            a(f'map "$request_method:$uri" $nm_rrk_{r.id} {{')
+            a('    default "";')
+            a(f"    {self.rate_key(r)} $binary_remote_addr;")
+            a("}")
+            a(f"limit_req_zone $nm_rrk_{r.id} zone=nm_rr_{r.id}:10m rate={r.rate};")
+        if self.modsec_on():
+            a("")
+            a("# --- глубокая проверка: ModSecurity v3 + OWASP CRS (правила — modsec/main.conf этой версии)")
+            a(f"modsecurity_rules_file {self.p.include_root}/modsec/main.conf;")
+            a('modsecurity_transaction_id "$nm_site-$nm_pa-$request_id";')
+        a("")
         a("# --- свои правила")
         for r in self.custom_rules():
             self.custom_rule_map(out, r)
@@ -196,6 +300,13 @@ class ProtectionConf:
         a = out.append
         neg = r.op in ("not_contains", "not_regex", "not_in")
         hit, miss = ('""', '"1"') if neg else ('"1"', '""')
+        if r.field == "country":
+            a(f"map $nm_cc $nm_cr_{r.id} {{")
+            a(f"    default {miss};")
+            for cc in r.value.split():
+                a(f"    {cc} {hit};")
+            a("}")
+            return
         if r.field == "ip":
             a(f"geo $nm_cr_{r.id} {{")
             a(f"    default {miss};")
@@ -217,6 +328,16 @@ class ProtectionConf:
         a(f"    default {miss};")
         a(f"    {key} {hit};")
         a("}")
+
+    @staticmethod
+    def rate_key(r: RateRule) -> str:
+        meth = "(?:" + "|".join(r.methods) + ")" if r.methods else "[A-Z]+"
+        if r.path.startswith("~"):
+            rx = r.path[1:]
+            pathre = rx[1:] if rx.startswith("^") else ".*" + rx
+        else:
+            pathre = re.escape(r.path)
+        return W.nginx_quote(f"~^{meth}:{pathre}")
 
     # ------------------------------------------------------------------ server
     def server(self, c, sid: int, s: Site, https: bool) -> None:
@@ -255,14 +376,24 @@ class ProtectionConf:
                         c.d("set", "$nm_waf", q(f"custom/{r.id}"))
                         c.d("set", "$nm_wact", q(r.action))
 
+        fb = self.prot.fake_bot_action if self.bots_on() else "off"
+
+        def fakebot(level):
+            if fb == level:
+                with c.block("if ($nm_fakebot)"):
+                    c.d("set", "$nm_waf", '"fakebot/$nm_bot_claim"')
+                    c.d("set", "$nm_wact", q(level))
+
         if sp.threats and self.feeds_on():
             with c.block('if ($nm_threat_act = "detect")'):
                 c.d("set", "$nm_waf", '"threat/$nm_threat"')
                 c.d("set", "$nm_wact", '"detect"')
+        fakebot("detect")
         for want in ("detect", "block"):
             if want == "block":
                 custom(("log",))
                 custom(("challenge",))
+                fakebot("challenge")
             for (cat, target) in sorted(self.maps):
                 if modes.get(cat) != want:
                     continue
@@ -280,6 +411,7 @@ class ProtectionConf:
             with c.block('if ($nm_threat_act = "block")'):
                 c.d("set", "$nm_waf", '"threat/$nm_threat"')
                 c.d("set", "$nm_wact", '"block"')
+        fakebot("block")
         custom(("block", "drop"))
         if sp.waf_disabled_rules:
             pat = "^[a-z_]+/(?:" + "|".join(re.escape(x) for x in sp.waf_disabled_rules) + ")$"
@@ -288,7 +420,7 @@ class ProtectionConf:
         wx = f"$nm_wx_{sid}" if sp.waf_exclude_paths else ""
         c.d("set", "$nm_wchk", f'"$nm_pa{wx}$nm_wact"')
         with c.block('if ($nm_wchk = "block")'):
-            c.d("return", self.prot.block_status)
+            c.d("return", self.deny_code(s, self.prot.block_status))
         with c.block('if ($nm_wchk = "drop")'):
             c.d("return", 444)
         if https and sp.sni_check:
@@ -299,9 +431,12 @@ class ProtectionConf:
             if sp.threats and self.feeds_on():
                 with c.block('if ($nm_threat_act = "challenge")'):
                     c.d("set", "$nm_chs", '"c"')
-            if any(r.action == "challenge" for r in rules):
+            if any(r.action == "challenge" for r in rules) or fb == "challenge":
                 with c.block('if ($nm_wchk = "challenge")'):
                     c.d("set", "$nm_chs", '"c"')
+            if self.bots_on() and self.prot.verified_skip_challenge:
+                with c.block("if ($nm_vbot_ok)"):
+                    c.d("set", "$nm_chs", '""')
             c.d("set", "$nm_chk", f'"$nm_pa$nm_cx_{sid}$nm_chs$secure_link"')
             with c.block('if ($nm_chk ~ "^c0?$")'):
                 c.d("rewrite", "^", CHALLENGE_PREFIX, "last")
@@ -329,7 +464,9 @@ class ProtectionConf:
                     c.d("proxy_pass", panel + target)
                     c.d("proxy_set_header", "Host", "$host")
                     c.d("proxy_set_header", "X-Real-IP", "$remote_addr")
-                    c.d("proxy_set_header", "X-Forwarded-For", "$remote_addr")
+                    # без X-Forwarded-For: uvicorn подставил бы адрес посетителя вместо адреса nginx, и панель
+                    # отказала бы (страница проверки принимается только от nginx); адрес посетителя — в X-Real-IP
+                    c.d("proxy_set_header", "X-Forwarded-For", '""')
                     c.d("proxy_set_header", "X-Forwarded-Proto", "$scheme")
                     c.d("proxy_set_header", "X-NM-Site", "$nm_site")
                     c.d("proxy_set_header", "X-NM-Original", "$request_uri")
@@ -342,22 +479,129 @@ class ProtectionConf:
                     c.d("proxy_intercept_errors", "off")
                     c.d("auth_basic", "off")
                     c.d("allow", "all")
-        if self.prot.block_status == 403 and not (s.error_pages.enabled and 403 in s.error_pages.codes):
+        if self.block_page(s):
             c.line()
-            c.d("error_page", 403, "@nm_blocked")
+            c.d("error_page", BLOCK_CODE, "=403", "@nm_blocked")
+            # Страница отдаётся директивой return (а не файлом): статический файл на POST дал бы 405, а
+            # именованная location не перезапускает проверки уровня server, как внутреннее перенаправление на URI.
             with c.block("location @nm_blocked"):
-                c.d("root", f"{self.p.live_root}/pages")
-                c.d("rewrite", "^", "/blocked.html", "break")
-                c.d("ssi", "on")
-                c.d("default_type", "text/html")
+                c.d("default_type", '"text/html; charset=utf-8"')
                 c.d("allow", "all")
                 c.d("auth_basic", "off")
                 c.d("add_header", "Cache-Control", '"no-store"', "always")
+                c.d("return", 403, blocked_body())
+
+    def block_page(self, s: Site) -> bool:
+        """Страница «Доступ запрещён» в этом server: защита включена, ответ 403, своей страницы 403 у сайта нет."""
+        return s.protection.enabled and self.prot.block_status == 403 and \
+            not (s.error_pages.enabled and 403 in s.error_pages.codes)
+
+    def deny_code(self, s: Site, code: int) -> int:
+        """Код для return при отказе: 403 → внутренний 418, который error_page превращает в 403 со страницей.
+        Ответы 403 бэкенда и ModSecurity не перехватываются: внутреннее перенаправление ModSecurity
+        потеряло бы данные транзакции, и журнал аудита остался бы без записи."""
+        return BLOCK_CODE if code == 403 and self.block_page(s) else code
 
     def login_limit(self, c, sid: int, s: Site) -> None:
+        """limit_req защиты входа и правил ограничения частоты — в каждой location сайта (директивы limit_req
+        не наследуются, если в location есть свои)."""
         sp = s.protection
         if sp.enabled and sp.login_protection and sp.login_paths:
             c.d("limit_req", f"zone=nm_login_{sid}", f"burst={sp.login_burst}" if sp.login_burst else "", "nodelay")
+        if sp.enabled:
+            for r in self.rate_rules(sid):
+                c.d("limit_req", f"zone=nm_rr_{r.id}", f"burst={r.burst}" if r.burst else "", "nodelay")
+
+    def has_limits(self, sid: int, s: Site) -> bool:
+        sp = s.protection
+        return sp.enabled and ((sp.login_protection and bool(sp.login_paths)) or bool(self.rate_rules(sid)))
+
+    def modsec_server(self, c, sid: int, s: Site) -> None:
+        if not self.modsec_on():
+            return
+        c.d("modsecurity", "on" if self.modsec_site(s) != "off" else "off")
+
+    # ------------------------------------------------------------------ ModSecurity
+    def modsec_files(self) -> Dict[str, str]:
+        if not self.modsec_on():
+            return {}
+        p = self.prot
+        root = f"{self.p.include_root}/modsec"
+        v4 = self.crs_ver[:1] >= "4" and len(self.crs_ver) >= 3
+        main = [
+            "# Nginx Manager: ModSecurity v3 + OWASP CRS. Файл генерируется панелью (раздел «Защита от атак»).",
+            f"SecRuleEngine {'On' if p.modsec_mode == 'block' else 'DetectionOnly'}",
+            "SecRequestBodyAccess On",
+            f"SecRequestBodyLimit {p.modsec_body_limit_kb * 1024}",
+            f"SecRequestBodyNoFilesLimit {min(p.modsec_body_limit_kb * 1024, 1048576)}",
+            "SecRequestBodyLimitAction ProcessPartial",
+            'SecRule REQUEST_HEADERS:Content-Type "^(?:application(?:/soap\\+|/)|text/)xml" '
+            '"id:200000,phase:1,t:none,t:lowercase,pass,nolog,ctl:requestBodyProcessor=XML"',
+            'SecRule REQUEST_HEADERS:Content-Type "^application/json" '
+            '"id:200001,phase:1,t:none,t:lowercase,pass,nolog,ctl:requestBodyProcessor=JSON"',
+            'SecRule REQBODY_ERROR "!@eq 0" "id:200002,phase:2,t:none,log,deny,status:400,'
+            "msg:'Failed to parse request body.',logdata:'%{reqbody_error_msg}',severity:2\"",
+            "SecResponseBodyAccess Off",
+            "SecTmpDir /tmp/",
+            "SecDataDir /tmp/",
+            "SecArgumentSeparator &",
+            "SecCookieFormat 0",
+            "SecStatusEngine Off",
+            "SecAuditEngine RelevantOnly",
+            'SecAuditLogRelevantStatus "^$"',
+            "SecAuditLogParts ABHZ",
+            "SecAuditLogType Serial",
+            "SecAuditLogFormat JSON",
+            f"SecAuditLog {self.p.log_dir}/nm-modsec-audit.log",
+            f"Include {root}/crs-setup.conf",
+            f"Include {root}/before.conf",
+            f"Include {self.crs_dir}/*.conf",
+            f"Include {root}/after.conf",
+        ]
+        pl = "blocking_paranoia_level" if v4 else "paranoia_level"
+        setup = [
+            "# Настройки OWASP CRS (вместо crs-setup.conf дистрибутива)",
+            'SecDefaultAction "phase:1,log,auditlog,pass"',
+            'SecDefaultAction "phase:2,log,auditlog,pass"',
+            f'SecAction "id:900000,phase:1,nolog,pass,t:none,setvar:tx.{pl}={p.modsec_paranoia}"',
+            f'SecAction "id:900110,phase:1,nolog,pass,t:none,setvar:tx.inbound_anomaly_score_threshold='
+            f'{p.modsec_threshold},setvar:tx.outbound_anomaly_score_threshold=4"',
+        ]
+        if p.modsec_apps and not v4:
+            setup.append('SecAction "id:900130,phase:1,nolog,pass,t:none,'
+                         + ",".join(f"setvar:tx.crs_exclusions_{a}=1" for a in p.modsec_apps) + '"')
+        elif p.modsec_apps:
+            self.warnings.append("CRS 4: исключения для приложений подключаются плагинами CRS, а не настройкой панели")
+        setup.append(f'SecAction "id:900990,phase:1,nolog,pass,t:none,setvar:tx.crs_setup_version={self.crs_ver}"')
+        before = ["# Исключения по сайтам: номер транзакции «сайт-доверенный-request_id» (modsecurity_transaction_id)"]
+        rid = MODSEC_ID_BASE
+        before.append(f'SecRule UNIQUE_ID "@rx ^[^-]*-a-" "id:{rid},phase:1,pass,nolog,ctl:ruleEngine=Off"')
+        before.append(f'SecRule REQUEST_URI "@contains nm_selftest=" "id:{rid + 1},phase:1,pass,nolog,'
+                      'ctl:auditEngine=On"')
+        rid += 10
+        for sid, st in self.sites:
+            mode = self.modsec_site(st)
+            if mode == "off":
+                continue
+            sp = st.protection
+            if mode == "detect" and p.modsec_mode == "block":
+                before.append(f'SecRule UNIQUE_ID "@beginsWith {sid}-" "id:{rid},phase:1,pass,nolog,'
+                              'ctl:ruleEngine=DetectionOnly"')
+                rid += 1
+            if sp.modsec_disabled_ids:
+                ctl = ",".join(f"ctl:ruleRemoveById={i}" for i in sp.modsec_disabled_ids)
+                before.append(f'SecRule UNIQUE_ID "@beginsWith {sid}-" "id:{rid},phase:1,pass,nolog,{ctl}"')
+                rid += 1
+            for pth in sp.modsec_exclude_paths:
+                op = f'@rx {pth[1:]}' if pth.startswith("~") else f"@beginsWith {pth}"
+                before.append(f'SecRule UNIQUE_ID "@beginsWith {sid}-" "id:{rid},phase:1,pass,nolog,chain"')
+                before.append(f'    SecRule REQUEST_FILENAME "{op}" "ctl:ruleEngine=Off"')
+                rid += 1
+        after = ["# Правила CRS, отключённые на всех сайтах"]
+        if p.modsec_disabled_ids:
+            after.append("SecRuleRemoveById " + " ".join(str(i) for i in p.modsec_disabled_ids))
+        return {"modsec/main.conf": "\n".join(main) + "\n", "modsec/crs-setup.conf": "\n".join(setup) + "\n",
+                "modsec/before.conf": "\n".join(before) + "\n", "modsec/after.conf": "\n".join(after) + "\n"}
 
     def strip_headers(self, c, s: Site) -> None:
         if s.protection.enabled and s.protection.strip_headers:
@@ -381,8 +625,14 @@ p{color:#c3c2b7}dl{background:#222220}dt{color:#9a988f}}</style></head>
 <p>Система защиты сайта отклонила этот запрос: он похож на атаку или пришёл с адреса, доступ с которого
 ограничен.</p><p>Если вы считаете это ошибкой, сообщите администратору сайта номер запроса — по нему можно найти
 причину и разрешить доступ.</p>
-<dl><dt>Номер запроса</dt><dd><!--# echo var="request_id" default="—" --></dd>
-<dt>Ваш IP</dt><dd><!--# echo var="remote_addr" default="—" --></dd>
-<dt>Время (UTC)</dt><dd><!--# config timefmt="%Y-%m-%d %H:%M:%S" --><!--# echo var="date_gmt" default="—" --></dd>
+<dl><dt>Номер запроса</dt><dd>$request_id</dd>
+<dt>Ваш IP</dt><dd>$remote_addr</dd>
+<dt>Время</dt><dd>$time_iso8601</dd>
 </dl></main></body></html>
 """
+
+
+def blocked_body() -> str:
+    """Страница «Доступ запрещён» одной строкой в одинарных кавычках nginx; переменные подставляет nginx."""
+    body = " ".join(line.strip() for line in BLOCKED_PAGE.splitlines() if line.strip())
+    return "'" + body.replace("\\", "\\\\").replace("'", "\\'") + "'"

