@@ -25,6 +25,13 @@ PROFILES = {
            b'<html><head><title>Blog</title><meta name="generator" content="WordPress 6.4.2" />'
            b'<link rel="stylesheet" href="/wp-content/themes/twentytwentyfour/style.css"></head><body>'),
 }
+# служебные адреса приложений — для углублённого определения технологий
+PROBED = {
+    (9004, "/wp-json/"): (200, "", b'{"name":"Blog","namespaces":["oembed/1.0","wp/v2","wp-site-health/v1"]}'),
+    (9004, "/wp-login.php"): (200, "", b'<form id="loginform"><input type="submit" name="wp-submit"></form>'
+                                       b'<link rel="stylesheet" href="/wp-admin/css/login.min.css?ver=6.4.2">'),
+    (9003, "/jenkins/login"): (403, "X-Jenkins: 2.426.1\r\nX-Hudson: 1.395\r\n", b"<html>Authentication required</html>"),
+}
 
 
 async def handle(reader, writer, port):
@@ -63,8 +70,14 @@ async def handle(reader, writer, port):
             if path in ("/", "/index.html") and port in PROFILES:
                 extra, head = PROFILES[port]
                 body = head + body + b"</body></html>"
-            reason = {200: "OK", 404: "Not Found", 500: "Internal Server Error", 502: "Bad Gateway",
-                      503: "Service Unavailable"}[status]
+            if (port, path) in PROBED:
+                status, extra, body = PROBED[(port, path)]
+            elif path.startswith(("/wp-json", "/wp-login", "/jenkins", "/status.php", "/rest/applinks",
+                                  "/phpmyadmin", "/manager/html", "/actuator", "/owa/", "/zabbix", "/roundcube",
+                                  "/administrator", "/bitrix/admin", "/user/login", "/users/sign_in", "/login")):
+                status, body = 404, b"Not Found"
+            reason = {200: "OK", 403: "Forbidden", 404: "Not Found", 500: "Internal Server Error",
+                      502: "Bad Gateway", 503: "Service Unavailable"}[status]
             ctype = "application/json" if path.startswith("/api/") else "text/html; charset=utf-8"
             hdr = (f"HTTP/1.1 {status} {reason}\r\nContent-Type: {ctype}\r\nContent-Length: {len(body)}\r\n"
                    + (extra or f"X-Powered-By: demo/{port}\r\n")

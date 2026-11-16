@@ -42,6 +42,7 @@ SCROLL = {"protection-intel": ("#/protection?tab=threats", "Обмен данн�
           "protection-networks": ("#/protection?tab=analytics&hours=168", "Известные уязвимости", 3500),
           "geo-databases": ("#/bans?tab=countries", "Базы GeoIP", 3000)}
 SCENES = {"protection-ip", "protection-rule", "protection-ratelimit", "protection-vuln", "protection-ip-network",
+          "alerts-channels", "protection-vuln-installed",
           *SCROLL, "geo-site", "sites-bulk", "backup-s3", "backup-restore"}  # снимки с действиями: --only geo-site,sites-bulk или --extras
 
 
@@ -178,6 +179,34 @@ async def scenes(page, a, only):
         await page.screenshot(path=f"{a.out}/protection-vuln.png")
         await page.keyboard.press("Escape")
         print("protection-vuln: ok")
+    if not only or "protection-vuln-installed" in only:
+        # карточка уязвимости продукта, который стоит на сайтах: сверка версий
+        await page.goto(f"{a.url}/#/protection?tab=vulns")
+        await page.wait_for_timeout(2500)
+        await page.fill("input[placeholder^='CVE, продукт']", "CVE-2024-4577")
+        await page.wait_for_timeout(1500)
+        await page.locator("table.t tbody tr a", has_text="CVE-2024-4577").first.click()
+        await page.wait_for_selector(".modal .facts", timeout=15000)
+        await page.wait_for_timeout(1000)
+        await page.screenshot(path=f"{a.out}/protection-vuln-installed.png")
+        await page.keyboard.press("Escape")
+        print("protection-vuln-installed: ok")
+    if not only or "alerts-channels" in only:
+        # каналы уведомлений и форма канала Telegram с кнопками действий
+        await page.goto(f"{a.url}/#/alerts")
+        await page.wait_for_timeout(1500)
+        await page.locator(".tabs >> text=Каналы уведомлений").first.click()
+        await page.wait_for_timeout(1200)
+        await page.screenshot(path=f"{a.out}/alerts-channels.png")
+        await page.locator("table.t tbody tr", has_text="Telegram").first.locator("td").first.click()
+        await page.wait_for_selector(".modal", timeout=10000)
+        await page.wait_for_timeout(600)
+        await page.evaluate("""() => { const f = [...document.querySelectorAll('.modal label, .modal .field')]
+            .find(x => x.textContent.includes('Кнопки действий')); if (f) f.scrollIntoView({block: 'center'}); }""")
+        await page.wait_for_timeout(300)
+        await page.screenshot(path=f"{a.out}/alerts-telegram-actions.png")
+        await page.keyboard.press("Escape")
+        print("alerts-channels: ok")
     if not only or "protection-ratelimit" in only:
         await page.goto(f"{a.url}/#/protection?tab=rules")
         await page.wait_for_timeout(2000)

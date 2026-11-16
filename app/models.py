@@ -1199,6 +1199,9 @@ class ProtectionSettings(Model):
                                       help="Настоящие Googlebot, Bingbot и другие проходят без страницы проверки — "
                                            "в режиме «Под атакой» сайт не выпадет из поиска")
     rate_rules: List[RateRule] = F(factory=list, label="Правила ограничения частоты", ui="hidden")
+    announce_score: int = F(80, label="Сообщать об активных атакующих от оценки угрозы", tab="auto", ge=0, le=100,
+                            help="Событие «Активный атакующий» (раз в сутки на адрес, если адрес не заблокирован) — "
+                                 "в уведомления о событиях и Telegram с кнопками; 0 — не сообщать")
     abuseipdb_key: str = F("", label="Ключ API AbuseIPDB", tab="intel", ui="password",
                            help="Бесплатный ключ: abuseipdb.com → Account → API (1000 проверок и жалоб в сутки)",
                            doc="AbuseIPDB — общая база жалоб на вредоносные адреса: администраторы со всего мира "
@@ -1287,6 +1290,16 @@ class ProtectionSettings(Model):
                                     "Confluence, Jira, GitLab, Jenkins, Grafana, Nextcloud и других. Найденные продукты "
                                     "считаются «вашими»: новые эксплуатируемые уязвимости в них — событие и подсказка "
                                     "анализа, а фильтр «Ваши продукты» показывает их уязвимости.")
+    vulndb_tech_probe: bool = F(False, label="Углублённо: проверять типовые адреса приложений", tab="vulns",
+                                show={"vulndb_watch_auto": [True]},
+                                help="18 GET-запросов к бэкенду: /wp-json/, /status.php, /api/health, "
+                                     "/rest/applinks/1.0/manifest… — находит приложения не на главной странице и их "
+                                     "версии",
+                                doc="Запросы идут прямо к бэкенду сайта (не через nginx), без параметров и "
+                                    "авторизации, раз в сутки. Находят Jenkins в /jenkins/, Grafana, Nextcloud, "
+                                    "Confluence и Jira по служебным адресам и уточняют версии. Выключено по умолчанию: "
+                                    "в журналах бэкенда появятся такие запросы, а системы обнаружения атак на нём "
+                                    "могут принять их за сканирование.")
     vulndb_exclude: List[str] = F(factory=list, label="Исключённые уязвимости (CVE)", tab="vulns", ui="tags",
                                   show={"vulndb_enabled": [True]}, ph="CVE-2021-44228",
                                   help="Их пути не попадают в карту (ложные срабатывания)")
@@ -1711,6 +1724,12 @@ class GlobalSettings(Model):
                                   help="Увеличьте при ошибке «could not build map_hash»")
     map_hash_max_size: int = F(8192, label="map_hash_max_size", tab="http", adv=True, ge=1024, le=262144,
                                directive="map_hash_max_size")
+    variables_hash_max_size: int = F(4096, label="variables_hash_max_size", tab="http", adv=True, ge=1024,
+                                     le=65536, directive="variables_hash_max_size",
+                                     help="Увеличьте при предупреждении «could not build optimal variables_hash»",
+                                     doc="Переменных много у сборок с большим числом модулей (nginx-extras: Perl, "
+                                         "nchan, echo…) вместе с картами защиты панели; с 1024 по умолчанию nginx "
+                                         "предупреждает при каждой проверке конфигурации.")
     http2_global: bool = F(True, label="Разрешить HTTP/2", tab="http", help="Глобальный выключатель HTTP/2")
     proxy_protocol: bool = F(False, label="Принимать PROXY protocol на HTTP-портах", tab="http", adv=True,
                              directive="listen ... proxy_protocol",
@@ -2280,6 +2299,16 @@ class AlertChannel(Model):
     telegram_chat_id: str = F("", label="Chat ID", show={"type": ["telegram"]},
                               help="ID пользователя/группы. Узнать: @userinfobot или getUpdates")
     telegram_api: str = F("https://api.telegram.org", label="API URL", show={"type": ["telegram"]}, adv=True)
+    telegram_actions: bool = F(False, label="Кнопки действий под уведомлениями", show={"type": ["telegram"]},
+                               help="«Заблокировать», «Разблокировать», «Пожаловаться в AbuseIPDB» под уведомлениями об "
+                                    "автоблокировках и активных атакующих",
+                               doc="Нажатия панель получает через getUpdates (длинный опрос — входящие подключения к "
+                                   "серверу не нужны). Данные кнопок подписаны секретом панели, действие выполняется "
+                                   "только для нажатий в чате уведомлений и, если задан список, только разрешёнными "
+                                   "пользователями. Нельзя одновременно использовать бота с вебхуком в другой системе.")
+    telegram_admins: List[str] = F(factory=list, label="Кому можно нажимать (ID или @имя)", ui="tags",
+                                   show={"type": ["telegram"], "telegram_actions": [True]}, ph="123456789, @admin",
+                                   help="Пусто — любому участнику чата уведомлений")
     url: str = F("", label="URL", show={"type": ["webhook", "slack", "discord"]})
     webhook_headers: List[Header] = F(factory=list, label="Заголовки", ui="table", show={"type": ["webhook"]}, adv=True)
     smtp_host: str = F("", label="SMTP-сервер", show={"type": ["email"]})
@@ -2300,6 +2329,14 @@ class AlertChannel(Model):
             raise V.ValidationError("Укажите название")
         if self.type == "telegram" and (not self.telegram_token or not self.telegram_chat_id):
             raise V.ValidationError("Укажите токен бота и chat id")
+        adm = []
+        for x in self.telegram_admins:
+            x = x.strip()
+            if x and not re.match(r"^(?:-?\d{3,15}|@[A-Za-z0-9_]{4,32})$", x):
+                raise V.ValidationError(f"«{x}» — не ID пользователя Telegram (число) и не @имя")
+            if x and x not in adm:
+                adm.append(x)
+        self.telegram_admins = adm
         if self.type in ("webhook", "slack", "discord") and not self.url.startswith(("http://", "https://")):
             raise V.ValidationError("Укажите URL (http/https)")
         if self.type == "email" and (not self.smtp_host or not self.email_to or not self.email_from):

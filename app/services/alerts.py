@@ -36,9 +36,12 @@ def send(channel: AlertChannel, title: str, text: str, severity: str = "warning"
     icon = SEV_ICON.get(severity, "")
     if channel.type == "telegram":
         msg = f"{icon} <b>{_html(title)}</b>\n{_html(text)}\n<i>{_html(host)} · Nginx Manager</i>"
-        _post_json(f"{channel.telegram_api.rstrip('/')}/bot{channel.telegram_token}/sendMessage",
-                   {"chat_id": channel.telegram_chat_id, "text": msg, "parse_mode": "HTML",
-                    "disable_web_page_preview": True})
+        payload: Dict[str, Any] = {"chat_id": channel.telegram_chat_id, "text": msg, "parse_mode": "HTML",
+                                   "disable_web_page_preview": True}
+        markup = (extra or {}).get("telegram_markup") if channel.telegram_actions else None
+        if markup:
+            payload["reply_markup"] = markup
+        _post_json(f"{channel.telegram_api.rstrip('/')}/bot{channel.telegram_token}/sendMessage", payload)
     elif channel.type == "slack":
         _post_json(channel.url, {"text": f"{icon} *{title}*\n{text}\n_{host}_"})
     elif channel.type == "discord":

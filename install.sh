@@ -150,6 +150,10 @@ REPO
   esac
 }
 
+NGINX_PREEXIST=0
+{ command -v nginx || [ -x /usr/sbin/nginx ]; } >/dev/null 2>&1 && NGINX_PREEXIST=1
+nginx_has_secure_link() { nginx -V 2>&1 | grep -q -- '--with-http_secure_link_module'; }
+
 case "$PKG" in
   apt)
     retry 3 run apt-get update -q || fail "apt-get update не выполнен — проверьте сеть и источники пакетов"
@@ -161,6 +165,17 @@ case "$PKG" in
     retry 2 pkg_install $BASE_PKGS || fail "не удалось установить пакеты: $BASE_PKGS"
     if [ "$NGINX_REPO" = distro ]; then
       pkg_install libnginx-mod-stream || warn "пакет libnginx-mod-stream недоступен — TCP/UDP-потоки будут отключены"
+      # Ubuntu 22.04 (nginx-core) собран без secure_link — без него не работает проверка браузера. Если nginx ставим
+      # мы сами, берём сборку nginx-extras того же дистрибутива; установленный ранее nginx не меняем
+      if ! nginx_has_secure_link; then
+        if [ "$NGINX_PREEXIST" = 0 ] && apt-cache show nginx-extras >/dev/null 2>&1 && retry 2 pkg_install nginx-extras \
+          && nginx_has_secure_link; then
+          ok "nginx-extras: сборка дистрибутива с модулем secure_link (проверка браузера)"
+        else
+          warn "в nginx нет модуля secure_link — проверка браузера и режим «Под атакой» работать не будут"
+          info "  Установите сборку с модулем: apt install nginx-extras (или nginx с nginx.org: --nginx-repo stable)"
+        fi
+      fi
     fi
     pkg_install certbot || warn "certbot не установлен — выпуск Let's Encrypt будет недоступен"
     ;;

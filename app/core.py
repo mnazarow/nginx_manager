@@ -91,6 +91,8 @@ class App:
         self.bans = BanService(self)
         from .services.peers import PeerSync
         self.peers = PeerSync(self)
+        from .services.tgbot import TelegramActions
+        self.tgbot = TelegramActions(self)
         self.insights = Analyzer(self)
         from .services.events import EventNotifier
         self.events = EventNotifier(self)
@@ -166,7 +168,8 @@ class App:
                        loop.create_task(self.watchdog(), name="watchdog"),
                        loop.create_task(self.periodic(), name="periodic"),
                        loop.create_task(self.protection.run(), name="protection"),
-                       loop.create_task(self.peers.run(), name="peers")]
+                       loop.create_task(self.peers.run(), name="peers"),
+                       loop.create_task(self.tgbot.run(), name="tg-actions")]
         try:  # режим «Под атакой» мог закончиться, пока панель не работала
             await self.protection.sync_attack_file()
         except Exception:  # noqa: BLE001

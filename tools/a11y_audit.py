@@ -91,6 +91,23 @@ async def theme_run(browser, a, axe, theme, out):
             await check(page, axe, f"{theme}: окно «{title}»", out)
         finally:
             await page.keyboard.press("Escape")
+    # каналы уведомлений и окно канала Telegram (кнопки действий, список разрешённых пользователей)
+    await page.goto(f"{a.url}/#/alerts")
+    await page.wait_for_timeout(1500)
+    tab = page.locator(".tabs >> text=Каналы уведомлений").first
+    if await tab.count():
+        await tab.click()
+        await page.wait_for_timeout(1000)
+        await check(page, axe, f"{theme}: каналы уведомлений", out)
+        row = page.locator("table.t tbody tr", has_text="Telegram").first
+        if await row.count():
+            await row.locator("td").first.click()
+            try:
+                await page.wait_for_selector(".modal", timeout=10000)
+                await page.wait_for_timeout(500)
+                await check(page, axe, f"{theme}: окно канала Telegram", out)
+            finally:
+                await page.keyboard.press("Escape")
     await ctx.close()
 
 

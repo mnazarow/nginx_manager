@@ -126,19 +126,22 @@ class PeerSync:
     def push_protection(self, only: Optional[str] = None) -> Dict[str, Any]:
         """Отправить настройки защиты (с применением конфигурации на сервере-получателе)."""
         data = self.app.protection.settings().model_dump()
+        # домены сайтов: получатель сопоставит по ним правила, привязанные к сайтам (номера сайтов там другие)
+        sites = {str(sid): list(site.domains) for sid, site in self.app.nginx.load_state().sites}
         verify = self.app.panel().peers_verify_tls
         res: Dict[str, Any] = {}
         for peer in self.peers():
             if only and peer.id != only:
                 continue
             try:
-                code, d = call(peer, "POST", "/sync/protection", {"origin": self.origin(), "settings": data}, verify,
-                               timeout=90)
+                code, d = call(peer, "POST", "/sync/protection", {"origin": self.origin(), "settings": data,
+                                                                  "sites": sites}, verify, timeout=90)
                 if code != 200:
                     raise ValueError(_err(code, d))
                 ok = bool((d or {}).get("ok"))
                 self._set(peer.id, prot_ok=ok, prot_at=time.time(),
-                          prot_error="" if ok else str((d or {}).get("error") or "")[:300])
+                          prot_error="" if ok else str((d or {}).get("error") or "")[:300],
+                          prot_mapped=int((d or {}).get("mapped") or 0), prot_dropped=int((d or {}).get("dropped") or 0))
                 res[peer.id] = {"ok": ok, **(d or {})}
             except Exception as e:  # noqa: BLE001
                 msg = str(e)[:300]

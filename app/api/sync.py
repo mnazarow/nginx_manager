@@ -51,11 +51,39 @@ async def sync_protection(request: Request, body: Dict[str, Any] = Body(...), us
         raise HTTPException(400, "Это этот же сервер")
     old = app.protection.settings()
     data = dict(body.get("settings") or {})
-    # правила, привязанные к сайтам, — свои: номера сайтов на серверах разные; CrowdSec — свой агент и ключ
-    data["custom_rules"] = [r for r in data.get("custom_rules") or [] if not r.get("sites")] + \
-        [r.model_dump() for r in old.custom_rules if r.sites]
-    data["rate_rules"] = [r for r in data.get("rate_rules") or [] if not r.get("sites")] + \
-        [r.model_dump() for r in old.rate_rules if r.sites]
+    # правила, привязанные к сайтам: номера сайтов на серверах разные — сопоставляем по доменам; не нашли сайта —
+    # правило не переносится. Свои правила получателя, которых нет у отправителя, остаются. CrowdSec — свой.
+    sender = {str(k): [str(d).lower() for d in v] for k, v in (body.get("sites") or {}).items()
+              if isinstance(v, list)}
+    local: Dict[str, int] = {}
+    for sid, site in app.nginx.load_state().sites:
+        for d in site.domains:
+            local.setdefault(d.lower(), sid)
+    mapped = dropped = 0
+
+    def remap(rules, own):
+        nonlocal mapped, dropped
+        out = []
+        for r in rules or []:
+            if not isinstance(r, dict):
+                continue
+            ids = r.get("sites") or []
+            if ids:
+                new_ids = []
+                for i in ids:
+                    hit = next((local[d] for d in sender.get(str(i), []) if d in local), None)
+                    if hit is not None and hit not in new_ids:
+                        new_ids.append(hit)
+                if not new_ids:
+                    dropped += 1
+                    continue
+                mapped += 1
+                r = {**r, "sites": new_ids}
+            out.append(r)
+        ids_in = {r.get("id") for r in out}
+        return out + [r.model_dump() for r in own if r.sites and r.id not in ids_in]
+    data["custom_rules"] = remap(data.get("custom_rules"), old.custom_rules)
+    data["rate_rules"] = remap(data.get("rate_rules"), old.rate_rules)
     for k in ("crowdsec_url", "crowdsec_key", "crowdsec_action", "crowdsec_minutes"):
         data[k] = getattr(old, k)
     try:
@@ -78,7 +106,8 @@ async def sync_protection(request: Request, body: Dict[str, Any] = Body(...), us
                  + (" и применены" if res else ""))
     if p.vulndb_enabled:
         asyncio.get_running_loop().create_task(app.protection.vulndb.write_map())
-    return {"ok": True, "applied": bool(res), "version": (res or {}).get("version")}
+    return {"ok": True, "applied": bool(res), "version": (res or {}).get("version"), "mapped": mapped,
+            "dropped": dropped}
 
 
 @router.get("/peers")

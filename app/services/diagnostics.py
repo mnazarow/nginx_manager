@@ -958,8 +958,9 @@ class Diagnostics:
         elif need:
             res.append(R("prot_challenge", g, "Проверка браузера", WARN,
                          "В nginx нет модуля secure_link — проверка браузера и режим «Под атакой» не работают",
-                         hint="Установите сборку nginx с модулем http_secure_link (пакеты nginx из Debian, Ubuntu, "
-                              "RHEL и nginx.org его содержат)."))
+                         hint="Установите сборку nginx с модулем http_secure_link: в Ubuntu 22.04 и Debian — "
+                              "apt install nginx-extras (стандартный nginx-core собран без него); пакеты RHEL и "
+                              "nginx.org модуль содержат."))
         if p.modsec_enabled:
             from ..protection.nginx import modsec_ready
             crs_dir, ver = self.app.nginx.crs()

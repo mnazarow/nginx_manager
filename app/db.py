@@ -369,6 +369,10 @@ SCHEMA: List[str] = [
     );
     CREATE INDEX IF NOT EXISTS vulns_kev ON vulns(kev, kev_added);
     """,
+    # ---- v9: затронутые версии в машиночитаемом виде (сверка с версиями продуктов на сайтах) -------------
+    """
+    ALTER TABLE vulns ADD COLUMN ranges TEXT NOT NULL DEFAULT '';
+    """,
 ]
 
 

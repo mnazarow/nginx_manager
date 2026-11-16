@@ -736,6 +736,22 @@ class ProtectionAnalytics:
                             {"columns": ["Уязвимость", "Попыток", "Адресов"],
                              "rows": [[self.svc.rule_title("waf", r["rule"]), r["n"], r["ips"]] for r in rows[:8]]},
                             n, ""))
+        # уязвимые версии продуктов на сайтах
+        try:
+            for site in self.svc.vulndb.tech_vulns():
+                for t in site["tech"]:
+                    if t.get("affected_n"):
+                        cves = [a["cve"] for a in t["affected"][:5]]
+                        ransom = any(a["ransomware"] for a in t["affected"])
+                        out.append(("vuln_installed", "crit" if ransom or len(t["affected"]) >= 3 else "warn",
+                                    site["site"], f"{t['name']} {t['version']} — эксплуатируемых уязвимостей: "
+                                    f"{t['affected_n']} ({', '.join(cves)})",
+                                    {"columns": ["Уязвимость", "CVSS", "В каталоге KEV", "Вымогатели"],
+                                     "rows": [[f"{a['cve']}: {a['name']}"[:120], a["cvss"] or "—", a["kev_added"],
+                                               "да" if a["ransomware"] else "—"] for a in t["affected"][:10]]},
+                                    t["affected_n"], f"{site['site']}:{t['id']}"))
+        except Exception:  # noqa: BLE001 — анализ продолжается без этого сценария
+            log.exception("сверка версий продуктов")
         # новые эксплуатируемые уязвимости в продуктах из списка наблюдения
         new = self.db.kv_get("vulndb_new", {}) or {}
         if new.get("watch") and now - (new.get("ts") or 0) < 7 * 86400:
@@ -1765,6 +1781,34 @@ class ProtectionService:
                 "checks": [{"id": i, "title": t, "weight": w, "ok": bool(ok), "tab": tab, "hint": hint}
                            for i, t, w, ok, tab, hint in checks]}
 
+    def announce_attackers(self, now: Optional[float] = None) -> List[str]:
+        """Событие «активный атакующий» — адрес с высокой оценкой угрозы за последний час, не заблокированный,
+        не чаще раза в сутки на адрес (в Telegram — с кнопками «Заблокировать», «Пожаловаться»)."""
+        now = now or time.time()
+        p = self.settings()
+        if not p.announce_score:
+            return []
+        seen = self.db.kv_get("announced_attackers", {}) or {}
+        seen = {k: v for k, v in seen.items() if now - v < 86400}
+        out = []
+        for r in self.analytics.attackers(1, limit=50):
+            if r["score"] < p.announce_score or r["banned"] or r["ip"] in seen or r["n"] < 10:
+                continue
+            if any(_in_net(r["ip"], t) for t in p.bypass_ips):
+                continue
+            seen[r["ip"]] = now
+            net = f", сеть AS{r['asn']} {r['org']}" if r.get("asn") else ""
+            self.db.event("warning", "protection",
+                          f"Активный атакующий {r['ip']}{' (' + r['country'] + ')' if r.get('country') else ''}{net}: "
+                          f"{r['n']} атак за час, правил {r['rules']}, сайтов {r['sites']}, оценка угрозы {r['score']}, "
+                          f"инструмент — {r['tool_title']}",
+                          {"ip": r["ip"], "attacker": True, "score": r["score"], "n": r["n"]})
+            out.append(r["ip"])
+            if len(out) >= 5:
+                break
+        self.db.kv_set("announced_attackers", seen)
+        return out
+
     async def vuln_tick(self) -> None:
         """Обновить источники, срок которых подошёл; карту путей пересобрать при новых данных или раз в сутки
         (меняются пути, которые сайты обслуживают)."""
@@ -1787,7 +1831,7 @@ class ProtectionService:
 
     # ------------------------------------------------------------------ фоновые задачи
     async def run(self) -> None:
-        last_min = last_feeds = last_clean = last_intel = 0.0
+        last_min = last_feeds = last_clean = last_intel = last_hot = 0.0
         last_vuln = time.time() - 540  # первая проверка базы уязвимостей — через минуту после запуска
         while True:
             try:
@@ -1810,6 +1854,9 @@ class ProtectionService:
                 for fid, _act, on in self.intel.feeds():
                     if on:
                         await self.update_intel(fid)
+                if now - last_hot >= 300:
+                    last_hot = now
+                    await asyncio.to_thread(self.announce_attackers)
                 if now - last_intel >= 600 and ps.abuseipdb_report == "auto" and ps.abuseipdb_key:
                     last_intel = now
                     await asyncio.to_thread(self.intel.auto_report)

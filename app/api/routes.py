@@ -1518,8 +1518,10 @@ async def delete_rule(rid: int, request: Request, user=Depends(operator)):
 @router.get("/alerts/channels")
 async def alert_channels(request: Request, user=Depends(viewer)):
     """Каналы уведомлений (секреты не возвращаются)."""
-    return [{"id": r["id"], "data": _mask_channel(json.loads(r["data"]))}
-            for r in nm(request).db.query("SELECT * FROM alert_channels ORDER BY id")]
+    app = nm(request)
+    return [{"id": r["id"], "data": _mask_channel(json.loads(r["data"])),
+             "actions": app.tgbot.status.get(str(r["id"]))}
+            for r in app.db.query("SELECT * FROM alert_channels ORDER BY id")]
 
 
 def _channel_from(app, body: Dict[str, Any], cid: Optional[int]) -> AlertChannel:

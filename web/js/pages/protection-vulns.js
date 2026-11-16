@@ -171,6 +171,20 @@ export async function vulnsTab(view, { cfg, sites }) {
 }
 
 // ================================================================ карточка уязвимости
+// пути эксплойта: в карте фильтра и отсеянные (типовые, общие для многих уязвимостей, законные на ваших сайтах)
+function pathLists(v, paths) {
+  const li = ([p, k]) => h('li', {}, h('code', { style: { wordBreak: 'break-all' } }, p), h('span', { class: 'muted' }, k === 'a' ? ' — любой запрос' : ' — с признаком атаки в параметрах'));
+  const ul = (items) => h('ul', { class: 'small', style: { margin: '4px 0 0', paddingLeft: '18px' } }, items.slice(0, 12).map(li));
+  if (v.excluded) return [h('div', { class: 'small muted' }, 'Уязвимость исключена — пути не проверяются.'), ul(paths)];
+  const inMap = v.in_map || {};
+  const on = paths.filter(([p]) => p in inMap).map(([p]) => [p, inMap[p]]);
+  const off = paths.filter(([p]) => !(p in inMap));
+  return [
+    on.length ? [h('div', { class: 'small muted' }, 'Пути эксплойта в фильтре запросов:'), ul(on)] : null,
+    off.length ? h('div', { class: on.length ? 'small muted mt' : 'small muted' }, on.length ? 'Не в карте (типовые, общие для многих уязвимостей или законные на ваших сайтах): ' : 'Пути эксплойта не попали в карту — типовые, общие для многих уязвимостей или законные на ваших сайтах: ',
+      off.slice(0, 12).map(([p], i) => [i ? ', ' : '', h('code', {}, p)])) : null];
+}
+
 export async function openVuln(cve, { sites = [] } = {}) {
   const body = h('div', {}, loading());
   const m = modal({ title: cve, size: 'xl', body });
@@ -185,7 +199,8 @@ export async function openVuln(cve, { sites = [] } = {}) {
     ['EPSS', v.epss ? `${epssText(v)}${v.epss_pct ? ` (выше, чем у ${fmtNum(v.epss_pct * 100, 0)}% уязвимостей)` : ''}` : '—'],
     ['Каталог CISA KEV', v.kev ? `добавлена ${v.kev_added}${v.kev_due ? `, срок устранения для госорганов США — ${v.kev_due}` : ''}` : 'нет'],
     v.ransomware ? ['Вымогатели', h('b', { class: 'bad-text' }, 'используется в атаках вымогателей')] : null,
-    v.on_sites && v.on_sites.length ? ['На ваших сайтах', h('b', { class: 'bad-text' }, v.on_sites.map(x => `${x.name}: ${x.tech}${x.version ? ' ' + x.version : ''}`).join('; '))] : null,
+    v.on_sites && v.on_sites.length ? ['На ваших сайтах', h('div', {}, v.on_sites.map(x => h('div', {}, `${x.name}: ${x.tech}${x.version ? ' ' + x.version : ''} — `,
+      x.affected === true ? h('b', { class: 'bad-text' }, 'версия уязвима') : x.affected === false ? h('span', {}, 'версия не затронута') : h('span', { class: 'muted' }, x.version ? 'не удалось сравнить версии' : 'версия неизвестна'))))] : null,
     v.cwe ? ['Тип (CWE)', v.cwe] : null,
     v.exploits && v.exploits.length ? ['Публичные эксплойты', h('span', {}, v.exploits.slice(0, 6).map((id, i) => [i ? ', ' : '', h('a', { href: `https://www.exploit-db.com/exploits/${id}`, target: '_blank', rel: 'noopener noreferrer' }, `EDB-${id}`)]))] : null,
     v.tags ? ['Метки шаблона', h('span', { class: 'small' }, v.tags.split(',').join(', '))] : null,
@@ -212,8 +227,7 @@ export async function openVuln(cve, { sites = [] } = {}) {
     v.kev_action ? h('div', { class: 'alert info mt' }, h('b', {}, 'Что делать (CISA): '), v.kev_action) : null,
     h('div', { class: 'grid g2 mt' },
       card('Защита', h('div', {},
-        paths.length ? h('div', {}, h('div', { class: 'small muted' }, v.excluded ? 'Уязвимость исключена — пути не проверяются.' : v.active ? 'Пути эксплойта в фильтре запросов:' : 'Пути эксплойта (в карту не попали — типовые, общие или законные на ваших сайтах):'),
-          h('ul', { class: 'small', style: { margin: '4px 0 0', paddingLeft: '18px' } }, paths.slice(0, 12).map(([p, k]) => h('li', {}, h('code', { style: { wordBreak: 'break-all' } }, p), h('span', { class: 'muted' }, k === 'a' ? ' — любой запрос' : ' — с признаком атаки в параметрах'))))) : h('div', { class: 'small muted' }, 'Шаблона с HTTP-запросом нет — путь эксплойта неизвестен.'),
+        paths.length ? h('div', {}, ...pathLists(v, paths)) : h('div', { class: 'small muted' }, 'Шаблона с HTTP-запросом нет — путь эксплойта неизвестен.'),
         v.rules.length ? h('div', { class: 'mt small' }, 'Встроенные правила фильтра: ', v.rules.map((r, i) => [i ? ', ' : '', h('code', {}, r.id), ` ${r.title}`])) : null,
         h('div', { class: 'small muted mt' }, 'Защита на nginx не заменяет обновление уязвимого продукта: она отсекает известные эксплойты и показывает, что уязвимость ищут.'))),
       card('Попытки на ваших сайтах', hits.length ? table([

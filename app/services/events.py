@@ -107,6 +107,17 @@ class EventNotifier:
                           f"{p.event_repeat_minutes} мин." if repeats else "")
         extra = {"event": {"level": level, "source": source, "message": message, "details": details,
                            "repeats": repeats}}
+        try:  # кнопки действий для Telegram: адрес из подробностей события
+            from . import tgbot
+            ip, acts = tgbot.actions_for(source, message, details)
+            if ip:
+                if "r" in acts and not (self.app.protection.settings().abuseipdb_key and
+                                        self.app.protection.settings().abuseipdb_report != "off"):
+                    acts = [a for a in acts if a != "r"]
+                extra["telegram_markup"] = tgbot.keyboard(tgbot.secret(self.app.db), ip, acts,
+                                                          self.app.tgbot.profile_url(ip))
+        except Exception:  # noqa: BLE001 — без кнопок уведомление всё равно уходит
+            log.exception("кнопки Telegram")
         results = []
         for cid, ch in self.app.alerts.channels(force_channels if force_channels is not None else p.event_channels):
             try:

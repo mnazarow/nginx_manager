@@ -312,6 +312,19 @@ auto — по числу ядер CPU.
 **Пример:** `8192`
 
 
+<a id="f-global-variables_hash_max_size"></a>
+
+#### variables_hash_max_size — `variables_hash_max_size`
+
+| Тип | По умолчанию | Диапазон / ед. | Директива nginx | Расширенный |
+|---|---|---|---|---|
+| целое число | `4096` | 1024…65536 | `variables_hash_max_size` | да |
+
+Увеличьте при предупреждении «could not build optimal variables_hash».
+
+Переменных много у сборок с большим числом модулей (nginx-extras: Perl, nchan, echo…) вместе с картами защиты панели; с 1024 по умолчанию nginx предупреждает при каждой проверке конфигурации.
+
+
 <a id="f-global-http2_global"></a>
 
 #### Разрешить HTTP/2 — `http2_global`

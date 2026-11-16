@@ -191,6 +191,73 @@ def _cvss(metrics: List[Dict[str, Any]]) -> Tuple[float, str]:
     return 0.0, ""
 
 
+def _ranges(items: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """Затронутые версии в виде диапазонов: [{product, v, lt, lte}] (v — нижняя граница или точная версия)."""
+    out: List[Dict[str, str]] = []
+    for a in (items or [])[:6]:
+        name = " ".join(x for x in (a.get("vendor"), a.get("product")) if x and x != "n/a")
+        for v in (a.get("versions") or [])[:30]:
+            if v.get("status") != "affected":
+                continue
+            r = {"product": name[:80], "v": str(v.get("version") or "")[:40]}
+            if v.get("lessThan"):
+                r["lt"] = str(v["lessThan"])[:40]
+            if v.get("lessThanOrEqual"):
+                r["lte"] = str(v["lessThanOrEqual"])[:40]
+            if r["v"] or r.get("lt") or r.get("lte"):
+                out.append(r)
+    return out[:60]
+
+
+def _vnum(v: str) -> List[int]:
+    return [int(x) for x in re.findall(r"\d+", v)[:6]]
+
+
+def _vcmp(a: List[int], b: List[int]) -> int:
+    n = max(len(a), len(b))
+    a, b = a + [0] * (n - len(a)), b + [0] * (n - len(b))
+    return (a > b) - (a < b)
+
+
+def version_affected(version: str, ranges: List[Dict[str, str]], product_words: Iterable[str] = ()
+                     ) -> Optional[bool]:
+    """Затронута ли версия: True / False / None (не с чем сравнить: нет версии или диапазонов)."""
+    ver = _vnum(version or "")
+    if not ver or not ranges:
+        return None
+    words = [w.strip().lower() for w in product_words if w.strip()]
+    own = [r for r in ranges if any(w in f" {r.get('product', '')} ".lower().replace("_", " ") for w in words)]
+    if words and not own:
+        return None  # диапазоны только других продуктов записи (WP Squared в уязвимости cPanel — не WordPress)
+    own = own or ranges
+    usable = False
+    for r in own:
+        base = (r.get("v") or "").strip()
+        wild = "*" in base or base.lower() in ("", "0", "n/a", "unspecified", "all")
+        bnum = _vnum(base.split("*")[0]) if base else []
+        prefix = bnum if "*" in base else []
+        lt, lte = r.get("lt"), r.get("lte")
+        if not lt and not lte:
+            if not bnum or wild and not prefix:
+                continue
+            usable = True
+            if (prefix and ver[:len(prefix)] == prefix) or (not prefix and _vcmp(ver, bnum) == 0):
+                return True
+            continue
+        hi = _vnum(lt or lte or "")
+        if not hi:
+            continue
+        usable = True
+        if prefix and ver[:len(prefix)] != prefix:
+            continue
+        if bnum and not prefix and base.lower() not in ("0",) and _vcmp(ver, bnum) < 0:
+            continue
+        c = _vcmp(ver, hi)
+        if (lt and c < 0) or (lte and c <= 0):
+            return True
+    return False if usable else None
+
+
 def _affected(items: List[Dict[str, Any]]) -> str:
     out = []
     for a in (items or [])[:3]:
@@ -233,8 +300,11 @@ def parse_cve_record(data: bytes) -> Dict[str, Any]:
                 "") or ""
     affected = _affected(cna.get("affected") or []) or next(
         (_affected(a.get("affected") or []) for a in adp if a.get("affected")), "")
+    ranges = _ranges(cna.get("affected") or []) or next(
+        (_ranges(a.get("affected") or []) for a in adp if a.get("affected")), [])
     return {"cvss": cvss, "vector": vector, "cwe": ",".join(cwes[:4]), "description": desc.strip()[:2000],
-            "published": str((d.get("cveMetadata") or {}).get("datePublished") or "")[:10], "affected": affected}
+            "published": str((d.get("cveMetadata") or {}).get("datePublished") or "")[:10], "affected": affected,
+            "ranges": json.dumps(ranges, ensure_ascii=False)}
 
 
 def parse_exploitdb(data: bytes) -> Dict[str, List[str]]:
@@ -493,7 +563,7 @@ class VulnDB:
 
     def _enrich(self, now: float) -> Tuple[int, int]:
         """Загрузить записи CVE (cvelistV5) для эксплуатируемых уязвимостей: новых и устаревших (старше 30 дней)."""
-        rows = self.db.query("SELECT cve FROM vulns WHERE kev=1 AND (enriched IS NULL OR enriched<?) "
+        rows = self.db.query("SELECT cve FROM vulns WHERE kev=1 AND (enriched IS NULL OR enriched<? OR ranges='') "
                              "ORDER BY enriched IS NOT NULL, kev_added DESC LIMIT ?", (now - ENRICH_TTL, MAX_ENRICH))
 
         def one(cve: str):
@@ -510,7 +580,7 @@ class VulnDB:
             "WHEN :cvss>=4 THEN 'medium' WHEN :cvss>0 THEN 'low' ELSE '' END, cvss_vector=:vector, "
             "cwe=CASE WHEN :cwe!='' THEN :cwe ELSE cwe END, "
             "description=CASE WHEN length(description)<40 AND :description!='' THEN :description ELSE description END, "
-            "published=:published, affected=:affected, enriched=:now WHERE cve=:cve", ok)
+            "published=:published, affected=:affected, ranges=:ranges, enriched=:now WHERE cve=:cve", ok)
         return len(ok), len(got) - len(ok)
 
     def _merge(self, kev: Dict[str, Dict[str, Any]], nuc: Dict[str, Dict[str, Any]], now: float) -> None:
@@ -555,7 +625,7 @@ class VulnDB:
                 live.add(str(sid))
                 continue
             live.add(str(sid))
-            res[str(sid)] = {**scan_site(site), "name": site.name}
+            res[str(sid)] = {**scan_site(site, self.svc.settings().vulndb_tech_probe), "name": site.name}
         res = {k: v for k, v in res.items() if k in live}
         self.db.kv_set("site_tech", res)
         return res
@@ -596,10 +666,30 @@ class VulnDB:
                                       [time.strftime("%Y-%m-%d", time.gmtime(time.time() - 90 * 86400))] + args) or {}
                     cache[t["id"]] = {"kev": row.get("kev") or 0, "total": row.get("n") or 0,
                                       "seen": row.get("seen") or 0, "recent": row.get("recent") or 0}
-                items.append({**t, **cache[t["id"]]})
+                aff = self.installed_affected(t) if t.get("version") else []
+                items.append({**t, **cache[t["id"]], "affected": aff[:20], "affected_n": len(aff)})
             out.append({"site": sid, "name": r.get("name", sid), "ts": r.get("ts"), "error": r.get("error", ""),
                         "skipped": r.get("skipped", ""), "target": r.get("target", ""), "tech": items})
         return out
+
+    def installed_affected(self, t: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Эксплуатируемые уязвимости, которым подвержена найденная версия продукта."""
+        from .fingerprint import TECH_BY_ID
+        tech = TECH_BY_ID.get(t["id"])
+        if not tech or tech.cat == "js" or not t.get("version"):
+            return []
+        cond, args = self._kw_sql(list(tech.keywords))
+        out = []
+        for r in self.db.query(f"SELECT cve, name, cvss, ransomware, kev_added, ranges FROM vulns "
+                               f"WHERE kev=1 AND ranges NOT IN ('', '[]') AND {cond}", args):
+            try:
+                rng = json.loads(r["ranges"])
+            except ValueError:
+                continue
+            if version_affected(t["version"], rng, tech.keywords):
+                out.append({"cve": r["cve"], "name": r["name"], "cvss": r["cvss"], "ransomware": r["ransomware"],
+                            "kev_added": r["kev_added"]})
+        return sorted(out, key=lambda x: (-(x["cvss"] or 0), x["cve"]))
 
     def _announce_new(self, new: List[str], kev: Dict[str, Dict[str, Any]]) -> None:
         watch = self.watch_keywords()
@@ -940,12 +1030,25 @@ class VulnDB:
                              f"ORDER BY {order} LIMIT ? OFFSET ?", args + [min(limit, 500), offset])
         return {"total": total, "rows": rows}
 
+    @staticmethod
+    def map_paths(cve: str) -> Dict[str, str]:
+        """Пути уязвимости, которые сейчас в карте nginx (остальные отсеяны как типовые, общие или законные)."""
+        try:
+            text = Path(settings.vuln_file).read_text(encoding="utf-8")
+        except OSError:
+            return {}
+        out = {}
+        for m in re.finditer(r'^"((?:[^"\\]|\\.)*)" "' + re.escape(cve) + r':([ap])";$', text, re.M):
+            out[m.group(1).replace('\\"', '"').replace("\\\\", "\\")] = m.group(2)
+        return out
+
     def get(self, cve: str) -> Optional[Dict[str, Any]]:
         r = self.db.one("SELECT * FROM vulns WHERE cve=?", (cve.upper(),))
         if not r:
             return None
         r = dict(r)
         r["paths"] = json.loads(r["paths"]) if r.get("paths") else {}
+        r["in_map"] = self.map_paths(r["cve"]) if r["paths"] else {}
         r["covered"] = [x for x in (r.get("covered") or "").split(",") if x]
         r["rules"] = [{"id": x, "title": W.RULE_BY_ID[x].title, "cat": W.RULE_BY_ID[x].cat}
                       for x in r["covered"] if x in W.RULE_BY_ID]
@@ -953,7 +1056,13 @@ class VulnDB:
         r["exploits"] = [x for x in (r.get("exploits") or "").split(",") if x]
         from .fingerprint import TECH_BY_ID
         name = f" {r['vendor']} {r['product']} ".lower().replace("_", " ")
-        r["on_sites"] = [{"site": sid, "name": t.get("name", sid), "tech": x["name"], "version": x.get("version", "")}
+        try:
+            rng = json.loads(r.get("ranges") or "[]")
+        except ValueError:
+            rng = []
+        r["ranges"] = rng
+        r["on_sites"] = [{"site": sid, "name": t.get("name", sid), "tech": x["name"], "version": x.get("version", ""),
+                          "affected": version_affected(x.get("version", ""), rng, TECH_BY_ID[x["id"]].keywords)}
                          for sid, t in self.tech().items() for x in t.get("tech") or []
                          if TECH_BY_ID.get(x["id"]) and TECH_BY_ID[x["id"]].cat != "js"
                          and any(k in name for k in TECH_BY_ID[x["id"]].keywords)]

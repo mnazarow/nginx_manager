@@ -112,9 +112,10 @@ export async function techCard(onFilter) {
       { title: 'Сайт', render: (r) => h('span', {}, h('b', {}, r.name), r.ts ? h('div', { class: 'small muted' }, fmtAgo(r.ts)) : null) },
       { title: 'Технологии', render: (r) => r.error ? h('span', { class: 'bad-text small' }, 'нет ответа: ' + r.error)
         : r.skipped ? h('span', { class: 'muted small' }, r.skipped)
-          : r.tech.length ? h('div', { class: 'row', style: { gap: '4px', flexWrap: 'wrap' } }, r.tech.map(t => h('span', { class: 'badge' + (t.kev ? ' warn' : ''), title: `${t.evidence}${t.kev ? ` · эксплуатируемых уязвимостей: ${t.kev}` : ''}` }, t.name, t.version ? ' ' + t.version : '', t.kev ? ` · ${t.kev} KEV` : '')))
+          : r.tech.length ? h('div', { class: 'row', style: { gap: '4px', flexWrap: 'wrap' } }, r.tech.map(t => h('span', { class: 'badge' + (t.affected_n ? ' bad' : t.kev ? ' warn' : ''), title: `${t.evidence}${t.kev ? ` · эксплуатируемых уязвимостей продукта: ${t.kev}` : ''}${t.affected_n ? ` · затрагивают версию ${t.version}: ${t.affected.map(a => a.cve).join(', ')}` : ''}` }, t.name, t.version ? ' ' + t.version : '', t.affected_n ? ` · уязвима (${t.affected_n})` : t.kev ? ` · ${t.kev} KEV` : '')))
             : h('span', { class: 'muted small' }, 'не определены') },
       { title: 'Эксплуатируемых уязвимостей', num: true, render: (r) => { const n = r.tech.reduce((a, t) => a + (t.kev || 0), 0); return n ? h('b', {}, fmtInt(n)) : '0'; } },
+      { title: 'Затрагивают ваши версии', num: true, render: (r) => { const n = r.tech.reduce((a, t) => a + (t.affected_n || 0), 0); return n ? h('b', { class: 'bad-text' }, fmtInt(n)) : '0'; } },
       { title: 'Новых за 90 дней', num: true, render: (r) => { const n = r.tech.reduce((a, t) => a + (t.recent || 0), 0); return n ? h('b', { class: 'bad-text' }, fmtInt(n)) : '0'; } },
     ], rows) : empty('Технологии ещё не определены', 'Панель определяет их раз в сутки; можно сейчас — кнопкой «Определить»', null, 'search'));
   };
@@ -150,7 +151,10 @@ export async function peersCard() {
       { title: 'Блокировки', render: (p) => !p.bans ? h('span', { class: 'muted small' }, 'не отправляются') : p.bans_error ? h('span', { class: 'bad-text small' }, p.bans_error)
         : p.bans_at ? h('span', { class: 'small' }, `${fmtInt(p.bans_sent || 0)} отправлено ${fmtAgo(p.bans_at)}`) : h('span', { class: 'muted small' }, 'ещё не отправлялись') },
       { title: 'Настройки защиты', render: (p) => !p.protection ? h('span', { class: 'muted small' }, 'вручную') : p.prot_error ? h('span', { class: 'bad-text small' }, p.prot_error)
-        : p.prot_at ? h('span', { class: 'small' }, `применены ${fmtAgo(p.prot_at)}`) : h('span', { class: 'muted small' }, 'при сохранении') },
+        : p.prot_at ? h('span', { class: 'small' }, `применены ${fmtAgo(p.prot_at)}`,
+          p.prot_mapped || p.prot_dropped ? h('div', { class: 'muted small', title: 'Правила, привязанные к сайтам, сопоставляются по доменам: сайт с тем же доменом на получателе' },
+            `правил сайтов: перенесено ${p.prot_mapped || 0}${p.prot_dropped ? `, нет таких сайтов — ${p.prot_dropped}` : ''}`) : null)
+          : h('span', { class: 'muted small' }, 'при сохранении') },
       { title: '', srTitle: 'Действия', render: (p) => can('admin') ? h('button', { class: 'btn sm', onclick: () => test(p) }, 'Проверить связь') : null },
     ], d.peers) : empty('Серверов нет', 'Добавьте их в «Настройки панели → Другие серверы»', can('admin') ? h('a', { class: 'btn primary', href: '#/settings?tab=peers' }, 'Добавить сервер') : null, 'server'),
     { flush: !!d.peers.length, actions: can('admin') && d.peers.length ? [

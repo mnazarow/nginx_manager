@@ -266,6 +266,7 @@ class Generator:
             # до первой директивы map: таблицы карт строятся при разборе блока
             c.d("map_hash_bucket_size", g.map_hash_bucket_size)
             c.d("map_hash_max_size", g.map_hash_max_size)
+            c.d("variables_hash_max_size", g.variables_hash_max_size)
             c.d("include", f"{self.p.include_root}/http.d/*.conf")
             c.d("include", f"{self.p.include_root}/sites/*.conf")
             if g.include_conf_d:

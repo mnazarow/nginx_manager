@@ -131,6 +131,9 @@ async function channels(box) {
     h('div', { class: 'card' }, table([
       { title: 'Канал', render: (c) => h('b', {}, c.data.name) }, { title: 'Тип', render: (c) => T[c.data.type] },
       { title: 'Состояние', render: (c) => c.data.enabled ? badge('включён', 'good') : badge('выключен') },
+      { title: 'Кнопки действий', render: (c) => c.data.type !== 'telegram' || !c.data.telegram_actions ? h('span', { class: 'muted small' }, '—')
+        : !c.actions ? h('span', { class: 'small muted' }, 'запускаются') : c.actions.ok ? badge('работают', 'good')
+          : h('span', { class: 'bad-text small', title: c.actions.error }, 'ошибка: ' + (c.actions.error || '').slice(0, 80)) },
       { title: '', render: (c) => h('div', { class: 'row nowrap', style: { justifyContent: 'flex-end', gap: '4px' } },
         can('operator') ? h('button', { class: 'btn sm', onclick: async () => { await api('/alerts/channels/test', { method: 'POST', body: c.data, query: { cid: c.id } }); toast('Тестовое сообщение отправлено', 'good'); } }, 'Тест') : null,
         can('admin') ? h('button', { class: 'btn sm danger', onclick: async () => { if (!await confirmDlg(`Удалить канал «${c.data.name}»?`, { danger: true, ok: 'Удалить' })) return; await api(`/alerts/channels/${c.id}`, { method: 'DELETE' }); channels(box); } }, icon('trash')) : null) },

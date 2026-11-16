@@ -95,12 +95,15 @@ else
   if [ -f "$NGINX_CONF.nm-orig" ]; then
     cp -a "$NGINX_CONF" "$NGINX_CONF.nm-last" 2>/dev/null || true
     cp -a "$NGINX_CONF.nm-orig" "$NGINX_CONF"
-    if "$NGINX_BIN" -t >>"$LOG_FILE" 2>&1; then
+    if TEST_OUT="$("$NGINX_BIN" -t 2>&1)"; then
+      echo "$TEST_OUT" >>"$LOG_FILE"
       reload_nginx >>"$LOG_FILE" 2>&1 || true
       rm -f "$NGINX_CONF.nm-orig"
       ok "восстановлен исходный nginx.conf (последняя версия панели: $NGINX_CONF.nm-last)"
     else
-      warn "исходный nginx.conf не проходит проверку (возможно, ссылается на удалённые файлы)."
+      echo "$TEST_OUT" >>"$LOG_FILE"
+      warn "исходный nginx.conf не проходит проверку nginx -t:"
+      printf '%s\n' "$TEST_OUT" | grep -E '\[(emerg|crit|alert)\]' | head -3 | sed 's/^/      /'
       warn "Оставлена конфигурация панели; исходная — в $NGINX_CONF.nm-orig. Исправьте вручную и выполните nginx -t."
       cp -a "$NGINX_CONF.nm-last" "$NGINX_CONF"
       KEEP_MANAGED=1

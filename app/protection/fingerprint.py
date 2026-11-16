@@ -236,6 +236,55 @@ def fetch(scheme: str, address: str, port: int, host: str, path: str = "/", time
     return 0, [], ""
 
 
+# Углублённая проверка: типовые служебные адреса продуктов (только GET, без параметров и авторизации).
+# (путь, продукт, признак в заголовках или теле ответа 2xx/401/403, версия в ответе — группа 1)
+PROBES: List[Tuple[str, str, str, str]] = [
+    ("/wp-json/", "wordpress", r'"namespaces"\s*:\s*\[[^\]]*"wp/v2"', ""),
+    ("/wp-login.php", "wordpress", r"wp-submit|wordpress", r"ver=([\d.]+)"),
+    ("/administrator/", "joomla", r"(?:com_login|Joomla)", ""),
+    ("/bitrix/admin/", "bitrix", r"bitrix", ""),
+    ("/user/login", "drupal", r"Drupal|data-drupal", ""),
+    ("/status.php", "nextcloud", r'"productname"\s*:\s*"Nextcloud"', r'"versionstring"\s*:\s*"([\d.]+)"'),
+    ("/api/health", "grafana", r'"database"\s*:\s*"ok"', r'"version"\s*:\s*"([\d.]+)"'),
+    ("/jenkins/login", "jenkins", r"x-jenkins|Jenkins", r"x-jenkins: ([\d.]+)"),
+    ("/login", "jenkins", r"x-jenkins", r"x-jenkins: ([\d.]+)"),
+    ("/rest/applinks/1.0/manifest", "confluence", r"<typeId>confluence</typeId>", r"<version>([\d.]+)</version>"),
+    ("/rest/applinks/1.0/manifest", "jira", r"<typeId>jira</typeId>", r"<version>([\d.]+)</version>"),
+    ("/users/sign_in", "gitlab", r"gitlab", ""),
+    ("/phpmyadmin/", "phpmyadmin", r"phpMyAdmin", r"PMA_VERSION\s*:\s*\"([\d.]+)"),
+    ("/manager/html", "tomcat", r'realm="Tomcat Manager', ""),
+    ("/roundcube/", "roundcube", r"rcmail", ""),
+    ("/zabbix/", "zabbix", r"Zabbix", ""),
+    ("/owa/", "exchange", r"x-owa-version|/owa/auth/", r"x-owa-version: ([\d.]+)"),
+    ("/actuator/health", "spring", r'"status"\s*:\s*"(?:UP|DOWN)"', ""),
+]
+
+
+def probe(scheme: str, address: str, port: int, host: str, timeout: float = 6.0) -> List[Dict[str, Any]]:
+    """Типовые адреса продуктов: найденные по ним технологии (с версией, если ответ её содержит)."""
+    found: Dict[str, Dict[str, Any]] = {}
+    cache: Dict[str, Tuple[int, str]] = {}
+    for path, tid, rx, vrx in PROBES:
+        if tid in found:
+            continue
+        if path not in cache:
+            try:
+                st, hdrs, body = fetch(scheme, address, port, host, path, timeout, redirects=1)
+            except Exception:  # noqa: BLE001 — нет ответа: продукта нет
+                cache[path] = (0, "")
+                continue
+            text = "\n".join(f"{k.lower()}: {v}" for k, v in hdrs) + "\n" + body
+            cache[path] = (st, text)
+        st, text = cache[path]
+        if st not in (200, 401, 403) or not re.search(rx, text, re.I):
+            continue
+        m = re.search(vrx, text, re.I) if vrx else None
+        t = TECH_BY_ID[tid]
+        found[tid] = {"id": t.id, "name": t.name, "cat": t.cat, "version": m.group(1) if m else "",
+                      "evidence": f"адрес {path} (ответ {st})"}
+    return list(found.values())
+
+
 def site_target(site) -> Optional[Tuple[str, str, int, str]]:
     """(схема, адрес, порт, Host) первого бэкенда сайта-прокси; None — сайт без HTTP-бэкенда."""
     if getattr(site, "type", "proxy") != "proxy" or not site.backends:
@@ -249,13 +298,35 @@ def site_target(site) -> Optional[Tuple[str, str, int, str]]:
     return scheme, b.address.strip("[]"), port, host or "localhost"
 
 
-def scan_site(site) -> Dict[str, Any]:
+def merge(base: List[Dict[str, Any]], extra: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Добавить найденное углублённой проверкой: новая технология или версия, которой не было."""
+    by = {t["id"]: dict(t) for t in base}
+    for t in extra:
+        cur = by.get(t["id"])
+        if not cur:
+            by[t["id"]] = t
+        elif t.get("version") and not cur.get("version"):
+            cur["version"], cur["evidence"] = t["version"], cur["evidence"] + "; " + t["evidence"]
+    for tid in list(by):
+        for imp in TECH_BY_ID[tid].implies:
+            if imp not in by:
+                x = TECH_BY_ID[imp]
+                by[imp] = {"id": x.id, "name": x.name, "cat": x.cat, "version": "",
+                           "evidence": f"следует из {TECH_BY_ID[tid].name}"}
+    order = list(CATS)
+    return sorted(by.values(), key=lambda x: (order.index(x["cat"]), x["name"]))
+
+
+def scan_site(site, deep: bool = False) -> Dict[str, Any]:
     t = site_target(site)
     if not t:
         return {"ts": time.time(), "tech": [], "error": "", "skipped": "сайт без HTTP-бэкенда"}
     try:
         status, hdrs, body = fetch(*t)
-        return {"ts": time.time(), "status": status, "tech": detect(hdrs, body), "error": "",
+        tech = detect(hdrs, body)
+        if deep:
+            tech = merge(tech, probe(*t))
+        return {"ts": time.time(), "status": status, "tech": tech, "error": "", "deep": deep,
                 "target": f"{t[0]}://{t[1]}:{t[2]} (Host: {t[3]})"}
     except Exception as e:  # noqa: BLE001
         return {"ts": time.time(), "tech": [], "error": str(e)[:200], "target": f"{t[0]}://{t[1]}:{t[2]}"}
