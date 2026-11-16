@@ -22,7 +22,7 @@ from .routes import router  # маршруты регистрируются в �
 
 
 MASK = "••••••••"
-PROT_SECRETS = ("abuseipdb_key", "crowdsec_key")
+PROT_SECRETS = ("abuseipdb_key", "crowdsec_key", "wordfence_key")
 
 
 def _nm(request: Request):
@@ -508,8 +508,21 @@ async def protection_tech_scan(request: Request, body: Dict[str, Any] = Body(def
     app = _nm(request)
     site = body.get("site")
     await asyncio.to_thread(app.protection.vulndb.scan_tech, int(site) if site is not None else None)
+    if app.protection.settings().vulndb_distro:
+        await asyncio.to_thread(app.protection.vulndb.update_distro)
     _audit(request, user, "tech_scan", str(site or "все сайты"))
     return {"sites": await asyncio.to_thread(app.protection.vulndb.tech_vulns)}
+
+
+@router.get("/protection/wp/{kind}/{slug}")
+async def protection_wp_vulns(request: Request, kind: str, slug: str, version: str = Query(""), user=Depends(viewer)):
+    """Уязвимости плагина или темы WordPress (Wordfence Intelligence и шаблоны nuclei) и затрагивают ли они версию."""
+    if kind not in ("plugin", "theme") or not re.match(r"^[a-z0-9][a-z0-9_.-]{0,99}$", slug):
+        raise HTTPException(400, "Неверный тип или каталог плагина")
+    db = _nm(request).protection.vulndb
+    rows = await asyncio.to_thread(db.wp_vulns_for, kind, slug, version[:40])
+    wf = (db.status().get("wordfence") or {}).get("ok", False)
+    return {"rows": rows, "wordfence": bool(wf)}
 
 
 # =============================================================================

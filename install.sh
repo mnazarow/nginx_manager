@@ -96,7 +96,7 @@ info "ОС: $OS_NAME (менеджер пакетов: $PKG)"
 ARCH="$(uname -m)"; info "Архитектура: $ARCH"
 MEM_MB=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 0)
 [ "$MEM_MB" -lt 400 ] && warn "Мало памяти (${MEM_MB} МБ): рекомендуется не менее 512 МБ"
-FREE_MB=$(df -Pm / | awk 'NR==2 {print $4}')
+FREE_MB=$(df -Pk / | awk 'NR==2 {print int($4 / 1024)}')  # -k: uutils coreutils (Ubuntu 25.10+) не знает -m
 [ "${FREE_MB:-0}" -lt 500 ] && fail "Недостаточно места на диске: ${FREE_MB} МБ свободно, нужно не менее 500 МБ"
 if [ -d "$INSTALL_DIR" ]; then
   info "Обнаружена установленная версия $(installed_version) — будет выполнено восстановление/переустановка с сохранением данных"
@@ -118,6 +118,11 @@ add_nginx_org_repo() {
       pkg_install curl gnupg2 ca-certificates lsb-release || return 1
       local distro="debian"; case " $OS_ID $OS_LIKE " in *" ubuntu "*) distro="ubuntu" ;; esac
       local path="packages"; [ "$branch" = mainline ] && path="packages/mainline"
+      # свежий выпуск дистрибутива nginx.org поддерживает не сразу: без пакетов для него остаёмся на дистрибутиве
+      if ! curl -fsSL -o /dev/null "https://nginx.org/$path/$distro/dists/${OS_CODENAME}/Release"; then
+        warn "nginx.org пока не выпускает пакеты для ${OS_NAME} (${OS_CODENAME:-?})"
+        return 1
+      fi
       run curl -fsSL https://nginx.org/keys/nginx_signing.key -o /tmp/nginx_signing.key || return 1
       gpg --dearmor </tmp/nginx_signing.key >/usr/share/keyrings/nginx-archive-keyring.gpg 2>>"$LOG_FILE" || return 1
       echo "deb [signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg] http://nginx.org/$path/$distro ${OS_CODENAME} nginx" \
@@ -126,6 +131,11 @@ add_nginx_org_repo() {
       ;;
     dnf|yum)
       local os="centos"; [ "$OS_ID" = fedora ] && { warn "Для Fedora используется пакет nginx дистрибутива"; return 1; }
+      local mpath=""; [ "$branch" = mainline ] && mpath="mainline/"
+      if ! curl -fsSL -o /dev/null "https://nginx.org/packages/${mpath}$os/${OS_MAJOR}/$(uname -m)/repodata/repomd.xml"; then
+        warn "nginx.org пока не выпускает пакеты для ${OS_NAME}"
+        return 1
+      fi
       cat >/etc/yum.repos.d/nginx.repo <<REPO
 [nginx-stable]
 name=nginx stable repo
@@ -369,6 +379,12 @@ p = db.kv_get("panel_settings", {}) or {}
 p["letsencrypt_email"] = sys.argv[1]
 db.kv_set("panel_settings", p)
 PY
+fi
+
+# переустановка поверх данных (например, с включённой глубокой проверкой) — доустановить пакеты для функций панели
+if [ "$GENERATED" = 2 ]; then
+  step "Системные пакеты и модули"
+  ensure_packages
 fi
 
 # -----------------------------------------------------------------------------

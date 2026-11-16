@@ -34,7 +34,7 @@ PAGES = [
     ("protection-attackers", "#/protection?tab=attackers&hours=168", 3000),
     ("protection-bots", "#/protection?tab=bots", 3000), ("protection-modsec", "#/protection?tab=modsec", 3500),
     ("protection-vulns", "#/protection?tab=vulns", 3500),
-    ("bans-peers", "#/bans?tab=peers", 3000), ("settings-peers", "#/settings?tab=peers", 2000),
+    ("bans-peers", "#/bans?tab=peers", 3000), ("trusted", "#/trusted", 1500), ("settings-peers", "#/settings?tab=peers", 2000),
 ]
 # снимки части страницы: прокрутка к карточке с заголовком
 SCROLL = {"protection-intel": ("#/protection?tab=threats", "Обмен данными об угрозах", 3000),
@@ -42,7 +42,7 @@ SCROLL = {"protection-intel": ("#/protection?tab=threats", "Обмен данн�
           "protection-networks": ("#/protection?tab=analytics&hours=168", "Известные уязвимости", 3500),
           "geo-databases": ("#/bans?tab=countries", "Базы GeoIP", 3000)}
 SCENES = {"protection-ip", "protection-rule", "protection-ratelimit", "protection-vuln", "protection-ip-network",
-          "alerts-channels", "protection-vuln-installed",
+          "alerts-channels", "protection-vuln-installed", "protection-tech-wp", "trusted", "site-ip-access",
           *SCROLL, "geo-site", "sites-bulk", "backup-s3", "backup-restore"}  # снимки с действиями: --only geo-site,sites-bulk или --extras
 
 
@@ -191,6 +191,36 @@ async def scenes(page, a, only):
         await page.screenshot(path=f"{a.out}/protection-vuln-installed.png")
         await page.keyboard.press("Escape")
         print("protection-vuln-installed: ok")
+    if not only or "trusted" in only:
+        # «Доверенные адреса» с проверкой адреса
+        await page.goto(f"{a.url}/#/trusted")
+        await page.wait_for_timeout(1500)
+        await page.fill("input[aria-label='Проверить адрес']", "198.51.100.5")
+        await page.locator("button", has_text="Проверить").last.click()
+        await page.wait_for_timeout(800)
+        await page.screenshot(path=f"{a.out}/trusted.png")
+        print("trusted: ok")
+    if not only or "site-ip-access" in only:
+        # раздел сайта «Доступ по IP» с проверкой адреса по черновику
+        sid = await page.evaluate("""async () => { const r = await fetch('/api/sites'); const d = await r.json();
+            const s = d.find(x => x.ip_access); return s ? s.id : (d[0] || {}).id; }""")
+        await page.goto(f"{a.url}/#/sites?edit={sid}&tab=ip_access")
+        await page.wait_for_timeout(2500)
+        await page.fill("input[aria-label='Адрес для проверки']", "10.20.3.4")
+        await page.locator(".ipa-tools button", has_text="Проверить").click()
+        await page.wait_for_timeout(500)
+        await page.screenshot(path=f"{a.out}/site-ip-access.png")
+        print("site-ip-access: ok")
+    if not only or "protection-tech-wp" in only:
+        # окно уязвимостей плагина WordPress из карточки «Технологии ваших сайтов»
+        await page.goto(f"{a.url}/#/protection?tab=vulns")
+        await page.wait_for_timeout(3500)
+        await page.locator("button.badge-btn", has_text="wp-file-manager").first.click()
+        await page.wait_for_selector(".modal table.t", timeout=15000)
+        await page.wait_for_timeout(600)
+        await page.screenshot(path=f"{a.out}/protection-tech-wp.png")
+        await page.keyboard.press("Escape")
+        print("protection-tech-wp: ok")
     if not only or "alerts-channels" in only:
         # каналы уведомлений и форма канала Telegram с кнопками действий
         await page.goto(f"{a.url}/#/alerts")

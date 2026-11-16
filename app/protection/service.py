@@ -642,7 +642,7 @@ class ProtectionAnalytics:
         except Exception:  # noqa: BLE001
             ban = None
         p = self.svc.settings()
-        trusted = any(_in_net(ip, n) for n in p.bypass_ips)
+        trusted = any(_in_net(ip, n) for n in list(p.bypass_ips) + self.svc.app.trusted())
         feeds = self.svc.ip_in_feeds(ip)
         asn, org = self.asn(ip)
         net = None
@@ -750,6 +750,20 @@ class ProtectionAnalytics:
                                      "rows": [[f"{a['cve']}: {a['name']}"[:120], a["cvss"] or "—", a["kev_added"],
                                                "да" if a["ransomware"] else "—"] for a in t["affected"][:10]]},
                                     t["affected_n"], f"{site['site']}:{t['id']}"))
+                for w in site.get("wp") or []:
+                    if not w.get("affected_n"):
+                        continue
+                    top = max((a["cvss"] or 0) for a in w["affected"])
+                    hot = any(a.get("exploit") or a.get("kev") for a in w["affected"])
+                    kind = "плагин" if w["type"] == "plugin" else "тема"
+                    out.append(("wp_vulnerable", "crit" if hot or top >= 9 else "warn", site["site"],
+                                f"{kind} {w['name']} {w['version']} — уязвимостей: {w['affected_n']}"
+                                + (" (есть публичный эксплойт)" if hot else ""),
+                                {"columns": ["Уязвимость", "CVSS", "Исправлено в", "Эксплойт"],
+                                 "rows": [[f"{a['cve'] or '—'}: {a['title']}"[:120], a["cvss"] or "—",
+                                           a.get("patched") or "—", "есть" if a.get("exploit") else "—"]
+                                          for a in w["affected"][:10]]},
+                                w["affected_n"], f"{site['site']}:{w['type']}:{w['slug']}"))
         except Exception:  # noqa: BLE001 — анализ продолжается без этого сценария
             log.exception("сверка версий продуктов")
         # новые эксплуатируемые уязвимости в продуктах из списка наблюдения
@@ -1794,7 +1808,7 @@ class ProtectionService:
         for r in self.analytics.attackers(1, limit=50):
             if r["score"] < p.announce_score or r["banned"] or r["ip"] in seen or r["n"] < 10:
                 continue
-            if any(_in_net(r["ip"], t) for t in p.bypass_ips):
+            if any(_in_net(r["ip"], t) for t in list(p.bypass_ips) + self.app.trusted()):
                 continue
             seen[r["ip"]] = now
             net = f", сеть AS{r['asn']} {r['org']}" if r.get("asn") else ""
@@ -1828,6 +1842,8 @@ class ProtectionService:
         last_tech = max((r.get("ts") or 0) for r in self.vulndb.tech().values()) if self.vulndb.tech() else 0
         if p.vulndb_watch_auto and now - last_tech > 86400:
             await asyncio.to_thread(self.vulndb.scan_tech)
+            if p.vulndb_distro:
+                await asyncio.to_thread(self.vulndb.update_distro)
 
     # ------------------------------------------------------------------ фоновые задачи
     async def run(self) -> None:

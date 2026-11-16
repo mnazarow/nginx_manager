@@ -5,6 +5,7 @@ import { h, mount, icon, badge, toast, modal, confirmDlg, promptDlg, table, tabs
 import { model, defaults, renderFields, errorsToMap, SCHEMA } from '../forms.js';
 import { ctx, can, refreshState, applyDialog, applyErrorView } from '../app.js';
 import { certDialog } from './certs.js';
+import { ipAccessTools } from './ipaccess.js';
 
 export async function render(root) {
   if (ctx.params.edit || ctx.params.new !== undefined) return editor(root, ctx.params.edit ? +ctx.params.edit : null);
@@ -77,7 +78,8 @@ async function list(root) {
         s.enabled ? badge('включён', 'good') : badge('выключен'), s.ssl ? badge('HTTPS', 'info') : badge('HTTP', 'outline'),
         s.maintenance ? badge('обслуживание', 'warn') : null, s.cache ? badge('кэш', 'outline') : null,
         s.geo && s.geo.mode !== 'off' ? h('span', { title: (s.geo.mode === 'deny' ? 'Запрещены: ' : 'Только: ') + s.geo.countries.map(c => `${c} ${countryName(c)}`).join(', ') },
-          badge(s.geo.mode === 'deny' ? 'запрет стран' : 'только страны', 'outline')) : null) },
+          badge(s.geo.mode === 'deny' ? 'запрет стран' : 'только страны', 'outline')) : null,
+        s.ip_access ? h('span', { title: `Доступ только с разрешённых адресов (${s.ip_access.count}); остальным — ${s.ip_access.deny === 'password' ? 'пароль' : s.ip_access.deny}` }, badge('только с IP', 'outline')) : null) },
       { title: 'Бэкенды', render: (s) => s.type !== 'proxy' ? h('span', { class: 'muted' }, '—') : h('div', { class: 'col', style: { gap: '2px' } },
         (s.health.length ? s.health : s.backends.map(b => ({ addr: b, state: 'unknown' }))).slice(0, 4).map(t => h('div', { class: 'row nowrap small', style: { gap: '6px' }, title: t.error || '' },
           h('span', { class: 'dot ' + (t.state === 'up' ? 'good' : t.state === 'down' ? 'bad' : '') }), h('code', {}, t.addr),
@@ -235,8 +237,8 @@ async function editor(root, id) {
     drawTabs();
     const y = window.scrollY;
     mount(formBox);
+    if (tab === 'ip_access') formBox.append(ipAccessTools(site, { onChange: fctx.onChange, redraw: drawForm, readonly: !can('operator') }));
     renderFields(formBox, fields, site, { ...fctx, tab, advanced, errors });
-    if (tab === 'advanced' || tab === 'main') { /* без доп. содержимого */ }
     window.scrollTo(0, y);
   }
 

@@ -212,7 +212,7 @@ class Intel:
         if not left:
             return 0
         rep = self.reported()
-        trusted = list(p.bypass_ips)
+        trusted = list(p.bypass_ips) + self.svc.app.trusted()
         from .service import _in_net
         n = 0
         for r in self.svc.analytics.attackers(1, limit=200):

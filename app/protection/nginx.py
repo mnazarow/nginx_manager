@@ -196,11 +196,18 @@ class ProtectionConf:
                 a(f"    {key} {q(cat + '/' + r.id)};")
             a("}")
         a("")
-        a("# --- доверенные адреса (без проверок защиты на всех сайтах)")
+        a("# --- доверенные адреса (раздел «Доверенные адреса»): без проверок защиты и ограничений частоты")
         a("geo $nm_trusted {")
         a("    default 0;")
-        for ip in self.prot.bypass_ips:
-            a(f"    {ip} 1;")
+        seen = set()
+        for ip in [e.address for e in getattr(self.st.panel, "trusted_ips", [])] + list(self.prot.bypass_ips):
+            if ip not in seen:
+                seen.add(ip)
+                a(f"    {ip} 1;")
+        a("}")
+        a("map $nm_trusted $nm_limit_key {")
+        a("    default $binary_remote_addr;")
+        a('    1 "";')
         a("}")
         for sid, s in self.sites:
             if s.protection.enabled and s.protection.bypass_ips:

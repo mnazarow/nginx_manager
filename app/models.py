@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import ipaddress
 import re
 import secrets
 import urllib.parse
@@ -442,12 +443,11 @@ DEFAULT_BAD_BOTS = ["AhrefsBot", "SemrushBot", "MJ12bot", "DotBot", "PetalBot", 
 
 
 class SecuritySettings(Model):
-    access_mode: Literal["all", "allowlist"] = F("all", label="Режим доступа",
+    # белый список переехал в раздел «Доступ по IP» (ip_access): старые значения переносятся при загрузке сайта
+    access_mode: Literal["all", "allowlist"] = F("all", label="Режим доступа", ui="hidden",
                                                  labels={"all": "Разрешить всем, кроме чёрного списка",
-                                                         "allowlist": "Только белый список IP"},
-                                                 directive="allow / deny")
-    allow: List[str] = F(factory=list, label="Белый список IP/подсетей", ui="lines",
-                         show={"access_mode": ["allowlist"]}, ph="203.0.113.0/24", directive="allow")
+                                                         "allowlist": "Только белый список IP"})
+    allow: List[str] = F(factory=list, label="Белый список IP/подсетей", ui="hidden")
     deny: List[str] = F(factory=list, label="Чёрный список IP/подсетей", ui="lines", directive="deny",
                         ph="198.51.100.7")
     geo_mode: Literal["off", "deny", "allow"] = F(
@@ -471,8 +471,7 @@ class SecuritySettings(Model):
     basic_auth_realm: str = F("Restricted", label="Текст приглашения", show={"basic_auth": [True]})
     basic_auth_users: List[BasicAuthUser] = F(factory=list, label="Пользователи", show={"basic_auth": [True]},
                                               ui="table")
-    satisfy_any: bool = F(False, label="IP из белого списка входят без пароля", show={"basic_auth": [True]},
-                          directive="satisfy any")
+    satisfy_any: bool = F(False, label="IP из белого списка входят без пароля", ui="hidden")
     rate_limit: bool = F(False, label="Ограничение частоты запросов", directive="limit_req",
                          doc="Алгоритм «дырявое ведро»: с одного IP допускается rate запросов, кратковременные "
                              "всплески до burst. Превышение — ответ с кодом limit_status.",
@@ -594,6 +593,85 @@ class PerformanceSettings(Model):
     @field_validator("keepalive_timeout", "static_expires")
     @classmethod
     def _d(cls, v): return V.duration(v)
+
+
+PRIVATE_NETS = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "fc00::/7"]
+LOOPBACK_NETS = ["127.0.0.1", "::1"]
+
+
+class IpEntry(Model):
+    address: str = F("", label="IP-адрес или подсеть", ph="203.0.113.0/24")
+    comment: str = F("", label="Комментарий", ph="Офис, VPN, мониторинг", max_length=120)
+
+    @field_validator("address")
+    @classmethod
+    def _a(cls, v):
+        v = (v or "").strip()
+        if not v or v == "all":
+            raise V.ValidationError("Укажите IP-адрес или подсеть (например, 203.0.113.0/24)")
+        v = V.cidr(v)
+        net = ipaddress.ip_network(v, strict=False)
+        # 203.0.113.5/32 и 203.0.113.5 — один и тот же адрес (для nginx geo — повтор)
+        return str(net.network_address) if net.prefixlen == net.max_prefixlen else str(net)
+
+    @field_validator("comment")
+    @classmethod
+    def _c(cls, v): return V.no_ctrl(v.strip())
+
+
+class IpAccessSettings(Model):
+    enabled: bool = F(False, label="Доступ только с разрешённых адресов", directive="geo + map",
+                      help="Сайт открывается только с перечисленных IP-адресов и подсетей",
+                      doc="Остальные посетители получают отказ, выбранный ниже. Проверка Let's Encrypt "
+                          "(/.well-known/acme-challenge/) открыта всегда — сертификаты продлеваются. Запросы с самого "
+                          "сервера (127.0.0.1, ::1) — тоже: это проверки панели. За CDN (Cloudflare и т. п.) "
+                          "настройте «Реальный IP клиента» в настройках nginx — иначе nginx видит адреса CDN.",
+                      rec="Админки, staging, внутренние сервисы. Для публичного сайта с закрытой админкой — "
+                          "локация /admin с «Доступ только с IP» или «Открытые для всех пути».")
+    entries: List[IpEntry] = F(factory=list, label="Разрешённые адреса и подсети", ui="table",
+                               show={"enabled": [True]}, help="IPv4 и IPv6, отдельные адреса и подсети CIDR")
+    allow_trusted: bool = F(True, label="Пускать доверенные адреса", show={"enabled": [True]},
+                            help="Адреса из раздела «Доверенные адреса» открывают сайт без отдельного добавления")
+    allow_private: bool = F(False, label="Пускать локальные сети", show={"enabled": [True]},
+                            help="10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, fc00::/7 — внутренняя сеть, "
+                                 "VPN")
+    public_paths: List[str] = F(factory=list, label="Открытые для всех пути", ui="lines", show={"enabled": [True]},
+                                ph="/api/webhooks/\n/robots.txt",
+                                help="Начало пути: адреса, которые должны работать для всех (вебхуки платёжных "
+                                     "систем, API для мобильного приложения)")
+    deny: Literal["403", "444", "404", "password"] = F(
+        "403", label="Остальным", show={"enabled": [True]},
+        labels={"403": "403 «Доступ запрещён»", "444": "Закрыть соединение без ответа",
+                "404": "404 «Не найдено» — скрыть, что сайт есть",
+                "password": "Запросить логин и пароль (пользователи — «Безопасность → Защита паролем»)"},
+        doc="«Запросить пароль»: с разрешённых адресов сайт открывается без пароля, с остальных — после входа "
+            "(Basic Auth). Пользователей задайте на вкладке «Безопасность» (включите «Защита паролем»).")
+
+    @field_validator("public_paths")
+    @classmethod
+    def _pp(cls, v):
+        out = []
+        for x in v:
+            x = x.strip()
+            if not x:
+                continue
+            if not x.startswith("/") or any(c.isspace() or c in "\"'{};$" or ord(c) < 32 for c in x):
+                raise V.ValidationError(f"«{x}» — путь должен начинаться с / и не содержать пробелов, кавычек и "
+                                        "символов { } ; $")
+            if x not in out:
+                out.append(x[:200])
+        return out
+
+    @model_validator(mode="after")
+    def _uniq(self):
+        seen = set()
+        out = []
+        for e in self.entries:
+            if e.address not in seen:
+                seen.add(e.address)
+                out.append(e)
+        self.entries = out
+        return self
 
 
 class MaintenanceSettings(Model):
@@ -1150,8 +1228,9 @@ class ProtectionSettings(Model):
                                         labels={"403": "403 и страница «Доступ запрещён» с номером запроса",
                                                 "444": "444 — закрыть соединение без ответа"},
                                         rec="403: посетитель при ложном срабатывании сообщит номер запроса.")
-    bypass_ips: List[str] = F(factory=list, label="Доверенные IP (без проверок на всех сайтах)", tab="waf", ui="lines",
-                              ph="203.0.113.0/24")
+    # переносится в «Доверенные адреса» (настройки панели, trusted_ips) при запуске
+    bypass_ips: List[str] = F(factory=list, label="Доверенные IP (без проверок на всех сайтах)", tab="waf",
+                              ui="hidden")
     challenge_difficulty: int = F(16, label="Сложность задачи (бит)", tab="challenge", ge=8, le=24,
                                   doc="Число нулевых бит в начале хеша SHA-256. Каждый бит удваивает работу: 16 — "
                                       "около 65 тысяч попыток, 0,2–1,5 с на телефоне; 20 — в 16 раз дольше.",
@@ -1290,6 +1369,23 @@ class ProtectionSettings(Model):
                                     "Confluence, Jira, GitLab, Jenkins, Grafana, Nextcloud и других. Найденные продукты "
                                     "считаются «вашими»: новые эксплуатируемые уязвимости в них — событие и подсказка "
                                     "анализа, а фильтр «Ваши продукты» показывает их уязвимости.")
+    vulndb_distro: bool = F(True, label="Учитывать исправления дистрибутивов (Ubuntu, Debian)", tab="vulns",
+                            show={"vulndb_enabled": [True]},
+                            help="Apache, PHP, nginx из пакетов Ubuntu и Debian получают исправления без смены "
+                                 "версии — по данным дистрибутива панель не считает их уязвимыми зря",
+                            doc="Для продуктов, у которых заголовок называет дистрибутив («Apache/2.4.52 (Ubuntu)», "
+                                "«PHP/8.1.2-1ubuntu2.14»), панель загружает данные группы безопасности дистрибутива "
+                                "(Ubuntu — OSV и OpenVEX Canonical на GitHub, Debian — api.osv.dev) по уязвимостям, "
+                                "которые затрагивают основную версию: в каком пакете исправлено и не исключён ли "
+                                "уязвимый код из сборки.")
+    wordfence_key: str = F("", label="Ключ API Wordfence Intelligence", tab="vulns", ui="password",
+                           show={"vulndb_enabled": [True]},
+                           help="Бесплатный ключ: wordfence.com → Account → Integrations. Все уязвимости плагинов и "
+                                "тем WordPress с версиями; без ключа — только уязвимости с публичными эксплойтами",
+                           doc="База Wordfence Intelligence — крупнейшая открытая база уязвимостей WordPress (плагины, "
+                               "темы, ядро) с диапазонами затронутых версий. Лента загружается раз в "
+                               "«Обновлять базу каждые» потоково (не целиком в память) и сверяется с плагинами и "
+                               "темами, найденными на ваших сайтах.")
     vulndb_tech_probe: bool = F(False, label="Углублённо: проверять типовые адреса приложений", tab="vulns",
                                 show={"vulndb_watch_auto": [True]},
                                 help="18 GET-запросов к бэкенду: /wp-json/, /status.php, /api/health, "
@@ -1297,7 +1393,9 @@ class ProtectionSettings(Model):
                                      "версии",
                                 doc="Запросы идут прямо к бэкенду сайта (не через nginx), без параметров и "
                                     "авторизации, раз в сутки. Находят Jenkins в /jenkins/, Grafana, Nextcloud, "
-                                    "Confluence и Jira по служебным адресам и уточняют версии. Выключено по умолчанию: "
+                                    "Confluence и Jira по служебным адресам и уточняют версии; на сайтах WordPress — "
+                                    "версии плагинов и тем по readme.txt и style.css (до 40 запросов). Выключено по "
+                                    "умолчанию: "
                                     "в журналах бэкенда появятся такие запросы, а системы обнаружения атак на нём "
                                     "могут принять их за сканирование.")
     vulndb_exclude: List[str] = F(factory=list, label="Исключённые уязвимости (CVE)", tab="vulns", ui="tags",
@@ -1417,7 +1515,8 @@ class ProtectionSettings(Model):
 
 SITE_TABS = [
     ("main", "Основное"), ("backends", "Бэкенды"), ("ssl", "SSL / HTTPS"), ("locations", "Локации"),
-    ("proxy", "Проксирование"), ("cache", "Кэш"), ("security", "Безопасность"), ("protection", "Защита от атак"),
+    ("proxy", "Проксирование"), ("cache", "Кэш"), ("security", "Безопасность"), ("ip_access", "Доступ по IP"),
+    ("protection", "Защита от атак"),
     ("performance", "Производительность"), ("errors", "Ошибки и обслуживание"), ("advanced", "Дополнительно"),
 ]
 
@@ -1488,6 +1587,7 @@ class Site(Model):
                                     show={"type": ["proxy"]}, directive="proxy_set_header")
     cache: CacheSettings = F(factory=CacheSettings, label="Кэширование", tab="cache", show={"type": ["proxy"]})
     security: SecuritySettings = F(factory=SecuritySettings, label="Безопасность", tab="security")
+    ip_access: IpAccessSettings = F(factory=IpAccessSettings, label="Доступ по IP", tab="ip_access")
     protection: SiteProtection = F(factory=SiteProtection, label="Защита от атак", tab="protection")
     performance: PerformanceSettings = F(factory=PerformanceSettings, label="Производительность", tab="performance")
     error_pages: ErrorPagesSettings = F(factory=ErrorPagesSettings, label="Страницы ошибок", tab="errors")
@@ -1536,6 +1636,18 @@ class Site(Model):
 
     @model_validator(mode="after")
     def _check(self):
+        sec = self.security
+        if sec.access_mode == "allowlist" and sec.allow and not self.ip_access.enabled:
+            # сайты прежних версий: белый список с вкладки «Безопасность» → раздел «Доступ по IP»
+            pw = sec.satisfy_any and sec.basic_auth and bool(sec.basic_auth_users)
+            self.ip_access = IpAccessSettings(enabled=True, entries=[IpEntry(address=a) for a in sec.allow],
+                                              allow_trusted=False, deny="password" if pw else "403")
+        if sec.access_mode == "allowlist" or sec.allow or sec.satisfy_any:
+            sec.access_mode, sec.allow, sec.satisfy_any = "all", [], False
+        if self.ip_access.enabled and self.ip_access.deny == "password" and not (
+                sec.basic_auth and any(u.username for u in sec.basic_auth_users)):
+            raise V.ValidationError("Доступ по IP: для «Запросить логин и пароль» включите «Защита паролем» на "
+                                    "вкладке «Безопасность» и добавьте пользователей")
         if not self.domains:
             raise V.ValidationError("Укажите хотя бы один домен (или «_» для любого)")
         if self.http_port == self.https_port:
@@ -2131,10 +2243,16 @@ class PanelSettings(Model):
                                help="×4 за каждое повторное нарушение в течение 30 дней, максимум 30 суток")
     autoban_ignore_bots: bool = F(True, label="Не блокировать поисковых ботов за 4xx и частоту", tab="bans",
                                   help="По User-Agent (Googlebot, YandexBot…). За зондирование уязвимостей блокируются все")
-    autoban_whitelist: List[str] = F(factory=list, label="Никогда не блокировать", tab="bans", ui="lines",
-                                     ph="203.0.113.0/24",
-                                     help="Ваши офисы, мониторинг, партнёры. 127.0.0.1 и «Доступ к панели только с IP» "
-                                          "не блокируются всегда")
+    # прежний список «Никогда не блокировать» переносится в «Доверенные адреса» (trusted_ips) при запуске
+    autoban_whitelist: List[str] = F(factory=list, label="Никогда не блокировать", tab="bans", ui="hidden")
+    trusted_ips: List[IpEntry] = F(factory=list, label="Доверенные адреса и подсети", tab="trusted", ui="table",
+                                   help="Никогда не блокируются: блокировки IP (ручные, автоматические, с других "
+                                        "серверов и из Telegram), фильтр запросов, проверка браузера, списки угроз, "
+                                        "свои правила, ограничения частоты, доступ по странам",
+                                   doc="Ваши офисы, VPN, мониторинг, платёжные шлюзы и партнёрские серверы. Сайтам с "
+                                       "«Доступом только с разрешённых адресов» доверенные адреса открыты, если там "
+                                       "включено «Пускать доверенные адреса». Всегда доверенные: 127.0.0.1 и ::1 "
+                                       "(сам сервер) и адреса из «Доступ к панели только с IP».")
     # ---------------------------------------------------------------- регулярные отчёты
     report_enabled: bool = F(False, label="Отправлять регулярный отчёт", tab="reports",
                              help="Сводка нагрузки, ошибок, проблем по анализу и состояния в выбранные каналы")
@@ -2299,9 +2417,9 @@ class AlertChannel(Model):
     telegram_chat_id: str = F("", label="Chat ID", show={"type": ["telegram"]},
                               help="ID пользователя/группы. Узнать: @userinfobot или getUpdates")
     telegram_api: str = F("https://api.telegram.org", label="API URL", show={"type": ["telegram"]}, adv=True)
-    telegram_actions: bool = F(False, label="Кнопки действий под уведомлениями", show={"type": ["telegram"]},
+    telegram_actions: bool = F(False, label="Кнопки действий и команды боту", show={"type": ["telegram"]},
                                help="«Заблокировать», «Разблокировать», «Пожаловаться в AbuseIPDB» под уведомлениями об "
-                                    "автоблокировках и активных атакующих",
+                                    "автоблокировках и активных атакующих; команды /status, /top, /ip, /ban, /unban",
                                doc="Нажатия панель получает через getUpdates (длинный опрос — входящие подключения к "
                                    "серверу не нужны). Данные кнопок подписаны секретом панели, действие выполняется "
                                    "только для нажатий в чате уведомлений и, если задан список, только разрешёнными "

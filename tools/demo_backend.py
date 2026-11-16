@@ -21,15 +21,21 @@ PROFILES = {
     9003: ("X-Powered-By: Next.js\r\n", b'<html><head><title>API</title><script id="__NEXT_DATA__"></script></head><body>'),
     9005: ("X-Powered-By: Next.js\r\n", b'<html><head><title>API</title><script id="__NEXT_DATA__"></script></head><body>'),
     # блог: WordPress на PHP за Apache
-    9004: ("Server: Apache/2.4.58 (Ubuntu)\r\nX-Powered-By: PHP/8.2.12\r\n",
+    9004: ("Server: Apache/2.4.58 (Ubuntu)\r\nX-Powered-By: PHP/8.2.12-1ubuntu2\r\n",
            b'<html><head><title>Blog</title><meta name="generator" content="WordPress 6.4.2" />'
-           b'<link rel="stylesheet" href="/wp-content/themes/twentytwentyfour/style.css"></head><body>'),
+           b'<link rel="stylesheet" href="/wp-content/themes/twentytwentyfour/style.css?ver=1.0">'
+           b'<link rel="stylesheet" href="/wp-content/plugins/contact-form-7/includes/css/styles.css?ver=5.3.1">'
+           b'<script src="/wp-content/plugins/elementor/assets/js/frontend.min.js?ver=6.4.2"></script>'
+           b'<script src="/wp-content/plugins/wp-file-manager/js/fm.js?ver=6.4.2"></script></head><body>'),
 }
 # служебные адреса приложений — для углублённого определения технологий
 PROBED = {
     (9004, "/wp-json/"): (200, "", b'{"name":"Blog","namespaces":["oembed/1.0","wp/v2","wp-site-health/v1"]}'),
     (9004, "/wp-login.php"): (200, "", b'<form id="loginform"><input type="submit" name="wp-submit"></form>'
                                        b'<link rel="stylesheet" href="/wp-admin/css/login.min.css?ver=6.4.2">'),
+    (9004, "/wp-content/plugins/wp-file-manager/readme.txt"): (200, "", b"=== File Manager ===\nStable tag: 6.8\n"),
+    (9004, "/wp-content/plugins/elementor/readme.txt"): (200, "", b"=== Elementor ===\nStable tag: 3.18.0\n"),
+    (9004, "/wp-content/plugins/contact-form-7/readme.txt"): (200, "", b"=== Contact Form 7 ===\nStable tag: 5.3.1\n"),
     (9003, "/jenkins/login"): (403, "X-Jenkins: 2.426.1\r\nX-Hudson: 1.395\r\n", b"<html>Authentication required</html>"),
 }
 
@@ -72,7 +78,7 @@ async def handle(reader, writer, port):
                 body = head + body + b"</body></html>"
             if (port, path) in PROBED:
                 status, extra, body = PROBED[(port, path)]
-            elif path.startswith(("/wp-json", "/wp-login", "/jenkins", "/status.php", "/rest/applinks",
+            elif path.startswith(("/wp-json", "/wp-login", "/jenkins", "/wp-content/plugins/", "/wp-content/themes/", "/status.php", "/rest/applinks",
                                   "/phpmyadmin", "/manager/html", "/actuator", "/owa/", "/zabbix", "/roundcube",
                                   "/administrator", "/bitrix/admin", "/user/login", "/users/sign_in", "/login")):
                 status, body = 404, b"Not Found"

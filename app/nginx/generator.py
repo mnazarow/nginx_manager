@@ -605,18 +605,21 @@ class Generator:
                 self.upstream_block(c, f"{up}_l{i}", loc.backends, loc.balancing, keepalive=16)
                 c.line()
         if s.security.rate_limit:
-            c.d("limit_req_zone", s.security.rate_key, f"zone=nm_rl_{sid}:10m", f"rate={s.security.rate}")
+            c.d("limit_req_zone", self.limit_key(s.security.rate_key), f"zone=nm_rl_{sid}:10m",
+                f"rate={s.security.rate}")
         for i, loc in enumerate(s.locations):
             if loc.enabled and loc.rate_limit == "custom":
-                c.d("limit_req_zone", "$binary_remote_addr", f"zone=nm_rl_{sid}_l{i}:10m", f"rate={loc.rate}")
+                c.d("limit_req_zone", self.limit_key("$binary_remote_addr"), f"zone=nm_rl_{sid}_l{i}:10m",
+                    f"rate={loc.rate}")
         if s.security.conn_limit:
-            c.d("limit_conn_zone", "$binary_remote_addr", f"zone=nm_cl_{sid}:10m")
+            c.d("limit_conn_zone", self.limit_key("$binary_remote_addr"), f"zone=nm_cl_{sid}:10m")
         if s.maintenance.enabled:
             with c.block(f"geo $nm_maint_{sid}"):
                 c.d("default", 1)
                 for ip in s.maintenance.allow:
                     c.d(ip, 0)
         self.geo_vars(c, sid, s)
+        self.ipacl_vars(c, sid, s)
         if s.performance.static_expires and s.type == "proxy":
             with c.block(f"map $nm_static $nm_exp_{sid}"):
                 c.d("default", "off")
@@ -647,6 +650,7 @@ class Generator:
                 c.d("server_name", " ".join(s.domains))
                 c.d("set", "$nm_site", f'"{sid}"')
                 self.ban_check(c)
+                self.ipacl_check(c, sid, s)
                 self.geo_check(c, sid, s)
                 if not s.performance.access_log:
                     c.d("access_log", "off")
@@ -661,6 +665,48 @@ class Generator:
         else:
             self.server_block(c, sid, s, None, http=True, https=False)
         return c.text()
+
+    # ------------------------------------------------------------------ доверенные адреса и доступ по IP
+    def trusted(self) -> List[str]:
+        return [e.address for e in getattr(self.st.panel, "trusted_ips", [])]
+
+    def limit_key(self, key: str) -> str:
+        """Ключ зоны ограничений: доверенные адреса — пустой ключ (nginx их не считает)."""
+        return "$nm_limit_key" if key == "$binary_remote_addr" and self.trusted() else key
+
+    def ipacl_vars(self, c: Conf, sid: int, s: Site) -> None:
+        """Доступ по IP: geo с разрешёнными адресами и map «отказать / пустить» с учётом открытых путей."""
+        from ..models import LOOPBACK_NETS, PRIVATE_NETS
+        a = s.ip_access
+        if not a.enabled:
+            return
+        nets: List[str] = []
+        for n in [e.address for e in a.entries] + LOOPBACK_NETS + (self.trusted() if a.allow_trusted else []) + \
+                (PRIVATE_NETS if a.allow_private else []):
+            if n not in nets:
+                nets.append(n)
+        if not a.entries and not (a.allow_trusted and self.trusted()) and not a.allow_private:
+            self.warnings.append(f"Сайт «{s.name}»: доступ только с разрешённых адресов, но список пуст — сайт "
+                                 "закрыт для всех (кроме проверки Let's Encrypt)")
+        with c.block(f"geo $nm_ipacl_{sid}"):
+            c.d("default", "0")
+            for n in nets:
+                c.d(n, "1")
+        pw = a.deny == "password"
+        allow_v, deny_v = ("off", quote(s.security.basic_auth_realm or "Restricted")) if pw else ("0", "1")
+        var = f"$nm_ipauth_{sid}" if pw else f"$nm_ipdeny_{sid}"
+        with c.block(f'map "$nm_ipacl_{sid}:$uri" {var}'):
+            c.d("default", deny_v)
+            c.d('"~^1:"', allow_v)
+            c.d('"~^0:/\\.well-known/acme-challenge/"', allow_v)
+            for path in a.public_paths:
+                c.d(quote("~^0:" + re.escape(path)), allow_v)
+
+    def ipacl_check(self, c: Conf, sid: int, s: Site) -> None:
+        a = s.ip_access
+        if a.enabled and a.deny != "password":
+            with c.block(f"if ($nm_ipdeny_{sid})"):
+                c.d("return", self.pc.deny_code(s, 403) if a.deny == "403" else int(a.deny))
 
     # ------------------------------------------------------------------
     def geo_sites(self) -> List[int]:
@@ -679,11 +725,15 @@ class Generator:
             self.warnings.append(f"Сайт «{s.name}»: доступ по странам не действует — нет базы GeoIP "
                                  "(Настройки панели → Статистика)")
             return
-        ex = bool(sec.geo_exceptions)
+        exc: List[str] = []
+        for n in list(sec.geo_exceptions) + self.trusted():
+            if n not in exc:
+                exc.append(n)
+        ex = bool(exc)
         if ex:
             with c.block(f"geo $nm_geo_ex_{sid}"):
                 c.d("default", "0")
-                for net in sec.geo_exceptions:
+                for net in exc:
                     c.d(net, "1")
         key = f'"$nm_acme$nm_geo_ex_{sid}:$nm_cc"' if ex else '"$nm_acme:$nm_cc"'
         pre = "00:" if ex else "0:"
@@ -728,6 +778,7 @@ class Generator:
             c.d("server_name", " ".join(s.domains))
             c.d("set", "$nm_site", f'"{sid}"')
             self.ban_check(c, s)
+            self.ipacl_check(c, sid, s)
             self.geo_check(c, sid, s)
             self.pc.server(c, sid, s, https)
             self.pc.modsec_server(c, sid, s)
@@ -768,7 +819,13 @@ class Generator:
                     self.pc.has_limits(sid, s):
                 c.d("limit_req_status", sec.limit_status)
             self.access_rules(c, sec.access_mode == "allowlist" and sec.allow or [], sec.deny)
-            if sec.basic_auth and sec.basic_auth_users:
+            if s.ip_access.enabled and s.ip_access.deny == "password" and sec.basic_auth_users:
+                # доступ по IP с паролем для остальных: с разрешённых адресов и открытых путей — без пароля
+                c.d("auth_basic", f"$nm_ipauth_{sid}")
+                c.d("auth_basic_user_file", f"{self.p.live_root}/auth/site-{sid}.htpasswd")
+                self.files[f"auth/site-{sid}.htpasswd"] = "".join(
+                    f"{u.username}:{u.password_hash}\n" for u in sec.basic_auth_users if u.password_hash)
+            elif sec.basic_auth and sec.basic_auth_users:
                 c.d("auth_basic", quote(sec.basic_auth_realm or "Restricted"))
                 c.d("auth_basic_user_file", f"{self.p.live_root}/auth/site-{sid}.htpasswd")
                 if sec.satisfy_any and sec.access_mode == "allowlist" and sec.allow:
@@ -1001,7 +1058,9 @@ class Generator:
     def site_rate_limit(self, c: Conf, sid: int, s: Site) -> None:
         sec = s.security
         if sec.rate_limit:
-            c.d("limit_req", f"zone=nm_rl_{sid}", f"burst={sec.burst}", "nodelay" if sec.nodelay else "")
+            # burst=0 nginx не принимает: без burst — то же самое (лишние запросы сразу отклоняются)
+            c.d("limit_req", f"zone=nm_rl_{sid}", f"burst={sec.burst}" if sec.burst else "",
+                "nodelay" if sec.nodelay and sec.burst else "")
 
     def main_location(self, c: Conf, sid: int, s: Site, https: bool) -> None:
         c.line()
@@ -1039,7 +1098,8 @@ class Generator:
                     c.d("allow", ip)
                 c.d("deny", "all")
             if loc.rate_limit == "custom":
-                c.d("limit_req", f"zone=nm_rl_{sid}_l{i}", f"burst={loc.burst}", "nodelay")
+                c.d("limit_req", f"zone=nm_rl_{sid}_l{i}", f"burst={loc.burst}" if loc.burst else "",
+                    "nodelay" if loc.burst else "")
             elif loc.rate_limit == "inherit":
                 self.site_rate_limit(c, sid, s)
             self.pc.login_limit(c, sid, s)

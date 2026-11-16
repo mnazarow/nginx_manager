@@ -958,9 +958,11 @@ class Diagnostics:
         elif need:
             res.append(R("prot_challenge", g, "Проверка браузера", WARN,
                          "В nginx нет модуля secure_link — проверка браузера и режим «Под атакой» не работают",
-                         hint="Установите сборку nginx с модулем http_secure_link: в Ubuntu 22.04 и Debian — "
-                              "apt install nginx-extras (стандартный nginx-core собран без него); пакеты RHEL и "
-                              "nginx.org модуль содержат."))
+                         hint="Установите сборку nginx с модулем http_secure_link: в Ubuntu и Debian — "
+                              "nginx-extras (стандартный nginx-core собран без него; кнопка ниже заменит пакет, "
+                              "конфигурация сохранится); пакеты RHEL и nginx.org модуль содержат.",
+                         fix="install_nginx_extras" if which("apt-get") else None,
+                         fix_label="Установить nginx-extras"))
         if p.modsec_enabled:
             from ..protection.nginx import modsec_ready
             crs_dir, ver = self.app.nginx.crs()
@@ -1223,6 +1225,25 @@ class Diagnostics:
             if code != 0 and which("dnf"):
                 hint = "\nНа RHEL-системах плагины есть в EPEL: dnf install epel-release"
             return {"ok": code == 0, "output": out[-4000:] + hint}
+        if action == "install_nginx_extras":
+            # nginx-core (Ubuntu 22.04 и др.) собран без secure_link: заменить на nginx-extras того же дистрибутива
+            if not which("apt-get"):
+                return {"ok": False, "output": "Только для Debian и Ubuntu; на других системах — nginx с nginx.org"}
+            code, out = await asyncio.to_thread(
+                run, ["apt-get", "install", "-y", "-q", "-o", "Dpkg::Options::=--force-confdef", "-o",
+                      "Dpkg::Options::=--force-confold", "nginx-extras"], 900, None, {"DEBIAN_FRONTEND": "noninteractive"})
+            from ..protection.nginx import challenge_ready
+            caps = self.app.nginx.caps(refresh=True)
+            if code != 0:
+                return {"ok": False, "output": out[-4000:]}
+            if not challenge_ready(caps):
+                return {"ok": False, "output": out[-3000:] + "\nnginx-extras установлен, но модуля secure_link в nginx нет"}
+            try:
+                res = await self.app.apply(username, "nginx-extras: проверка браузера")
+            except Exception as e:  # noqa: BLE001
+                return {"ok": False, "output": out[-3000:] + f"\nnginx-extras установлен; применить конфигурацию не "
+                                                            f"удалось: {e}"}
+            return {"ok": True, "output": out[-3000:] + f"\nКонфигурация применена (версия {res.get('version')})."}
         if action == "install_stream":
             if which("apt-get"):
                 return await self._pkg_install(["libnginx-mod-stream"])

@@ -294,7 +294,7 @@ API_GROUPS = [
     ("/api/insights", "Анализ и отчёты"), ("/api/reports", "Анализ и отчёты"),
     ("/api/bans", "Блокировки и доступ по странам"), ("/api/geo", "Блокировки и доступ по странам"),
     ("/api/geoip", "Блокировки и доступ по странам"), ("/api/sync", "Несколько серверов"),
-    ("/api/peers", "Несколько серверов"),
+    ("/api/peers", "Несколько серверов"), ("/api/trusted", "Блокировки и доступ по странам"),
     ("/api/alerts", "Оповещения"),
     ("/api/users", "Пользователи и аудит"), ("/api/audit", "Пользователи и аудит"), ("/api/events", "Пользователи и аудит"),
     ("/api/backup", "Резервные копии и импорт"), ("/api/import", "Резервные копии и импорт"),
@@ -399,7 +399,9 @@ def crs_groups():
 
 
 def vuln_sources():
+    from app.protection import distro as DI
     from app.protection import vulndb as V
+    from app.protection import wordpress as WP
     rows = [("kev", "Каталог CISA Known Exploited Vulnerabilities: производитель, продукт, дата добавления, срок "
                     "устранения, использование вымогателями, что делать", " или ".join(V.KEV_URLS)),
             ("nuclei", "Индекс CVE шаблонов nuclei-templates (название, критичность, CVSS, описание) и шаблоны "
@@ -411,6 +413,13 @@ def vuln_sources():
                         "затронутые версии, дата публикации", V.CVELIST_RAW.replace("{year}/{group}xxx/{cve}",
                                                                                    "<год>/<N>xxx/<CVE>")),
             ("exploitdb", "Номера опубликованных эксплойтов (EDB-ID) для CVE", " или ".join(V.EXPLOITDB_URLS)),
+            ("distro", "Для продуктов из сборок Ubuntu и Debian на ваших сайтах: в каком пакете исправлена "
+                       "уязвимость (OSV) и не исключён ли уязвимый код из сборки (OpenVEX Ubuntu)",
+             "Ubuntu — " + " или ".join(u.replace("{year}/", "<год>/").replace("{cve}", "<CVE>")
+                                      for u in DI.UBUNTU_OSV + DI.UBUNTU_VEX)
+             + "; Debian — " + DI.DEBIAN_OSV[0].replace("{cve}", "<CVE>")),
+            ("wordfence", "Уязвимости плагинов, тем и ядра WordPress с диапазонами версий и исправленными версиями "
+                          "(лента production v3; нужен бесплатный ключ API)", WP.WORDFENCE_URLS["production"]),
             ("crs", "Последний выпуск OWASP Core Rule Set (если источник правил — GitHub)",
              f"{V.CRS_LATEST} → архив выпуска")]
     out = ["| Источник | Что даёт | Адрес |", "|---|---|---|"]
@@ -435,6 +444,8 @@ BLOCKS = {
     "stream": lambda: plain(M.Stream, 3, "stream"),
     "global": lambda: tabbed(M.GlobalSettings, M.GLOBAL_TABS, "global"),
     "panel": lambda: tabbed(M.PanelSettings, M.PANEL_TABS, "panel"),
+    "panel_trusted": lambda: "\n".join(render_fields([f for f in describe(M.PanelSettings) if f.get("tab") == "trusted"],
+                                                     level=3, kind="panel")),
     "certificate": lambda: plain(M.CertificateRequest, 3, "certificate"),
     "dns_account": lambda: plain(M.DnsAccount, 3, "dns_account"),
     "protection": lambda: tabbed(M.ProtectionSettings, M.PROTECTION_TABS, "protection"),

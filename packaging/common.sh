@@ -90,6 +90,31 @@ pkg_installed() {
   esac
 }
 
+# Доустановить недостающее: базовые утилиты и пакеты для функций панели («nmctl deps» новой версии знает, что
+# нужно при текущих настройках: модуль stream, secure_link — nginx-extras в Debian/Ubuntu, ModSecurity и CRS, certbot)
+ensure_packages() {
+  local base="" p missing="" feat="" failed=""
+  case "$PKG" in
+    apt) base="openssl curl ca-certificates logrotate iproute2 procps python3-venv" ;;
+    dnf|yum) base="openssl curl ca-certificates logrotate iproute procps-ng" ;;
+    *) warn "пакетный менеджер не поддерживается — пакеты не проверяются"; return 0 ;;
+  esac
+  for p in $base; do pkg_installed "$p" || missing="$missing $p"; done
+  feat="$(cd "$INSTALL_DIR" && "$INSTALL_DIR/venv/bin/python" -m app.cli deps --packages "$PKG" 2>>"$LOG_FILE")" || feat=""
+  for p in $feat; do case " $missing " in *" $p "*) ;; *) missing="$missing $p" ;; esac; done
+  missing="${missing# }"
+  if [ -z "$missing" ]; then ok "все необходимые пакеты и модули установлены"; return 0; fi
+  info "Недостаёт: $missing"
+  if [ "$PKG" = apt ]; then retry 2 run apt-get update -q || warn "apt-get update не выполнен — пакеты из кэша"; fi
+  for p in $missing; do
+    if pkg_installed "$p" || retry 2 pkg_install "$p"; then ok "установлен $p"; else failed="$failed $p"; fi
+  done
+  if [ -n "$failed" ]; then
+    warn "не удалось установить:$failed (см. $LOG_FILE) — функции, которым они нужны, останутся недоступны"
+  fi
+  return 0
+}
+
 find_python() {  # выбрать интерпретатор Python >= 3.9
   local c
   for c in python3.13 python3.12 python3.11 python3.10 python3.9 python3; do

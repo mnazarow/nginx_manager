@@ -15,6 +15,9 @@ import urllib.parse
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
+from . import wordpress as WP
+from .distro import distro_of
+
 
 @dataclass(frozen=True)
 class Tech:
@@ -163,11 +166,15 @@ def detect(headers: List[Tuple[str, str]], body: str) -> List[Dict[str, Any]]:
         re.findall(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+name=["\']generator["\']', low, re.I)
     found: Dict[str, Dict[str, Any]] = {}
 
-    def add(t: Tech, version: str, evidence: str) -> None:
+    def add(t: Tech, version: str, evidence: str, raw: str = "") -> None:
         cur = found.get(t.id)
         if cur and (cur["version"] or not version):
             return
         found[t.id] = {"id": t.id, "name": t.name, "cat": t.cat, "version": version or "", "evidence": evidence}
+        # сборка дистрибутива: «Apache/2.4.52 (Ubuntu)», «PHP/8.1.2-1ubuntu2.14» — исправления переносятся в пакет
+        dist, pkgver = distro_of(raw) if raw else ("", "")
+        if dist:
+            found[t.id].update(distro=dist, pkgver=pkgver)
 
     for t in TECHS:
         for hname, rx in t.headers:
@@ -175,7 +182,7 @@ def detect(headers: List[Tuple[str, str]], body: str) -> List[Dict[str, Any]]:
                 m = re.search(rx, v, re.I) if rx else True
                 if m:
                     ver = m.group(1) if rx and m.re.groups and m.group(1) else ""
-                    add(t, ver or "", f"заголовок {hname}: {v[:80]}")
+                    add(t, ver or "", f"заголовок {hname}: {v[:80]}", v)
         for rx in t.cookies:
             for c in cookies:
                 if re.search(rx, c, re.I):
@@ -326,8 +333,16 @@ def scan_site(site, deep: bool = False) -> Dict[str, Any]:
         tech = detect(hdrs, body)
         if deep:
             tech = merge(tech, probe(*t))
-        return {"ts": time.time(), "status": status, "tech": tech, "error": "", "deep": deep,
-                "target": f"{t[0]}://{t[1]}:{t[2]} (Host: {t[3]})"}
+        res = {"ts": time.time(), "status": status, "tech": tech, "error": "", "deep": deep,
+               "target": f"{t[0]}://{t[1]}:{t[2]} (Host: {t[3]})"}
+        core = next((x for x in tech if x["id"] == "wordpress"), None)
+        if core:
+            # плагины и темы — по ссылкам главной; при углублённой проверке версии уточняются по readme.txt
+            wp = WP.detect(body, core.get("version", ""))
+            if deep and (wp["plugins"] or wp["themes"]):
+                wp = WP.probe(t, wp, fetch)
+            res["wp"] = wp
+        return res
     except Exception as e:  # noqa: BLE001
         return {"ts": time.time(), "tech": [], "error": str(e)[:200], "target": f"{t[0]}://{t[1]}:{t[2]}"}
 

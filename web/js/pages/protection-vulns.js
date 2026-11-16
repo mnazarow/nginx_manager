@@ -162,7 +162,7 @@ export async function vulnsTab(view, { cfg, sites }) {
         h('div', { class: 'small muted mt' }, 'Не попали в карту, чтобы не задеть обычных посетителей:'),
         h('ul', { class: 'small', style: { margin: '4px 0 0', paddingLeft: '18px' } }, reasons.map(([k, l]) => h('li', {}, `${l}: ${fmtInt(mp[k] || 0)}`))),
         h('div', { class: 'small mt' }, 'Режим категории «Эксплойты известных уязвимостей» — на вкладке ', h('a', { href: '#/protection?tab=waf' }, 'Фильтр запросов'), '.')), { sub: 'точное совпадение пути, без потерь скорости' })),
-    await techCard((f) => { state.filter = f; mount(segBox, segmented(FILTERS, f, (v) => { state.filter = v; load(); })); load(); dbCard.scrollIntoView({ behavior: 'smooth' }); }),
+    await techCard((f) => { state.filter = f; mount(segBox, segmented(FILTERS, f, (v) => { state.filter = v; load(); })); load(); dbCard.scrollIntoView({ behavior: 'smooth' }); }, (cve) => openVuln(cve, { sites })),
     dbCard,
     card('Настройки', h('div', {}, form, can('admin') ? h('div', { class: 'row mt' }, h('button', { class: 'btn primary', onclick: async () => {
       try { await saveSettings(obj, 'Настройки базы уязвимостей сохранены. Карта путей пересобирается'); errors = {}; } catch (e) { errors = errorsToMap(e); drawForm(); }
@@ -200,7 +200,8 @@ export async function openVuln(cve, { sites = [] } = {}) {
     ['Каталог CISA KEV', v.kev ? `добавлена ${v.kev_added}${v.kev_due ? `, срок устранения для госорганов США — ${v.kev_due}` : ''}` : 'нет'],
     v.ransomware ? ['Вымогатели', h('b', { class: 'bad-text' }, 'используется в атаках вымогателей')] : null,
     v.on_sites && v.on_sites.length ? ['На ваших сайтах', h('div', {}, v.on_sites.map(x => h('div', {}, `${x.name}: ${x.tech}${x.version ? ' ' + x.version : ''} — `,
-      x.affected === true ? h('b', { class: 'bad-text' }, 'версия уязвима') : x.affected === false ? h('span', {}, 'версия не затронута') : h('span', { class: 'muted' }, x.version ? 'не удалось сравнить версии' : 'версия неизвестна'))))] : null,
+      x.affected === true ? h('b', { class: 'bad-text' }, 'версия уязвима') : x.affected === false ? h('span', {}, 'версия не затронута') : h('span', { class: x.note ? 'warning-text' : 'muted' }, x.note ? 'проверьте пакет' : x.version ? 'не удалось сравнить версии' : 'версия неизвестна'),
+      x.note ? h('div', { class: 'small muted' }, x.note) : null)))] : null,
     v.cwe ? ['Тип (CWE)', v.cwe] : null,
     v.exploits && v.exploits.length ? ['Публичные эксплойты', h('span', {}, v.exploits.slice(0, 6).map((id, i) => [i ? ', ' : '', h('a', { href: `https://www.exploit-db.com/exploits/${id}`, target: '_blank', rel: 'noopener noreferrer' }, `EDB-${id}`)]))] : null,
     v.tags ? ['Метки шаблона', h('span', { class: 'small' }, v.tags.split(',').join(', '))] : null,

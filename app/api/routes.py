@@ -271,7 +271,16 @@ def _site_row(app, r: Dict[str, Any], live: Dict[str, Any], health: Dict[str, Li
             "err5_pct": lv.get("err5_pct", 0), "rt_avg": lv.get("rt_avg", 0), "updated_at": r["updated_at"],
             "locations": len(d.get("locations", [])),
             "geo": {"mode": (d.get("security") or {}).get("geo_mode", "off"),
-                    "countries": (d.get("security") or {}).get("geo_countries", [])}}
+                    "countries": (d.get("security") or {}).get("geo_countries", [])},
+            "ip_access": _ip_access_brief(d)}
+
+
+def _ip_access_brief(d: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    a = d.get("ip_access") or {}
+    sec = d.get("security") or {}
+    if not a.get("enabled") and sec.get("access_mode") == "allowlist" and sec.get("allow"):
+        return {"count": len(sec["allow"]), "deny": "403"}  # сайт прежней версии, ещё не пересохранён
+    return {"count": len(a.get("entries") or []), "deny": a.get("deny", "403")} if a.get("enabled") else None
 
 
 @router.get("/sites")
@@ -1315,9 +1324,13 @@ async def bans_add(body: BanBody, request: Request, user=Depends(operator)):
     for n in nets:
         if own and in_any(own, [n]):
             raise HTTPException(400, f"{n}: в этот диапазон входит ваш собственный адрес ({own}) — вы потеряете доступ")
+        hit = app.bans.trusted_entry(n)
+        if hit:
+            raise HTTPException(400, f"{n}: адрес в разделе «Доверенные адреса» ({hit}) — доверенные адреса не "
+                                     "блокируются. Уберите его оттуда, если блокировка действительно нужна")
         if not body.force and (in_any(n, trusted) or in_any(n.split("/")[0], trusted)):
-            raise HTTPException(400, f"{n}: адрес в списке доверенных (localhost, «Никогда не блокировать» или "
-                                     "доступ к панели). Уберите его оттуда или подтвердите блокировку")
+            raise HTTPException(400, f"{n}: адрес в списке доверенных (localhost или «Доступ к панели только с IP»). "
+                                     "Уберите его оттуда или подтвердите блокировку")
     country = ""
     for n in nets:
         if "/" not in n and app.stats.geoip.reader:
@@ -2132,3 +2145,4 @@ async def ws(websocket: WebSocket):
 
 from . import protection as _protection  # noqa: E402,F401 — регистрирует маршруты раздела «Защита»
 from . import sync as _sync  # noqa: E402,F401 — регистрирует маршруты нескольких серверов
+from . import trusted as _trusted  # noqa: E402,F401 — регистрирует маршруты раздела «Доверенные адреса»

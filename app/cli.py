@@ -17,6 +17,7 @@
     nmctl vulns status                базы защиты: источники, число записей, карта путей эксплойтов
     nmctl vulns update                обновить базу уязвимостей (и правила OWASP CRS, если источник — GitHub)
     nmctl vulns search ТЕКСТ          поиск по базе уязвимостей; nmctl vulns show CVE — карточка
+    nmctl deps                        системные пакеты и модули nginx для включённых функций (--packages apt|dnf)
 """
 from __future__ import annotations
 
@@ -467,6 +468,25 @@ def cmd_vulns(a) -> int:
     return 0
 
 
+def cmd_deps(a) -> int:
+    """Пакеты и модули для функций панели: что есть, чего не хватает; --packages apt|dnf — список для установки."""
+    from .services.deps import missing_packages, report
+    db = _db()
+    items = report(db, _manager(db))
+    if a.packages:
+        for name in missing_packages(items, a.packages):
+            print(name)
+        return 0
+    if a.json:
+        print(json.dumps(items, ensure_ascii=False, indent=1))
+        return 0
+    for x in items:
+        st = "ok" if x["ok"] else ("fail" if x["required"] else "warn")
+        pk = ", ".join(x["apt"] or x["dnf"]) if not x["ok"] else ""
+        print(f"  {C[st]}{ICON[st]}{C['r']} {x['title']}: {x['why']}" + (f" — пакеты: {pk}" if pk else ""))
+    return 0 if all(x["ok"] for x in items) else 2
+
+
 def main(argv=None) -> int:
     import os
     os.umask(0o022)
@@ -506,6 +526,10 @@ def main(argv=None) -> int:
                                                      "ransomware", "critical", "epss"])
     p.add_argument("--sort", default="kev", choices=["kev", "new", "cvss", "epss", "seen", "cve"])
     p.add_argument("--limit", type=int, default=30)
+    p = sub.add_parser("deps", help="системные пакеты и модули nginx для функций панели")
+    p.add_argument("--packages", default="", choices=["", "apt", "dnf", "yum"],
+                   help="вывести недостающие пакеты для пакетного менеджера (по одному в строке)")
+    p.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
     if not a.cmd:
         ap.print_help()
@@ -513,7 +537,8 @@ def main(argv=None) -> int:
     cmd = {"status": cmd_status, "apply": cmd_apply, "test": cmd_test, "diag": cmd_diag, "user": cmd_user,
            "allowlist": cmd_allowlist, "backup": cmd_backup, "restore": cmd_restore, "export": cmd_export,
            "import": cmd_import,
-           "versions": cmd_versions, "rollback": cmd_rollback, "sites": cmd_sites, "vulns": cmd_vulns}[a.cmd]
+           "versions": cmd_versions, "rollback": cmd_rollback, "sites": cmd_sites, "vulns": cmd_vulns,
+           "deps": cmd_deps}[a.cmd]
     from .nginx.manager import ApplyError
     try:
         return cmd(a)

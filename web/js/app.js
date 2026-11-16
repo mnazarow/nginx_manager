@@ -13,7 +13,7 @@ export const NAV = [
     ['/sites', 'Сайты', 'sites'], ['/streams', 'TCP/UDP-потоки', 'stream'], ['/certs', 'Сертификаты', 'cert'],
     ['/global', 'Настройки nginx', 'sliders'], ['/versions', 'Версии конфигурации', 'history']]],
   ['Защита', [
-    ['/protection', 'Защита от атак', 'guard'], ['/bans', 'Блокировки IP', 'ban']]],
+    ['/protection', 'Защита от атак', 'guard'], ['/bans', 'Блокировки IP', 'ban'], ['/trusted', 'Доверенные адреса', 'trusted']]],
   ['Обслуживание', [
     ['/diagnostics', 'Диагностика', 'stethoscope'], ['/alerts', 'Оповещения', 'bell'], ['/events', 'События', 'activity']]],
   ['Администрирование', [
@@ -27,7 +27,7 @@ const PAGES = {
   '/system': 'system', '/sites': 'sites', '/streams': 'streams', '/certs': 'certs', '/global': 'global',
   '/versions': 'versions', '/diagnostics': 'diagnostics', '/alerts': 'alerts', '/events': 'events', '/users': 'users',
   '/audit': 'audit', '/settings': 'settings', '/backup': 'backup', '/docs': 'docs', '/profile': 'profile',
-  '/bans': 'bans', '/insights': 'insights', '/protection': 'protection',
+  '/bans': 'bans', '/insights': 'insights', '/protection': 'protection', '/trusted': 'trusted',
 };
 
 export const ctx = { state: null, schema: null, user: null, cleanup: null, route: '', params: {} };

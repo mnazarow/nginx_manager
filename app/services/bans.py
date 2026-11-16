@@ -211,7 +211,33 @@ class BanService:
 
     def trusted_nets(self) -> List[str]:
         p = self.app.panel()
-        return ALWAYS_TRUSTED + list(p.autoban_whitelist) + list(p.panel_allow)
+        return ALWAYS_TRUSTED + [e.address for e in p.trusted_ips] + list(p.autoban_whitelist) + list(p.panel_allow)
+
+    def trusted_entry(self, net: str) -> Optional[str]:
+        """Доверенная запись, в которую входит адрес или подсеть (или которая входит в подсеть) — либо None."""
+        try:
+            n = ipaddress.ip_network(net, strict=False)
+        except ValueError:
+            return None
+        for e in self.app.panel().trusted_ips:
+            t = ipaddress.ip_network(e.address, strict=False)
+            if t.version == n.version and (n.subnet_of(t) or t.subnet_of(n)):
+                return f"{e.address}" + (f" ({e.comment})" if e.comment else "")
+        return None
+
+    def drop_trusted(self) -> int:
+        """Снять блокировки адресов, попавших в доверенные (после пополнения списка)."""
+        trusted = [ipaddress.ip_network(e.address, strict=False) for e in self.app.panel().trusted_ips]
+        n = 0
+        for r in self.db.query("SELECT id, net FROM bans"):
+            try:
+                net = ipaddress.ip_network(r["net"], strict=False)
+            except ValueError:
+                continue
+            if any(net.version == t.version and net.subnet_of(t) for t in trusted):
+                self.remove(r["id"])
+                n += 1
+        return n
 
     def offense_count(self, ip: str) -> int:
         r = self.db.one("SELECT count, last_at FROM ban_offenses WHERE ip=?", (ip,))
@@ -221,8 +247,13 @@ class BanService:
 
     def add(self, net: str, minutes: Optional[int], reason: str = "", source: str = "manual", username: str = "",
             rule: str = "", details: Optional[Dict[str, Any]] = None, country: str = "") -> Dict[str, Any]:
-        """Заблокировать адрес/подсеть. minutes=None — бессрочно. Повторная блокировка обновляет срок."""
+        """Заблокировать адрес/подсеть. minutes=None — бессрочно. Повторная блокировка обновляет срок.
+        Доверенные адреса (раздел «Доверенные адреса») не блокируются никогда — ValueError."""
         n = normalize_net(net)
+        hit = self.trusted_entry(n)
+        if hit:
+            raise ValueError(f"{n}: адрес в доверенных ({hit}) — такие адреса не блокируются. Уберите его из "
+                             "раздела «Доверенные адреса», если блокировка действительно нужна")
         now = time.time()
         expires = None if minutes is None else now + max(1, int(minutes)) * 60
         existing = self.db.one("SELECT * FROM bans WHERE net=?", (n,))
@@ -276,9 +307,22 @@ class BanService:
     def render_file(self) -> str:
         nets = [r["net"] for r in self.db.query(
             "SELECT net FROM bans WHERE expires_at IS NULL OR expires_at > ? ORDER BY net", (time.time(),))]
+        trusted = [e.address for e in self.app.panel().trusted_ips]
+        tn = [ipaddress.ip_network(t, strict=False) for t in trusted]
+
+        def inside(n: str) -> bool:
+            try:
+                x = ipaddress.ip_network(n, strict=False)
+            except ValueError:
+                return False
+            return any(x.version == t.version and x.subnet_of(t) for t in tn)
+        nets = [n for n in nets if not inside(n)]
         head = ["# Nginx Manager: заблокированные IP (раздел «Блокировки»). Файл перезаписывается панелью.",
                 f"# Записей: {len(nets)}, обновлён {time.strftime('%Y-%m-%d %H:%M:%S')}"]
-        return "\n".join(head + [f"{n} 1;" for n in nets]) + "\n"
+        # доверенные — «0»: geo выбирает самую точную подсеть, так что доверенный адрес внутри заблокированной
+        # подсети остаётся открытым
+        tail = ["# доверенные адреса (никогда не блокируются)"] + [f"{t} 0;" for t in trusted] if trusted else []
+        return "\n".join(head + [f"{n} 1;" for n in nets] + tail) + "\n"
 
     def stats(self) -> Dict[str, Any]:
         now = time.time()

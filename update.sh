@@ -6,15 +6,16 @@
 #  sudo ./update.sh --source /tmp/nm-1.1.0  обновить из распакованного архива новой версии
 #  sudo ./update.sh --archive nm-1.1.0.tar.gz
 #
-#  Порядок: резервная копия (БД + настройки + код) → остановка → замена кода → зависимости →
-#           миграция БД → запуск → проверка → применение конфигурации. При сбое — автоматический откат.
+#  Порядок: резервная копия (БД + настройки + код) → остановка → замена кода → зависимости Python →
+#           миграция БД → системные пакеты и модули nginx → запуск → проверка → применение конфигурации.
+#           При сбое — автоматический откат.
 # =============================================================================
 set -uo pipefail
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=packaging/common.sh
 . "$SELF_DIR/packaging/common.sh"
 
-SRC=""; ARCHIVE=""; DO_BACKUP=1; DO_APPLY=1; ASSUME_YES=0; FORCE=0; WHEELS_DIR=""
+SRC=""; ARCHIVE=""; DO_BACKUP=1; DO_APPLY=1; ASSUME_YES=0; FORCE=0; WHEELS_DIR=""; DO_PACKAGES=1
 usage() {
   cat <<EOF
 Использование: sudo $0 [параметры]
@@ -23,6 +24,7 @@ usage() {
   --wheels DIR      офлайн-установка зависимостей из каталога wheel-файлов
   --no-backup       не создавать резервную копию (не рекомендуется)
   --no-apply        не переприменять конфигурацию nginx после обновления
+  --no-packages     не доустанавливать системные пакеты и модули nginx
   --with-geoip      установить поддержку GeoIP (пакет maxminddb), если её ещё нет
   --force           обновить, даже если версия не новее
   -y, --yes         не задавать вопросов
@@ -35,6 +37,7 @@ while [ $# -gt 0 ]; do
     --wheels) WHEELS_DIR="$2"; shift ;;
     --no-backup) DO_BACKUP=0 ;;
     --no-apply) DO_APPLY=0 ;;
+    --no-packages) DO_PACKAGES=0 ;;
     --with-geoip) WITH_GEOIP=1 ;;
     --force) FORCE=1 ;;
     -y|--yes) ASSUME_YES=1 ;;
@@ -115,9 +118,16 @@ ok "файлы версии $NEW скопированы"
 step "Зависимости Python"
 PIP_OPTS="-q --disable-pip-version-check"
 [ -n "$WHEELS_DIR" ] && PIP_OPTS="$PIP_OPTS --no-index --find-links $WHEELS_DIR"
-if [ ! -x "$INSTALL_DIR/venv/bin/python" ]; then
-  PY="$(find_python)" || rollback
-  run "$PY" -m venv "$INSTALL_DIR/venv" || rollback
+# venv пересоздаётся, если его Python больше не запускается (после обновления системы до нового выпуска
+# дистрибутива: python3.10 → python3.12 и т. п.) или в нём нет pip
+if [ ! -x "$INSTALL_DIR/venv/bin/python" ] || ! "$INSTALL_DIR/venv/bin/python" -m pip --version >/dev/null 2>&1; then
+  warn "окружение Python панели повреждено или устарело — создаётся заново"
+  PY="$(find_python)" || { [ "$PKG" = apt ] && pkg_install python3 python3-venv >/dev/null 2>&1; PY="$(find_python)"; } || rollback
+  if [ "$PKG" = apt ] && ! "$PY" -m venv --help >/dev/null 2>&1; then pkg_install python3-venv || true; fi
+  rm -rf "$INSTALL_DIR/venv"
+  run "$PY" -m venv "$INSTALL_DIR/venv" || { [ "$PKG" = apt ] && pkg_install python3-venv && run "$PY" -m venv "$INSTALL_DIR/venv"; } \
+    || rollback
+  ok "окружение Python пересоздано: $("$INSTALL_DIR/venv/bin/python" --version 2>&1)"
 fi
 retry 3 run "$INSTALL_DIR/venv/bin/pip" install $PIP_OPTS --upgrade -r "$INSTALL_DIR/requirements.txt" || rollback
 if [ "${WITH_GEOIP:-0}" = 1 ] || "$INSTALL_DIR/venv/bin/python" -c 'import maxminddb' 2>/dev/null \
@@ -146,6 +156,11 @@ from app.db import Database
 db = Database(settings.db_path)
 print('схема БД версии', db.schema_version)
 " >>"$LOG_FILE" 2>&1; then ok "схема БД актуальна"; else rollback; fi
+
+if [ "$DO_PACKAGES" = 1 ]; then
+  step "Системные пакеты и модули"
+  ensure_packages
+fi
 
 step "Запуск"
 service_start

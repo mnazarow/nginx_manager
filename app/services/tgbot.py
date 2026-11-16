@@ -1,4 +1,4 @@
-"""Действия из Telegram: кнопки под уведомлениями об атакующих адресах.
+"""Действия из Telegram: кнопки под уведомлениями об атакующих адресах и команды боту.
 
 Под уведомлением об автоблокировке, активном атакующем и т. п. бот показывает кнопки: «Заблокировать на сутки»,
 «Разблокировать», «Пожаловаться в AbuseIPDB» и ссылку на профиль адреса в панели. Нажатие приходит панели через
@@ -7,6 +7,8 @@ getUpdates (длинный опрос, без входящих подключе�
   * нажали в том же чате, куда ушло уведомление;
   * нажавший — в списке разрешённых пользователей Telegram канала (если список задан).
 Каждое действие пишется в журнал событий и аудит с именем пользователя Telegram.
+
+Команды в том же чате (те же права): /status, /top, /ip, /ban, /unban, /help.
 """
 from __future__ import annotations
 
@@ -17,14 +19,24 @@ import ipaddress
 import json
 import logging
 import secrets
+import socket
 import time
 import urllib.error
 import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
 
+from ..config import VERSION
+
 log = logging.getLogger("nm.tgbot")
 
 ACTIONS = {"b": "Заблокировать на сутки", "u": "Разблокировать", "r": "Пожаловаться в AbuseIPDB"}
+COMMANDS = ("help", "start", "status", "top", "ip", "ban", "unban")
+HELP = ("Команды Nginx Manager:\n"
+        "/status — состояние: nginx, атаки за час, блокировки, «Под атакой», проблемы\n"
+        "/top — самые активные атакующие за час (с кнопками блокировки)\n"
+        "/ip 203.0.113.5 — адрес: атаки за неделю, сеть, блокировка\n"
+        "/ban 203.0.113.5 [часов] — заблокировать (по умолчанию на сутки)\n"
+        "/unban 203.0.113.5 — разблокировать")
 
 
 def secret(db) -> bytes:
@@ -125,6 +137,18 @@ class TelegramActions:
             return ""
         return f"https://{p.panel_domain}/#/protection?tab=attackers&hours=168&q={ip}"
 
+    # ---------------------------------------------------------------- права
+    @staticmethod
+    def check(ch, chat: str, user: Dict[str, Any]) -> Tuple[str, str]:
+        """(кто, ошибка): действие — только из чата канала и, если задан список, только разрешённым."""
+        if chat != str(ch.telegram_chat_id):
+            return "", "Действие доступно только в чате уведомлений"
+        uid = str(user.get("id", ""))
+        if ch.telegram_admins and uid not in ch.telegram_admins and f"@{user.get('username', '')}" not in \
+                ch.telegram_admins:
+            return "", "Нет прав: вас нет в списке разрешённых пользователей канала"
+        return (f"telegram:@{user['username']}" if user.get("username") else f"telegram:{uid}"), ""
+
     # ---------------------------------------------------------------- обработка нажатия
     def handle(self, ch, cq: Dict[str, Any]) -> str:
         """Нажатие кнопки → текст ответа (показывается во всплывающем окне Telegram)."""
@@ -132,21 +156,21 @@ class TelegramActions:
         if not parsed:
             return "Кнопка устарела или подделана"
         chat = str(((cq.get("message") or {}).get("chat") or {}).get("id", ""))
-        if chat != str(ch.telegram_chat_id):
-            return "Действие доступно только в чате уведомлений"
-        user = cq.get("from") or {}
-        uid = str(user.get("id", ""))
-        if ch.telegram_admins and uid not in ch.telegram_admins and f"@{user.get('username', '')}" not in \
-                ch.telegram_admins:
-            return "Нет прав: вас нет в списке разрешённых пользователей канала"
-        who = f"telegram:@{user['username']}" if user.get("username") else f"telegram:{uid}"
+        who, err = self.check(ch, chat, cq.get("from") or {})
+        if err:
+            return err
         act, ip = parsed
+        return self.act(act, ip, who, chat)
+
+    def act(self, act: str, ip: str, who: str, chat: str, minutes: int = 1440) -> str:
         try:
             if act == "b":
-                self.app.bans.add(ip, 1440, "Из Telegram", "manual", who, "manual")
+                self.app.bans.add(ip, minutes, "Из Telegram", "manual", who, "manual")
                 spawn_sync(self.app)
-                self.db.event("info", "bans", f"{ip} заблокирован на сутки из Telegram ({who})")
-                msg = f"{ip} заблокирован на сутки"
+                span = "на сутки" if minutes == 1440 else f"на {minutes // 60} ч" if minutes % 60 == 0 else \
+                    f"на {minutes} мин"
+                self.db.event("info", "bans", f"{ip} заблокирован {span} из Telegram ({who})")
+                msg = f"{ip} заблокирован {span}"
             elif act == "u":
                 row = self.db.one("SELECT id FROM bans WHERE net=?", (ip,))
                 if not row:
@@ -165,10 +189,107 @@ class TelegramActions:
                          ip, json.dumps({"via": "telegram", "chat": chat}, ensure_ascii=False)))
         return msg
 
+    # ---------------------------------------------------------------- команды
+    def command(self, ch, msg: Dict[str, Any]) -> Optional[Tuple[str, Optional[Dict[str, Any]]]]:
+        """Команда в чате канала → (текст ответа, клавиатура) или None, если это не команда панели."""
+        text = (msg.get("text") or "").strip()
+        if not text.startswith("/"):
+            return None
+        parts = text.split()
+        cmd = parts[0][1:].split("@", 1)[0].lower()
+        args = parts[1:]
+        if cmd not in COMMANDS:
+            return None
+        chat = str((msg.get("chat") or {}).get("id", ""))
+        if chat != str(ch.telegram_chat_id):
+            return None  # чужой чат — молчим
+        who, err = self.check(ch, chat, msg.get("from") or {})
+        if err:
+            return err, None
+        if cmd in ("help", "start"):
+            return HELP, None
+        if cmd == "status":
+            return self.status_text(), None
+        if cmd == "top":
+            return self.top_text()
+        ip = args[0] if args else ""
+        try:
+            ipaddress.ip_network(ip, strict=False)
+        except ValueError:
+            return f"Укажите адрес: /{cmd} 203.0.113.5" + (" [часов]" if cmd == "ban" else ""), None
+        if cmd == "ip":
+            return self.ip_text(ip)
+        if cmd == "ban":
+            hours = 24
+            if len(args) > 1:
+                try:
+                    hours = max(1, min(int(args[1]), 24 * 365))
+                except ValueError:
+                    return "Срок — число часов: /ban 203.0.113.5 6", None
+            return self.act("b", ip, who, chat, hours * 60), None
+        if cmd == "unban":
+            return self.act("u", ip, who, chat), None
+        return None
+
+    def status_text(self) -> str:
+        app = self.app
+        now = time.time()
+        ov = self.db.one("SELECT SUM(CASE WHEN action='blocked' THEN n ELSE 0 END) AS blocked, "
+                         "SUM(CASE WHEN action='challenged' THEN n ELSE 0 END) AS challenged, SUM(n) AS n "
+                         "FROM attack_minute WHERE ts>=?", (now - 3600,)) or {}
+        bans = (self.db.one("SELECT COUNT(*) AS n FROM bans WHERE expires_at IS NULL OR expires_at>?", (now,))
+                or {}).get("n", 0)
+        st = app.protection.attack_state()
+        under = ["все сайты"] if st.get("global") else []
+        under += [f"сайт {k}" for k, v in (st.get("sites") or {}).items() if v]
+        counts = (getattr(app.insights, "last", None) or {}).get("counts") or {}
+        try:
+            running = app.nginx.is_running()
+        except Exception:  # noqa: BLE001
+            running = False
+        lines = [f"{socket.gethostname()} · Nginx Manager {VERSION}",
+                 f"nginx: {'работает' if running else 'НЕ РАБОТАЕТ'}",
+                 f"Атак за час: {int(ov.get('n') or 0)} (заблокировано {int(ov.get('blocked') or 0)}, "
+                 f"проверка браузера {int(ov.get('challenged') or 0)})",
+                 f"Заблокированных адресов: {bans}",
+                 f"«Под атакой»: {', '.join(under) if under else 'выключен'}",
+                 f"Проблемы по анализу: критичных {counts.get('crit', 0)}, внимание {counts.get('warn', 0)}"]
+        return "\n".join(lines)
+
+    def top_text(self) -> Tuple[str, Optional[Dict[str, Any]]]:
+        rows = self.app.protection.analytics.attackers(1, limit=5)
+        if not rows:
+            return "За последний час атак не было", None
+        key = secret(self.db)
+        lines, kb = ["Атакующие за час:"], []
+        for r in rows:
+            lines.append(f"{r['ip']}{' (' + r['country'] + ')' if r.get('country') else ''}: оценка {r['score']}, "
+                         f"атак {r['n']}, {r['tool_title']}" + (" — заблокирован" if r["banned"] else ""))
+            if not r["banned"]:
+                kb.append([{"text": f"Заблокировать {r['ip']}", "callback_data": callback_data(key, "b", r["ip"])}])
+        return "\n".join(lines), ({"inline_keyboard": kb[:5]} if kb else None)
+
+    def ip_text(self, ip: str) -> Tuple[str, Optional[Dict[str, Any]]]:
+        rows = [r for r in self.app.protection.analytics.attackers(168, limit=2000) if r["ip"] == ip]
+        ban = self.db.one("SELECT expires_at, reason FROM bans WHERE net=?", (ip,))
+        if rows:
+            r = rows[0]
+            text = (f"{ip}{' (' + r['country'] + ')' if r.get('country') else ''}"
+                    f"{', AS' + str(r['asn']) + ' ' + r.get('org', '') if r.get('asn') else ''}\n"
+                    f"За неделю: атак {r['n']}, правил {r['rules']}, сайтов {r['sites']}, оценка угрозы {r['score']}, "
+                    f"инструмент — {r['tool_title']}")
+        else:
+            text = f"{ip}: атак за неделю нет"
+        text += "\n" + (f"Заблокирован: {ban['reason']}" if ban else "Не заблокирован")
+        acts = ["u"] if ban else ["b"]
+        if self.app.protection.settings().abuseipdb_key:
+            acts.append("r")
+        return text, keyboard(secret(self.db), ip, acts, self.profile_url(ip))
+
     def poll_once(self, token_key: str, ch, timeout: int = 25) -> int:
-        """Один длинный опрос getUpdates для бота канала; возвращает число обработанных нажатий."""
+        """Один длинный опрос getUpdates для бота канала; возвращает число обработанных нажатий и команд."""
         off = self.offsets.get(token_key)
-        payload: Dict[str, Any] = {"timeout": timeout, "allowed_updates": ["callback_query"]}
+        payload: Dict[str, Any] = {"timeout": timeout, "allowed_updates": ["callback_query", "message"]}
         if off is not None:
             payload["offset"] = off
         d = api(ch.telegram_api, ch.telegram_token, "getUpdates", payload, timeout=timeout + 10)
@@ -177,6 +298,19 @@ class TelegramActions:
         n = 0
         for u in d.get("result") or []:
             self.offsets[token_key] = u["update_id"] + 1
+            msg_in = u.get("message")
+            if msg_in:
+                res = self.command(ch, msg_in)
+                if res:
+                    text, markup = res
+                    body: Dict[str, Any] = {"chat_id": ch.telegram_chat_id, "text": text[:4000],
+                                            "reply_to_message_id": msg_in.get("message_id"),
+                                            "disable_web_page_preview": True}
+                    if markup:
+                        body["reply_markup"] = markup
+                    api(ch.telegram_api, ch.telegram_token, "sendMessage", body, timeout=15)
+                    n += 1
+                continue
             cq = u.get("callback_query")
             if not cq:
                 continue

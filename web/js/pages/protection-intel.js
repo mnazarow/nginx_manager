@@ -1,7 +1,7 @@
 // Защита от атак: сеть провайдера (ASN) и AbuseIPDB в профиле адреса, обмен данными об угрозах (AbuseIPDB, CrowdSec),
 // технологии сайтов, другие серверы (общие блокировки и настройки защиты), базы GeoIP.
 import { api } from '../api.js';
-import { h, mount, icon, toast, loading, card, badge, table, fmtInt, fmtDate, fmtAgo, empty, confirmDlg, kpi } from '../ui.js';
+import { h, mount, icon, toast, loading, card, badge, table, fmtInt, fmtDate, fmtAgo, empty, confirmDlg, kpi, modal } from '../ui.js';
 import { model, renderFields, errorsToMap } from '../forms.js';
 import { can, refreshState } from '../app.js';
 
@@ -104,7 +104,40 @@ export async function intelCard(cfg) {
 }
 
 // ================================================================ технологии сайтов
-export async function techCard(onFilter) {
+const DISTRO = { ubuntu: 'Ubuntu', debian: 'Debian', rhel: 'RHEL', fedora: 'Fedora', alpine: 'Alpine' };
+
+function techBadge(t) {
+  const ver = t.pkgver || t.version;
+  const tip = [t.evidence, t.distro ? `сборка ${DISTRO[t.distro] || t.distro}: исправления переносятся в пакет без смены версии` : '',
+    t.kev ? `эксплуатируемых уязвимостей продукта: ${t.kev}` : '',
+    t.affected_n ? `затрагивают версию ${ver}: ${t.affected.map(a => a.cve + (a.note ? ` (${a.note})` : '')).join(', ')}` : '',
+    t.maybe_n ? `зависят от версии пакета: ${t.maybe.map(a => `${a.cve} — ${a.note}`).join('; ')}` : ''].filter(Boolean).join(' · ');
+  const cls = t.affected_n ? ' bad' : t.maybe_n || t.kev ? ' warn' : '';
+  return h('span', { class: 'badge' + cls, title: tip }, t.name, ver ? ' ' + ver : '', t.distro && !t.pkgver ? ` (${DISTRO[t.distro] || t.distro})` : '',
+    t.affected_n ? ` · уязвима (${t.affected_n})` : t.maybe_n ? ` · проверьте пакет (${t.maybe_n})` : t.kev ? ` · ${t.kev} KEV` : '');
+}
+
+// уязвимости плагина или темы WordPress
+async function openWp(w, openV) {
+  const body = h('div', {}, loading());
+  modal({ title: `${w.type === 'plugin' ? 'Плагин' : 'Тема'} WordPress: ${w.name}`, size: 'lg', body });
+  const d = await api(`/protection/wp/${w.type}/${encodeURIComponent(w.slug)}`, { query: { version: w.version || '' } });
+  const state = (a) => a.affected === true ? badge('затрагивает', 'bad') : a.affected === false ? badge('не затрагивает', 'good')
+    : h('span', { title: w.version ? 'В записи уязвимости нет затронутых версий — проверьте описание уязвимости и обновите плагин' : 'Версия плагина на сайте не определена' }, badge(w.version ? 'версии не указаны' : 'версия неизвестна', 'warn'));
+  mount(body,
+    h('dl', { class: 'facts' }, [['Каталог', h('code', {}, w.slug)], ['Версия на сайте', w.version || 'не определена'], ['Как определена', w.evidence || '—']]
+      .map(([k, v]) => [h('dt', {}, k), h('dd', {}, v)])),
+    !w.version ? h('div', { class: 'alert warn mt' }, 'Версия не определена — уязвимости показаны все. Включите «Углублённо: проверять типовые адреса приложений»: версия будет взята из readme.txt плагина.') : null,
+    d.rows.length ? table([
+      { title: 'Уязвимость', render: (a) => h('span', {}, a.cve ? h('a', { href: '#', onclick: (e) => { e.preventDefault(); openV(a.cve); } }, a.cve) : '—', ' ', a.title) },
+      { title: 'CVSS', num: true, render: (a) => a.cvss ? a.cvss.toFixed(1) : '—' },
+      { title: 'Исправлено в', render: (a) => a.patched || '—' },
+      { title: 'Эксплойт', render: (a) => a.kev ? badge('эксплуатируется', 'bad') : a.exploit ? badge('публичный', 'warn') : '—' },
+      { title: 'Ваша версия', render: state },
+    ], d.rows) : empty('Известных уязвимостей нет', d.wordfence ? 'по базе Wordfence и шаблонам nuclei' : 'Без ключа Wordfence известны только уязвимости с публичными эксплойтами', null, 'shield'));
+}
+
+export async function techCard(onFilter, openV = () => {}) {
   const box = h('div', {}, loading());
   const draw = (d) => {
     const rows = d.sites || [];
@@ -112,15 +145,22 @@ export async function techCard(onFilter) {
       { title: 'Сайт', render: (r) => h('span', {}, h('b', {}, r.name), r.ts ? h('div', { class: 'small muted' }, fmtAgo(r.ts)) : null) },
       { title: 'Технологии', render: (r) => r.error ? h('span', { class: 'bad-text small' }, 'нет ответа: ' + r.error)
         : r.skipped ? h('span', { class: 'muted small' }, r.skipped)
-          : r.tech.length ? h('div', { class: 'row', style: { gap: '4px', flexWrap: 'wrap' } }, r.tech.map(t => h('span', { class: 'badge' + (t.affected_n ? ' bad' : t.kev ? ' warn' : ''), title: `${t.evidence}${t.kev ? ` · эксплуатируемых уязвимостей продукта: ${t.kev}` : ''}${t.affected_n ? ` · затрагивают версию ${t.version}: ${t.affected.map(a => a.cve).join(', ')}` : ''}` }, t.name, t.version ? ' ' + t.version : '', t.affected_n ? ` · уязвима (${t.affected_n})` : t.kev ? ` · ${t.kev} KEV` : '')))
+          : r.tech.length ? h('div', {},
+            h('div', { class: 'row', style: { gap: '4px', flexWrap: 'wrap' } }, r.tech.map(techBadge)),
+            (r.wp || []).length ? h('div', { class: 'row mt-s', style: { gap: '4px', flexWrap: 'wrap', alignItems: 'center' } },
+              h('span', { class: 'small muted' }, 'WordPress:'),
+              r.wp.map(w => h('button', { class: 'badge badge-btn' + (w.affected_n ? ' bad' : w.maybe_n ? ' warn' : ''), type: 'button',
+                title: `${w.type === 'plugin' ? 'плагин' : 'тема'} ${w.slug}${w.version ? ' ' + w.version : ', версия не определена'} · ${w.evidence}${w.known ? ` · известных уязвимостей: ${w.known}` : ''}`,
+                onclick: () => openWp(w, openV) }, w.type === 'theme' ? 'тема ' : '', w.name, w.version ? ' ' + w.version : '',
+                w.affected_n ? ` · уязвим (${w.affected_n})` : w.maybe_n ? (w.version ? ` · проверьте (${w.maybe_n})` : ` · ${w.maybe_n} уязв., версия?`) : ''))) : null)
             : h('span', { class: 'muted small' }, 'не определены') },
       { title: 'Эксплуатируемых уязвимостей', num: true, render: (r) => { const n = r.tech.reduce((a, t) => a + (t.kev || 0), 0); return n ? h('b', {}, fmtInt(n)) : '0'; } },
-      { title: 'Затрагивают ваши версии', num: true, render: (r) => { const n = r.tech.reduce((a, t) => a + (t.affected_n || 0), 0); return n ? h('b', { class: 'bad-text' }, fmtInt(n)) : '0'; } },
+      { title: 'Затрагивают ваши версии', num: true, render: (r) => { const n = r.tech.reduce((a, t) => a + (t.affected_n || 0), 0) + (r.wp || []).reduce((a, w) => a + (w.affected_n || 0), 0); return n ? h('b', { class: 'bad-text' }, fmtInt(n)) : '0'; } },
       { title: 'Новых за 90 дней', num: true, render: (r) => { const n = r.tech.reduce((a, t) => a + (t.recent || 0), 0); return n ? h('b', { class: 'bad-text' }, fmtInt(n)) : '0'; } },
     ], rows) : empty('Технологии ещё не определены', 'Панель определяет их раз в сутки; можно сейчас — кнопкой «Определить»', null, 'search'));
   };
   api('/protection/tech').then(draw).catch((e) => mount(box, h('div', { class: 'bad-text' }, e.message)));
-  return card('Технологии ваших сайтов', box, { flush: true, cls: 'mt', sub: 'что работает за nginx — по главной странице с бэкенда; уязвимости найденных продуктов — фильтр «Ваши продукты»',
+  return card('Технологии ваших сайтов', box, { flush: true, cls: 'mt', sub: 'что работает за nginx — по главной странице с бэкенда, плагины и темы WordPress; сборки Ubuntu и Debian сверяются с данными дистрибутива',
     actions: [h('button', { class: 'btn sm', onclick: () => onFilter('mine') }, 'Уязвимости ваших продуктов'),
       can('operator') ? h('button', { class: 'btn sm', onclick: async () => { mount(box, loading()); draw(await api('/protection/tech/scan', { method: 'POST', body: {} })); toast('Технологии сайтов определены', 'good'); } }, icon('refresh'), 'Определить') : null] });
 }

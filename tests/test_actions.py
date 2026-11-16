@@ -71,7 +71,8 @@ def test_installed_versions_and_insight(app):
     php = next(t for t in tv["tech"] if t["id"] == "php")
     assert php["kev"] == 3 and php["affected_n"] == 1 and php["affected"][0]["cve"] == "CVE-2024-4577"
     card = db.get("CVE-2024-4577")
-    assert card["on_sites"] == [{"site": "3", "name": "Блог", "tech": "PHP", "version": "8.2.12", "affected": True}]
+    assert card["on_sites"] == [{"site": "3", "name": "Блог", "tech": "PHP", "version": "8.2.12", "affected": True,
+                                 "note": ""}]
     assert db.get("CVE-2099-0002")["on_sites"][0]["affected"] is False
     found = [x for x in app.protection.analytics.insights() if x[0] == "vuln_installed"]
     assert found and found[0][1] == "crit" and found[0][2] == "3" and "CVE-2024-4577" in found[0][3]

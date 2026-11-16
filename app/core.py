@@ -112,6 +112,7 @@ class App:
         self._reconcile_sig: Tuple[str, float] = ("", 0.0)
         self.nginx.overrides_provider = self.failover_overrides
         self.bootstrap()
+        self.migrate_trusted()
 
     # ------------------------------------------------------------------
     def panel(self) -> PanelSettings:
@@ -141,6 +142,35 @@ class App:
                 self.db.execute("INSERT INTO alert_rules(name,enabled,data,created_at,updated_at) VALUES(?,?,?,?,?)",
                                 (r.name, 1, json.dumps(r.model_dump(), ensure_ascii=False), now, now))
             self.db.kv_set("default_rules_created", True)
+
+    # ------------------------------------------------------------------ доверенные адреса
+    def trusted(self) -> List[str]:
+        """Доверенные адреса и подсети (раздел «Доверенные адреса»)."""
+        return [e.address for e in self.panel().trusted_ips]
+
+    def migrate_trusted(self) -> None:
+        """Однократно: «Никогда не блокировать» (блокировки IP) и «Доверенные IP» (защита) → «Доверенные адреса»."""
+        if self.db.kv_get("trusted_migrated"):
+            return
+        from .models import IpEntry
+        p = self.panel()
+        prot = self.protection.settings()
+        entries = list(p.trusted_ips)
+        have = {e.address for e in entries}
+        moved = 0
+        for addr, note in [(a, "из «Блокировки IP → Никогда не блокировать»") for a in p.autoban_whitelist] + \
+                [(a, "из «Защита от атак → Доверенные IP»") for a in prot.bypass_ips]:
+            if addr not in have:
+                entries.append(IpEntry(address=addr, comment=note))
+                have.add(addr)
+                moved += 1
+        if p.autoban_whitelist or moved:
+            self.save_panel(p.model_copy(update={"trusted_ips": entries, "autoban_whitelist": []}))
+        if prot.bypass_ips:
+            self.protection.save(prot.model_copy(update={"bypass_ips": []}))
+        if moved:
+            self.db.event("info", "panel", f"Доверенные адреса: перенесено {moved} из прежних списков исключений")
+        self.db.kv_set("trusted_migrated", True)
 
     def ensure_admin(self, username: str = "admin", password: Optional[str] = None) -> Optional[str]:
         if self.db.scalar("SELECT COUNT(*) FROM users"):

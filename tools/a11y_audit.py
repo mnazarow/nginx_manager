@@ -91,6 +91,14 @@ async def theme_run(browser, a, axe, theme, out):
             await check(page, axe, f"{theme}: окно «{title}»", out)
         finally:
             await page.keyboard.press("Escape")
+    # раздел сайта «Доступ по IP» (панель проверки адреса, таблица адресов)
+    sid = await page.evaluate("""async () => { const r = await fetch('/api/sites'); const d = await r.json();
+        const s = d.find(x => x.ip_access) || d[0]; return s ? s.id : null; }""")
+    if sid:
+        await page.goto(f"{a.url}/#/sites?edit={sid}&tab=ip_access")
+        await page.wait_for_timeout(2000)
+        await check(page, axe, f"{theme}: сайт — доступ по IP", out)
+        print(f"{theme}: site ip_access", flush=True)
     # каналы уведомлений и окно канала Telegram (кнопки действий, список разрешённых пользователей)
     await page.goto(f"{a.url}/#/alerts")
     await page.wait_for_timeout(1500)

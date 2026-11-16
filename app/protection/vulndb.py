@@ -28,6 +28,7 @@ import subprocess
 import tarfile
 import tempfile
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -35,7 +36,9 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from ..config import settings
+from . import distro as DI
 from . import rules as W
+from . import wordpress as WPM
 
 log = logging.getLogger("nm.vulndb")
 
@@ -62,8 +65,12 @@ SOURCES = {
     "epss": ("FIRST EPSS", "вероятность эксплуатации в ближайшие 30 дней"),
     "cvelist": ("CVE Program (cvelistV5)", "CVSS производителя или CISA, тип уязвимости (CWE), затронутые версии"),
     "exploitdb": ("Exploit-DB", "опубликованные эксплойты"),
+    "distro": ("Ubuntu и Debian (OSV, OpenVEX)", "исправления, перенесённые в пакеты дистрибутивов, — для продуктов "
+                                                 "из сборок Ubuntu и Debian на ваших сайтах"),
+    "wordfence": ("Wordfence Intelligence", "уязвимости плагинов, тем и ядра WordPress с версиями (нужен ключ API)"),
     "crs": ("OWASP Core Rule Set (GitHub)", "последний выпуск правил ModSecurity"),
 }
+DISTRO_TTL = 3 * 86400
 
 MAX_DOWNLOAD = 200 * 1024 * 1024
 TEMPLATE_TTL = 30 * 86400
@@ -558,12 +565,104 @@ class VulnDB:
                 self._set_status("exploitdb", ok=True, count=len(ex), updated=now, error="", url=url)
             except Exception as e:  # noqa: BLE001
                 self._set_status("exploitdb", ok=False, error=str(e)[:400], tried=now)
+        # --- Wordfence Intelligence: уязвимости плагинов, тем и ядра WordPress
+        if p.wordfence_key and due("wordfence"):
+            self.progress = "Wordfence Intelligence"
+            try:
+                n = self._wordfence(p.wordfence_key)
+                self._set_status("wordfence", ok=True, count=n, updated=now, error="")
+            except Exception as e:  # noqa: BLE001
+                self._set_status("wordfence", ok=False, error=_err(e)[:400], tried=now)
+        # --- дистрибутивы: исправления в пакетах Ubuntu и Debian
+        if p.vulndb_distro:
+            self.progress = "Ubuntu и Debian"
+            self.update_distro(force=force)
         self.mark_coverage()
         return res
 
+    def _wordfence(self, key: str) -> int:
+        """Лента Wordfence (production) потоково → таблица wp_vulns (записи источника заменяются целиком)."""
+        resp = WPM.open_feed(key)
+        try:
+            rows = list(WPM.feed_rows(WPM.iter_feed(WPM.Capped(resp))))
+        finally:
+            resp.close()
+        if not rows:
+            raise ValueError("лента пуста")
+        with self.db.write_lock:
+            c = self.db.conn()
+            c.execute("BEGIN")
+            try:
+                c.execute("DELETE FROM wp_vulns WHERE source='wordfence'")
+                c.executemany("INSERT OR REPLACE INTO wp_vulns(id,slug,type,name,title,cve,cvss,ranges,patched,"
+                              "published,source) VALUES(?,?,?,?,?,?,?,?,?,?,?)", rows)
+                c.execute("COMMIT")
+            except Exception:
+                c.execute("ROLLBACK")
+                raise
+        return len(rows)
+
+    # ------------------------------------------------------------------ дистрибутивы
+    def distro_data(self, cve: str, distro: str) -> Optional[Dict[str, Any]]:
+        r = self.db.one("SELECT data, ok FROM distro_cve WHERE cve=? AND distro=?", (cve, distro))
+        if not r or not r["ok"]:
+            return None
+        try:
+            return json.loads(r["data"])
+        except ValueError:
+            return None
+
+    def update_distro(self, force: bool = False) -> Dict[str, Any]:
+        """Данные Ubuntu и Debian по уязвимостям, которые затрагивают основную версию продуктов из сборок
+        дистрибутивов на ваших сайтах (раз в 3 суток на уязвимость, после ошибки — через час)."""
+        now = time.time()
+        need: Set[Tuple[str, str]] = set()
+        for r in self.tech().values():
+            for t in r.get("tech") or []:
+                if t.get("distro") in DI.SUPPORTED and t.get("version"):
+                    for a in self.upstream_affected(t):
+                        need.add((a["cve"], t["distro"]))
+        if not need:
+            return {"ok": True, "count": 0}
+        old = {(r["cve"], r["distro"]): r for r in self.db.query("SELECT cve, distro, fetched, ok FROM distro_cve")}
+        todo = [k for k in sorted(need) if force or k not in old or
+                now - old[k]["fetched"] >= (DISTRO_TTL if old[k]["ok"] else 3600)][:400]
+
+        def one(key):
+            cve, dist = key
+            u = DI.urls(dist, cve)
+            data: Dict[str, Any] = {"osv": [], "vex": []}
+            got = False
+            for kind, parse in (("osv", DI.parse_osv), ("vex", DI.parse_vex)):
+                for url in u[kind]:
+                    try:
+                        data[kind] = parse(fetch_bytes(url, timeout=30, limit=8 * 1048576))
+                        got = True
+                        break
+                    except urllib.error.HTTPError as e:
+                        if e.code == 404:  # у дистрибутива нет записи — тоже ответ
+                            got = True
+                            break
+                    except Exception:  # noqa: BLE001 — следующий адрес
+                        continue
+            return cve, dist, data, got
+        with ThreadPoolExecutor(6) as ex:
+            res = list(ex.map(one, todo))
+        self.db.executemany("INSERT OR REPLACE INTO distro_cve(cve, distro, data, fetched, ok) VALUES(?,?,?,?,?)",
+                            [(c, d, json.dumps(data), now, 1 if got else 0) for c, d, data, got in res])
+        okn = sum(1 for *_x, got in res if got)
+        total = (self.db.one("SELECT COUNT(*) AS n FROM distro_cve WHERE ok=1") or {}).get("n", 0)
+        if todo and not okn:
+            self._set_status("distro", ok=False, error="данные Ubuntu и Debian не загружены (нет связи с GitHub и "
+                                                       "api.osv.dev)", tried=now)
+        else:
+            self._set_status("distro", ok=True, count=total, updated=now, error="")
+        return {"ok": bool(okn) or not todo, "fetched": okn, "count": total}
+
     def _enrich(self, now: float) -> Tuple[int, int]:
         """Загрузить записи CVE (cvelistV5) для эксплуатируемых уязвимостей: новых и устаревших (старше 30 дней)."""
-        rows = self.db.query("SELECT cve FROM vulns WHERE kev=1 AND (enriched IS NULL OR enriched<? OR ranges='') "
+        rows = self.db.query("SELECT cve FROM vulns WHERE (kev=1 OR wp!='') AND (enriched IS NULL OR enriched<? OR "
+                             "ranges='') "
                              "ORDER BY enriched IS NOT NULL, kev_added DESC LIMIT ?", (now - ENRICH_TTL, MAX_ENRICH))
 
         def one(cve: str):
@@ -667,13 +766,85 @@ class VulnDB:
                     cache[t["id"]] = {"kev": row.get("kev") or 0, "total": row.get("n") or 0,
                                       "seen": row.get("seen") or 0, "recent": row.get("recent") or 0}
                 aff = self.installed_affected(t) if t.get("version") else []
-                items.append({**t, **cache[t["id"]], "affected": aff[:20], "affected_n": len(aff)})
+                may = self.installed_affected(t, maybe=True) if t.get("version") else []
+                items.append({**t, **cache[t["id"]], "affected": aff[:20], "affected_n": len(aff),
+                              "maybe": may[:20], "maybe_n": len(may)})
             out.append({"site": sid, "name": r.get("name", sid), "ts": r.get("ts"), "error": r.get("error", ""),
-                        "skipped": r.get("skipped", ""), "target": r.get("target", ""), "tech": items})
+                        "skipped": r.get("skipped", ""), "target": r.get("target", ""), "tech": items,
+                        "wp": self.wp_installed(r.get("wp") or {})})
         return out
 
-    def installed_affected(self, t: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Эксплуатируемые уязвимости, которым подвержена найденная версия продукта."""
+    # ------------------------------------------------------------------ плагины и темы WordPress
+    def wp_vulns_for(self, kind: str, slug: str, version: str) -> List[Dict[str, Any]]:
+        """Уязвимости плагина или темы: из Wordfence (по диапазонам версий) и из шаблонов nuclei (по записям CVE).
+        affected: True — версия затронута, False — нет, None — версия неизвестна."""
+        out: Dict[str, Dict[str, Any]] = {}
+        for r in self.db.query("SELECT * FROM wp_vulns WHERE type=? AND slug=?", (kind, slug)):
+            try:
+                rng = json.loads(r["ranges"])
+            except ValueError:
+                rng = []
+            key = r["cve"] or r["id"]
+            out[key] = {"cve": r["cve"], "title": r["title"], "cvss": r["cvss"], "patched": r["patched"],
+                        "name": r["name"], "affected": WPM.in_ranges(version, rng) if version else None,
+                        "source": "wordfence", "exploit": False, "kev": False}
+        for r in self.db.query("SELECT cve, name, cvss, kev, exploits, template, ranges FROM vulns WHERE wp=?",
+                               (f"{kind}:{slug}",)):
+            try:
+                rng = json.loads(r["ranges"] or "[]")
+            except ValueError:
+                rng = []
+            cur = out.get(r["cve"])
+            if cur:
+                cur.update(exploit=True, kev=bool(r["kev"]))
+                continue
+            aff = version_affected(version, rng) if version else None
+            if aff is None and version:  # в записи CVE версий нет («n/a») — по названию шаблона
+                aff = WPM.in_ranges(version, WPM.ranges_from_title(r["name"] or ""))
+            out[r["cve"]] = {"cve": r["cve"], "title": r["name"], "cvss": r["cvss"], "patched": "", "name": "",
+                             "affected": aff, "source": "nuclei", "exploit": True, "kev": bool(r["kev"])}
+        return sorted(out.values(), key=lambda x: (x["affected"] is not True, -(x["cvss"] or 0), x["cve"]))
+
+    def wp_installed(self, wp: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Плагины и темы сайта с уязвимостями: затрагивают установленную версию, возможно (версия неизвестна)."""
+        out = []
+        for kind, items in (("plugin", wp.get("plugins") or []), ("theme", wp.get("themes") or [])):
+            for it in items:
+                vs = self.wp_vulns_for(kind, it["slug"], it.get("version", ""))
+                aff = [v for v in vs if v["affected"] is True]
+                may = [v for v in vs if v["affected"] is None]
+                name = next((v["name"] for v in vs if v.get("name")), "")
+                out.append({"type": kind, "slug": it["slug"], "name": name or it["slug"],
+                            "version": it.get("version", ""), "evidence": it.get("evidence", ""),
+                            "affected": aff[:20], "affected_n": len(aff), "maybe_n": len(may), "known": len(vs)})
+        return sorted(out, key=lambda x: (-x["affected_n"], x["type"], x["slug"]))
+
+    def installed_affected(self, t: Dict[str, Any], maybe: bool = False) -> List[Dict[str, Any]]:
+        """Эксплуатируемые уязвимости, которым подвержена найденная версия продукта (с учётом исправлений
+        дистрибутива). maybe=True — те, что «зависят от версии пакета» (заголовок называет дистрибутив, но не
+        версию пакета, а дистрибутив исправил уязвимость в своей сборке)."""
+        p = self.svc.settings()
+        out = []
+        for a in self.upstream_affected(t):
+            note, state = "", True
+            dist = t.get("distro") or ""
+            if p.vulndb_distro and dist in DI.SUPPORTED:
+                data = self.distro_data(a["cve"], dist)
+                verd = DI.verdict(data, DI.packages(t["id"], t["version"]), t["version"], t.get("pkgver", "")) \
+                    if data else None
+                state = DI.affected_from(verd, True)
+                note = DI.describe(verd)
+            elif p.vulndb_distro and dist in ("rhel", "fedora", "alpine"):
+                state, note = None, (f"сборка {DI.NAMES.get(dist, dist)}: исправления переносятся без смены версии — "
+                                     f"проверьте журнал изменений пакета (rpm -q --changelog)")
+            if state is True and not maybe:
+                out.append({**a, "note": note})
+            elif state is None and maybe:
+                out.append({**a, "note": note})
+        return out
+
+    def upstream_affected(self, t: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Эксплуатируемые уязвимости по основной версии продукта (без учёта сборок дистрибутивов)."""
         from .fingerprint import TECH_BY_ID
         tech = TECH_BY_ID.get(t["id"])
         if not tech or tech.cat == "js" or not t.get("version"):
@@ -713,7 +884,9 @@ class VulnDB:
 
     def _templates(self, p, now: float) -> int:
         """Скачать недостающие (или устаревшие) шаблоны выбранного охвата, разобрать пути эксплойтов."""
-        sel = self.selected(p)
+        sel = list(self.selected(p))
+        have = {r["cve"] for r in sel}
+        sel += [r for r in self.wp_candidates() if r["cve"] not in have]
         tdir = self.dir() / "tpl"
         need = [r for r in sel if not (tdir / f"{r['cve']}.yaml").exists()
                 or now - (tdir / f"{r['cve']}.yaml").stat().st_mtime > TEMPLATE_TTL]
@@ -739,7 +912,8 @@ class VulnDB:
             f = tdir / f"{r['cve']}.yaml"
             if not f.exists():
                 continue
-            meta = parse_template(f.read_text(encoding="utf-8", errors="replace"))
+            text = f.read_text(encoding="utf-8", errors="replace")
+            meta = parse_template(text)
             paths = exploit_paths(meta["requests"])
             try:
                 epss = float(meta.get("epss") or 0)
@@ -749,14 +923,28 @@ class VulnDB:
                 cvss = float(meta.get("cvss") or 0)
             except ValueError:
                 cvss = 0.0
-            rows.append((json.dumps(paths, ensure_ascii=False), meta.get("tags", "")[:300], epss, cvss,
-                         meta.get("cwe", "")[:100], meta.get("vendor", ""), meta.get("product", ""), r["cve"]))
+            tags = meta.get("tags", "")
+            wp = WPM.slug_from_template(text) if "wordpress" in tags.lower() or "/wp-content/" in text else ""
+            rows.append((json.dumps(paths, ensure_ascii=False), tags[:300], epss, cvss,
+                         meta.get("cwe", "")[:100], meta.get("vendor", ""), meta.get("product", ""), wp, r["cve"]))
         self.db.executemany(
             "UPDATE vulns SET paths=?, tags=?, epss=CASE WHEN epss>0 THEN epss ELSE ? END, "
             "cvss=CASE WHEN ?>0 THEN ? ELSE cvss END, cwe=CASE WHEN cwe='' THEN ? ELSE cwe END, "
-            "vendor=CASE WHEN vendor='' THEN ? ELSE vendor END, product=CASE WHEN product='' THEN ? ELSE product END "
-            "WHERE cve=?", [(a, b, c, d, d, e, f, g, h) for a, b, c, d, e, f, g, h in rows])
+            "vendor=CASE WHEN vendor='' THEN ? ELSE vendor END, product=CASE WHEN product='' THEN ? ELSE product END, "
+            "wp=? WHERE cve=?", [(a, b, c, d, d, e, f, g, h, i) for a, b, c, d, e, f, g, h, i in rows])
         return len(rows)
+
+    def has_wordpress(self) -> bool:
+        return any(t["id"] == "wordpress" for r in self.tech().values() for t in r.get("tech") or [])
+
+    def wp_candidates(self) -> List[Dict[str, Any]]:
+        """Шаблоны уязвимостей WordPress (плагины, темы) — загружаются, если WordPress есть на ваших сайтах:
+        путь плагина в шаблоне даёт его slug для сверки с установленными плагинами."""
+        if not self.has_wordpress():
+            return []
+        return self.db.query("SELECT cve, template FROM vulns WHERE template LIKE 'http/%' AND "
+                             "(lower(name) LIKE '%wordpress%' OR lower(name) LIKE '%wp %' OR "
+                             "lower(description) LIKE '%wordpress%')")
 
     def _templates_tarball(self, want: Dict[str, str]) -> None:
         tdir = self.dir() / "tpl"
@@ -1061,11 +1249,35 @@ class VulnDB:
         except ValueError:
             rng = []
         r["ranges"] = rng
-        r["on_sites"] = [{"site": sid, "name": t.get("name", sid), "tech": x["name"], "version": x.get("version", ""),
-                          "affected": version_affected(x.get("version", ""), rng, TECH_BY_ID[x["id"]].keywords)}
-                         for sid, t in self.tech().items() for x in t.get("tech") or []
-                         if TECH_BY_ID.get(x["id"]) and TECH_BY_ID[x["id"]].cat != "js"
-                         and any(k in name for k in TECH_BY_ID[x["id"]].keywords)]
+        p = self.svc.settings()
+        on_sites = []
+        for sid, t in self.tech().items():
+            for x in t.get("tech") or []:
+                tech = TECH_BY_ID.get(x["id"])
+                if not tech or tech.cat == "js" or not any(k in name for k in tech.keywords):
+                    continue
+                aff = version_affected(x.get("version", ""), rng, tech.keywords)
+                note = ""
+                dist = x.get("distro") or ""
+                if aff and p.vulndb_distro and dist in DI.SUPPORTED:
+                    data = self.distro_data(r["cve"], dist)
+                    verd = DI.verdict(data, DI.packages(x["id"], x["version"]), x["version"], x.get("pkgver", "")) \
+                        if data else None
+                    aff, note = DI.affected_from(verd, aff), DI.describe(verd)
+                elif aff and p.vulndb_distro and dist in ("rhel", "fedora", "alpine"):
+                    aff, note = None, f"сборка {DI.NAMES.get(dist, dist)}: исправление могло быть перенесено в пакет"
+                on_sites.append({"site": sid, "name": t.get("name", sid), "tech": x["name"],
+                                 "version": x.get("pkgver") or x.get("version", ""), "affected": aff, "note": note})
+            if r.get("wp"):
+                kind, _, slug = r["wp"].partition(":")
+                for it in (t.get("wp") or {}).get(f"{kind}s") or []:
+                    if it["slug"] == slug:
+                        on_sites.append({"site": sid, "name": t.get("name", sid),
+                                         "tech": f"{'плагин' if kind == 'plugin' else 'тема'} {slug}",
+                                         "version": it.get("version", ""), "note": "",
+                                         "affected": version_affected(it.get("version", ""), rng)
+                                         if it.get("version") else None})
+        r["on_sites"] = on_sites
         r["hits"] = self.db.query("SELECT site, action, SUM(n) AS n, MIN(ts) AS first, MAX(ts) AS last "
                                   "FROM attack_minute WHERE kind='waf' AND rule=? GROUP BY site, action ORDER BY n DESC",
                                   (f"vuln/{r['cve']}",))

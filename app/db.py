@@ -373,6 +373,21 @@ SCHEMA: List[str] = [
     """
     ALTER TABLE vulns ADD COLUMN ranges TEXT NOT NULL DEFAULT '';
     """,
+    # ---- v10: данные дистрибутивов (перенесённые исправления) и уязвимости плагинов и тем WordPress -------
+    """
+    CREATE TABLE IF NOT EXISTS distro_cve (
+        cve TEXT NOT NULL, distro TEXT NOT NULL, data TEXT NOT NULL DEFAULT '{}', fetched REAL NOT NULL DEFAULT 0,
+        ok INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (cve, distro)
+    );
+    CREATE TABLE IF NOT EXISTS wp_vulns (
+        id TEXT PRIMARY KEY, slug TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'plugin', name TEXT NOT NULL DEFAULT '',
+        title TEXT NOT NULL DEFAULT '', cve TEXT NOT NULL DEFAULT '', cvss REAL NOT NULL DEFAULT 0,
+        ranges TEXT NOT NULL DEFAULT '[]', patched TEXT NOT NULL DEFAULT '', published TEXT NOT NULL DEFAULT '',
+        source TEXT NOT NULL DEFAULT 'wordfence'
+    );
+    CREATE INDEX IF NOT EXISTS wp_vulns_slug ON wp_vulns(type, slug);
+    ALTER TABLE vulns ADD COLUMN wp TEXT NOT NULL DEFAULT '';
+    """,
 ]
 
 
