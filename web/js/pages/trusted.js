@@ -1,7 +1,7 @@
 // Доверенные адреса: общий список IP и подсетей, которые никогда не блокируются (блокировки IP, защита от атак,
 // ограничения частоты, доступ по странам и по IP на сайтах).
 import { api } from '../api.js';
-import { h, mount, icon, toast, card, badge, table, modal, fmtDate } from '../ui.js';
+import { h, mount, icon, toast, card, badge, table, modal, fmtDate, fmtAgo } from '../ui.js';
 import { model, renderFields, errorsToMap } from '../forms.js';
 import { can, applyDialog, refreshState } from '../app.js';
 
@@ -29,6 +29,23 @@ function merge(list, items) {
     if (!have.has(it.address)) { list.push(it); have.add(it.address); n++; }
   }
   return n;
+}
+
+function shareNote(d) {
+  const on = (d.share || []).filter(p => p.trusted);
+  if (!(d.share || []).length) return h('div', { class: 'small muted mt' }, 'Срок «Действует до» — временная запись: по истечении она удаляется, конфигурация переприменяется сама.');
+  return h('div', { class: 'small muted mt' }, 'Срок «Действует до» — временная запись: по истечении она удаляется сама. ',
+    on.length ? `Список отправляется на другие серверы вместе с блокировками: ${on.map(p => p.name).join(', ')}.` : 'На другие серверы список не отправляется (включается у сервера в «Настройки панели → Другие серверы»).');
+}
+
+function receivedCard(d) {
+  const rows = (d.received || []).flatMap(r => r.entries.map(e => ({ ...e, server: r.name, at: r.at })));
+  return card('Получены с других серверов', rows.length ? table([
+    { title: 'Адрес', render: (e) => h('code', {}, e.address) },
+    { title: 'Сервер', render: (e) => h('span', {}, h('b', {}, e.server), h('div', { class: 'small muted' }, `сверка ${fmtAgo(e.at)}`)) },
+    { title: 'Комментарий', render: (e) => h('span', { class: 'small' }, e.comment || '—', e.expires ? h('div', { class: 'small muted' }, `до ${fmtDate(e.expires)}`) : null) },
+  ], rows) : h('div', { class: 'empty' }, d.accept ? 'Пока ничего: адреса появятся, когда другой сервер отправит свой список (с токеном администратора)' : 'Приём выключен в «Настройки панели → Другие серверы»'),
+  { cls: 'mt', flush: !!rows.length, sub: d.accept ? 'действуют здесь так же, как свои; меняются только на сервере-источнике' : 'приём выключен — не действуют' });
 }
 
 export async function render(root) {
@@ -76,7 +93,7 @@ export async function render(root) {
     try {
       const r = await api('/trusted/check', { query: { ip } });
       mount(out, h('dl', { class: 'facts' },
-        h('dt', {}, 'Доверенный'), h('dd', {}, r.trusted ? h('b', { class: 'good-text' }, `да — ${r.trusted.address}${r.trusted.comment ? ' (' + r.trusted.comment + ')' : ''}`)
+        h('dt', {}, 'Доверенный'), h('dd', {}, r.trusted ? h('b', { class: 'good-text' }, `да — ${r.trusted.address}${r.trusted.comment ? ' (' + r.trusted.comment + ')' : ''}${r.trusted.origin ? ', с сервера «' + r.trusted.origin + '»' : ''}${r.trusted.expires ? ', до ' + fmtDate(r.trusted.expires) : ''}`)
           : r.always ? h('b', {}, `всегда (${r.always === '127.0.0.1' || r.always === '::1' ? 'сам сервер' : 'доступ к панели'})`) : 'нет'),
         h('dt', {}, 'Блокировка'), h('dd', {}, r.banned ? h('span', { class: 'bad-text' }, `заблокирован (${r.banned.net}): ${r.banned.reason || '—'}${r.banned.expires_at ? ', до ' + fmtDate(r.banned.expires_at) : ', бессрочно'}`) : 'нет'),
         r.sites.length ? [h('dt', {}, 'Сайты с доступом по IP'), h('dd', {}, r.sites.map(s => h('div', {}, `${s.name}: `, s.allowed ? h('span', { class: 'good-text' }, `открыт (${s.by})`) : h('span', { class: 'bad-text' }, 'закрыт'))))] : null));
@@ -96,7 +113,8 @@ export async function render(root) {
           h('button', { class: 'btn sm', onclick: addMine, disabled: !d.your_ip }, icon('plus'), `Добавить мой адрес${d.your_ip ? ' (' + d.your_ip + ')' : ''}`),
           h('button', { class: 'btn sm', onclick: addBulk }, icon('list'), 'Добавить списком')),
         formBox,
-        h('div', { class: 'alert warn mt small' }, 'Доверенный адрес обходит всю защиту. Не добавляйте сети провайдеров и облаков целиком (/8, /16): атака с соседней машины пройдёт без проверок.')),
+        h('div', { class: 'alert warn mt small' }, 'Доверенный адрес обходит всю защиту. Не добавляйте сети провайдеров и облаков целиком (/8, /16): атака с соседней машины пройдёт без проверок.'),
+        shareNote(d)),
       { sub: 'изменения действуют после применения конфигурации' }),
       h('div', {},
         card('Проверить адрес', h('div', {},
@@ -104,7 +122,8 @@ export async function render(root) {
         { sub: 'доверенный ли, заблокирован ли, на каких сайтах с доступом по IP открыт' }),
         card('Всегда доверенные', table([{ title: 'Адрес', render: (x) => h('code', {}, x) },
           { title: 'Почему', render: (x) => ['127.0.0.1', '::1'].includes(x) ? 'сам сервер (проверки панели)' : 'доступ к панели только с IP' }], d.always),
-        { cls: 'mt', flush: true, sub: 'не нужно добавлять в список' }))));
+        { cls: 'mt', flush: true, sub: 'не нужно добавлять в список' }),
+        receivedCard(d))));
   draw();
   ipIn.addEventListener('keydown', (e) => { if (e.key === 'Enter') check(); });
   const before = (e) => { if (dirty) { e.preventDefault(); e.returnValue = ''; } };

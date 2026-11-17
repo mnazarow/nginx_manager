@@ -200,7 +200,8 @@ class ProtectionConf:
         a("geo $nm_trusted {")
         a("    default 0;")
         seen = set()
-        for ip in [e.address for e in getattr(self.st.panel, "trusted_ips", [])] + list(self.prot.bypass_ips):
+        for ip in [e.address for e in getattr(self.st.panel, "trusted_ips", []) if e.active()] + \
+                list(self.prot.bypass_ips):
             if ip not in seen:
                 seen.add(ip)
                 a(f"    {ip} 1;")

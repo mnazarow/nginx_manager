@@ -181,7 +181,7 @@ export async function peersCard() {
     toast(r.ok ? `«${p.name}»: связь есть — ${r.name}, версия ${r.version}, роль токена «${r.role}»` : `«${p.name}»: ${r.error}`, r.ok ? 'good' : 'bad');
   };
   return h('div', {},
-    h('div', { class: 'alert info mb' }, 'Серверы с Nginx Manager делятся блокировками IP: блокировка (ручная или автоматическая) на любом из них за минуту действует на всех. Настройки защиты от атак отправляются при сохранении или кнопкой. Добавьте серверы в «Настройки панели → Другие серверы» на каждом сервере — с API-токеном того сервера.'),
+    h('div', { class: 'alert info mb' }, 'Серверы с Nginx Manager делятся блокировками IP и доверенными адресами: блокировка (ручная или автоматическая) на любом из них за минуту действует на всех. Настройки защиты от атак отправляются при сохранении или кнопкой, сайты с сертификатами — кнопкой «Перенести сайты». Добавьте серверы в «Настройки панели → Другие серверы» на каждом сервере — с API-токеном того сервера.'),
     h('div', { class: 'grid g3 mb' },
       kpi('Этот сервер', d.me.name, { foot: `идентификатор ${d.me.id}` }),
       kpi('Серверов', fmtInt(d.peers.length), { foot: `включено: ${d.peers.filter(p => p.enabled).length}` }),
@@ -190,6 +190,8 @@ export async function peersCard() {
       { title: 'Сервер', render: (p) => h('span', {}, h('b', {}, p.name), p.enabled ? '' : [' ', badge('выкл')], h('div', { class: 'small muted' }, p.url)) },
       { title: 'Блокировки', render: (p) => !p.bans ? h('span', { class: 'muted small' }, 'не отправляются') : p.bans_error ? h('span', { class: 'bad-text small' }, p.bans_error)
         : p.bans_at ? h('span', { class: 'small' }, `${fmtInt(p.bans_sent || 0)} отправлено ${fmtAgo(p.bans_at)}`) : h('span', { class: 'muted small' }, 'ещё не отправлялись') },
+      { title: 'Доверенные адреса', render: (p) => !p.trusted ? h('span', { class: 'muted small' }, 'не отправляются') : p.trusted_skipped ? h('span', { class: 'warning-text small' }, `не приняты: ${p.trusted_skipped}`)
+        : p.trusted_old ? h('span', { class: 'warning-text small' }, 'старая версия на сервере — не применяются') : p.bans_at ? h('span', { class: 'small' }, `${fmtInt(p.trusted_sent || 0)} отправлено`) : h('span', { class: 'muted small' }, '—') },
       { title: 'Настройки защиты', render: (p) => !p.protection ? h('span', { class: 'muted small' }, 'вручную') : p.prot_error ? h('span', { class: 'bad-text small' }, p.prot_error)
         : p.prot_at ? h('span', { class: 'small' }, `применены ${fmtAgo(p.prot_at)}`,
           p.prot_mapped || p.prot_dropped ? h('div', { class: 'muted small', title: 'Правила, привязанные к сайтам, сопоставляются по доменам: сайт с тем же доменом на получателе' },
@@ -198,13 +200,75 @@ export async function peersCard() {
       { title: '', srTitle: 'Действия', render: (p) => can('admin') ? h('button', { class: 'btn sm', onclick: () => test(p) }, 'Проверить связь') : null },
     ], d.peers) : empty('Серверов нет', 'Добавьте их в «Настройки панели → Другие серверы»', can('admin') ? h('a', { class: 'btn primary', href: '#/settings?tab=peers' }, 'Добавить сервер') : null, 'server'),
     { flush: !!d.peers.length, actions: can('admin') && d.peers.length ? [
+      h('button', { class: 'btn', onclick: () => transferDialog(d.peers.filter(p => p.enabled)) }, icon('upload'), 'Перенести сайты…'),
       h('button', { class: 'btn', onclick: () => push('bans') }, icon('refresh'), 'Отправить блокировки'),
       h('button', { class: 'btn', onclick: async () => { if (await confirmDlg('Отправить настройки защиты от атак на все серверы? На каждом применится конфигурация с этими настройками (свои правила, привязанные к сайтам, и CrowdSec там останутся свои).', { ok: 'Отправить' })) push('protection'); } }, 'Отправить настройки защиты')] : null }),
     card('Получено от других серверов', d.incoming.length ? table([
       { title: 'Сервер', render: (x) => h('b', {}, x.name) },
       { title: 'Блокировок сейчас', num: true, render: (x) => fmtInt(x.active || 0) },
+      { title: 'Доверенных адресов', num: true, render: (x) => d.accept_trusted ? fmtInt(x.trusted || 0) : h('span', { class: 'muted small', title: 'Приём выключен в настройках панели' }, 'не принимаются') },
       { title: 'Последняя сверка', render: (x) => h('span', { class: 'small' }, `${fmtAgo(x.at)} (+${x.added}, −${x.removed})`) },
-    ], d.incoming) : empty('Пока ничего', 'Блокировки появятся, когда другой сервер отправит их сюда', null, 'server'), { flush: !!d.incoming.length, cls: 'mt' }));
+    ], d.incoming) : empty('Пока ничего', 'Блокировки появятся, когда другой сервер отправит их сюда', null, 'server'), { flush: !!d.incoming.length, cls: 'mt' }),
+    (d.transfers || []).length ? card('Перенесённые сюда сайты', table([
+      { title: 'Когда', render: (x) => h('span', { class: 'small', title: fmtDate(x.at) }, fmtAgo(x.at)) },
+      { title: 'С сервера', render: (x) => h('b', {}, x.name) },
+      { title: 'Сайты', render: (x) => h('span', { class: 'small' }, `создано ${x.sites.created}, обновлено ${x.sites.updated}${x.sites.skipped ? ', пропущено ' + x.sites.skipped : ''}`) },
+      { title: 'Сертификаты', render: (x) => h('span', { class: 'small' }, x.certs.created || x.certs.updated ? `новых ${x.certs.created}, обновлено ${x.certs.updated}` : '—') },
+      { title: 'Применено', render: (x) => x.applied ? h('span', { class: 'good-text small' }, 'да') : h('span', { class: 'muted small' }, 'нет') },
+    ], d.transfers), { flush: true, cls: 'mt', sub: 'последние 20 переносов и обновлений сертификатов' }) : null);
+}
+
+const ACTION_RU = { created: 'создан', updated: 'обновлён', skipped: 'пропущен', error: 'ошибка' };
+
+/** Окно «Перенести сайты»: сервер, сайты, сертификаты, замена одноимённых, применение на получателе. */
+export async function transferDialog(peers, preselect = []) {
+  if (!peers.length) { toast('Нет включённых серверов — добавьте их в «Настройки панели → Другие серверы»', 'bad'); return; }
+  const sites = await api('/sites');
+  const chosen = new Set(preselect.length ? preselect : []);
+  const peerSel = h('select', { id: 'nm-tr-peer' }, peers.map(p => h('option', { value: p.id }, `${p.name} — ${p.url}`)));
+  const flt = h('input', { type: 'search', placeholder: 'Поиск по названию и доменам', 'aria-label': 'Поиск сайтов' });
+  const listBox = h('div', { class: 'tr-list', style: { maxHeight: '300px', overflow: 'auto', border: '1px solid var(--line)', borderRadius: '8px', padding: '4px 8px' } });
+  const cnt = h('span', { class: 'small muted' });
+  const drawList = () => {
+    const q = flt.value.trim().toLowerCase();
+    const rows = sites.filter(x => !q || x.name.toLowerCase().includes(q) || x.domains.some(dm => dm.includes(q)));
+    mount(listBox, rows.length ? rows.map(x => h('label', { class: 'check', style: { display: 'flex', gap: '8px', padding: '4px 0', alignItems: 'baseline' } },
+      h('input', { type: 'checkbox', checked: chosen.has(x.id), onchange: (e) => { if (e.target.checked) chosen.add(x.id); else chosen.delete(x.id); mount(cnt, `выбрано: ${chosen.size}`); } }),
+      h('span', {}, h('b', {}, x.name), x.enabled ? '' : h('span', { class: 'muted small' }, ' (выключен)'),
+        h('div', { class: 'small muted' }, x.domains.join(', ') || '—', x.ssl ? ' · HTTPS' : '')))) : h('div', { class: 'empty' }, 'Нет сайтов'));
+    mount(cnt, `выбрано: ${chosen.size}`);
+  };
+  flt.addEventListener('input', drawList);
+  drawList();
+  const opt = (label, checked, help) => {
+    const cb = h('input', { type: 'checkbox', checked });
+    return [h('label', { class: 'check', style: { display: 'flex', gap: '8px', alignItems: 'baseline' } }, cb, h('span', {}, label, help ? h('div', { class: 'small muted' }, help) : null)), cb];
+  };
+  const [certsL, certsCb] = opt('Передать сертификаты (сертификат и закрытый ключ)', true, 'На получателе — как загруженные; после продления здесь они отправятся туда автоматически');
+  const [overL, overCb] = opt('Заменить сайты с теми же доменами', false, 'Иначе такие сайты пропускаются');
+  const [applyL, applyCb] = opt('Применить конфигурацию на получателе', true, 'Если там нет других неприменённых изменений; иначе сайты останутся черновиком');
+  const out = h('div', {});
+  const btn = h('button', { class: 'btn primary', onclick: async () => {
+    if (!chosen.size) { toast('Выберите сайты', 'bad'); return; }
+    btn.disabled = true;
+    try {
+      const r = await api(`/peers/${peerSel.value}/transfer`, { method: 'POST', body: { sites: [...chosen], certs: certsCb.checked, overwrite: overCb.checked, apply: applyCb.checked } });
+      const items = r.sites?.items || [];
+      mount(out, h('div', { class: 'alert ' + (r.apply_error || items.some(x => x.action === 'error') ? 'warn' : 'good') + ' mt' },
+        h('b', {}, `Сервер «${r.name}»: создано ${r.sites?.created || 0}, обновлено ${r.sites?.updated || 0}, пропущено ${r.sites?.skipped || 0}; сертификатов новых ${r.certs?.created || 0}, обновлено ${r.certs?.updated || 0}.`),
+        r.applied ? h('div', {}, `Конфигурация применена (версия ${r.applied}).`) : r.apply_error ? h('div', {}, `Не применено: ${r.apply_error}`) : null,
+        (r.certs?.errors || []).map(e => h('div', { class: 'small' }, `Сертификат: ${e}`)),
+        h('ul', { class: 'small', style: { margin: '6px 0 0', paddingLeft: '18px' } }, items.map(x => h('li', {}, `${x.name} — ${ACTION_RU[x.action] || x.action}${x.notes?.length ? ': ' + x.notes.join('; ') : ''}`)))));
+      toast('Сайты перенесены', 'good');
+    } catch (e) { mount(out, h('div', { class: 'alert bad mt' }, e.data?.detail || e.message)); }
+    btn.disabled = false;
+  } }, icon('upload'), 'Перенести');
+  const m = modal({ title: 'Перенести сайты на другой сервер', size: 'lg', body: h('div', { class: 'col' },
+    h('p', { class: 'small muted' }, 'Сайты переносятся со всеми настройками: локации, бэкенды, защита, доступ по IP, пользователи Basic Auth. Адреса бэкендов должны быть доступны с сервера-получателя. Нужен токен администратора того сервера.'),
+    h('div', { class: 'field' }, h('label', { for: 'nm-tr-peer' }, 'Сервер'), peerSel),
+    h('div', { class: 'row', style: { justifyContent: 'space-between' } }, flt, cnt, h('button', { class: 'btn sm ghost', type: 'button', onclick: () => { sites.forEach(x => chosen.add(x.id)); drawList(); } }, 'Выбрать все')),
+    listBox, certsL, overL, applyL, out),
+  footer: [h('button', { class: 'btn', onclick: () => m.close() }, 'Закрыть'), btn] });
 }
 
 // ================================================================ базы GeoIP

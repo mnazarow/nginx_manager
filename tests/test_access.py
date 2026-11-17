@@ -137,6 +137,16 @@ def test_live_ip_access(live):
     assert st("/", "127.0.0.6", "pw.test") == 200
     assert st("/", "127.0.0.70", "pw.test") == 401
     assert st("/", "127.0.0.70", "pw.test", headers=auth) == 200
+    # журнал отказов: признак ia в журнале доступа (1 — отказ, p — запрошен пароль, 0 — пропущен)
+    import json as _j
+    time.sleep(0.3)
+    rows = [_j.loads(x) for x in (TMP / "logs" / "nm-access.log").read_text().splitlines() if x.startswith("{")]
+    by = {(r["host"], r["ip"], r["u"]): r for r in rows}
+    assert by[("adm.test", "127.0.0.70", "/")]["ia"] == "1"
+    assert by[("adm.test", "127.0.0.6", "/")]["ia"] == "0"
+    assert by[("adm.test", "127.0.0.70", "/hook/pay")]["ia"] == "0"
+    assert by[("pw.test", "127.0.0.70", "/")]["ia"] == "p" and by[("pw.test", "127.0.0.6", "/")]["ia"] == "0"
+    assert by[("open.test", "127.0.0.70", "/")]["ia"] == "0" if ("open.test", "127.0.0.70", "/") in by else True
 
 
 def test_live_trusted_never_blocked(live):

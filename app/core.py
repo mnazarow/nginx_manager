@@ -110,6 +110,7 @@ class App:
         self._pending_cache: Tuple[int, float, Dict[str, Any]] = (-1, 0.0, {})
         self.nginx_restarts: List[float] = []
         self._reconcile_sig: Tuple[str, float] = ("", 0.0)
+        self._expire_try: Tuple[int, int] = (0, 0)
         self.nginx.overrides_provider = self.failover_overrides
         self.bootstrap()
         self.migrate_trusted()
@@ -144,9 +145,14 @@ class App:
             self.db.kv_set("default_rules_created", True)
 
     # ------------------------------------------------------------------ доверенные адреса
+    def trusted_entries(self) -> List[Any]:
+        """Действующие доверенные записи: свои и полученные с других серверов."""
+        from .services import trusted as TR
+        return TR.effective(self.db, self.panel())
+
     def trusted(self) -> List[str]:
-        """Доверенные адреса и подсети (раздел «Доверенные адреса»)."""
-        return [e.address for e in self.panel().trusted_ips]
+        """Доверенные адреса и подсети (раздел «Доверенные адреса» и полученные с других серверов)."""
+        return [e.address for e in self.trusted_entries()]
 
     def migrate_trusted(self) -> None:
         """Однократно: «Никогда не блокировать» (блокировки IP) и «Доверенные IP» (защита) → «Доверенные адреса»."""
@@ -305,10 +311,58 @@ class App:
             return None
         fresh = self.nginx.load_state()
         state.certs = fresh.certs
+        # доверенные адреса — актуальные (полученные с других серверов, истёкшие временные)
+        state.panel = state.panel.model_copy(update={"trusted_ips": fresh.panel.trusted_ips})
         try:
             return await self.apply("system", reason, source, state)
         except ApplyError:
             return None  # событие об ошибке записал NginxManager.apply
+
+    async def expire_access(self) -> Optional[Dict[str, Any]]:
+        """Временный доступ: убрать истёкшие записи из «Доступа по IP» сайтов и доверенных адресов; если работающая
+        конфигурация их ещё содержит — переприменить последнюю применённую версию (неприменённые правки не трогаем:
+        генератор пропускает истёкшие записи сам)."""
+        now = time.time()
+        gone: List[str] = []
+        for r in self.db.query("SELECT id, name, data FROM sites"):
+            d = json.loads(r["data"])
+            ia = d.get("ip_access") or {}
+            ents = ia.get("entries") or []
+            keep = [e for e in ents if not e.get("expires") or e["expires"] > now]
+            if len(keep) != len(ents):
+                ia["entries"] = keep
+                self.db.execute("UPDATE sites SET data=?, updated_at=? WHERE id=?",
+                                (json.dumps(d, ensure_ascii=False), now, r["id"]))
+                gone += [f"{e.get('address')} — сайт «{r['name']}»" for e in ents if e not in keep]
+        p = self.panel()
+        keep_t = [e for e in p.trusted_ips if e.active(now)]
+        if len(keep_t) != len(p.trusted_ips):
+            gone += [f"{e.address} — доверенные адреса" for e in p.trusted_ips if not e.active(now)]
+            self.save_panel(p.model_copy(update={"trusted_ips": keep_t}))
+            self.peers.mark()
+        if gone:
+            self.touch()
+            self.db.event("info", "access", f"Истёк временный доступ: {', '.join(gone[:10])}"
+                          + (f" и ещё {len(gone) - 10}" if len(gone) > 10 else ""))
+        last = self.nginx.last_applied()
+        if not last or self.nginx.lock.locked():
+            return None
+        try:
+            st = json.loads(last["state"])
+        except ValueError:
+            return None
+        applied_at = float(last["ts"])
+
+        def stale(entries) -> bool:
+            return any(e.get("expires") and applied_at < e["expires"] <= now for e in entries or [])
+        need = stale((st.get("panel") or {}).get("trusted_ips")) or any(
+            stale(((x.get("data") or {}).get("ip_access") or {}).get("entries")) for x in st.get("sites", []))
+        if not need:
+            return None
+        if self._expire_try == (last["id"], int(now // 600)):
+            return None  # эту версию уже пытались переприменить — не чаще раза в 10 минут
+        self._expire_try = (last["id"], int(now // 600))
+        return await self.apply_snapshot("Истёк временный доступ", "expire")
 
     async def after_cert_issued(self, cid: int) -> None:
         state = self.last_applied_state()
@@ -319,6 +373,8 @@ class App:
         if uses:
             await self.apply_snapshot(f"Сертификат #{cid} выпущен/продлён", "certs")
         self.touch()
+        # сертификат переносился на другие серверы вместе с сайтами — отправить продлённый туда же
+        await self._guard("отправка сертификата на другие серверы", asyncio.to_thread(self.peers.push_cert, cid))
 
     async def on_health_change(self, t: Target, prev: str, new: str) -> None:
         lvl = "error" if new == "down" else "info"
@@ -615,6 +671,7 @@ class App:
                 last_cert = now
                 await self._guard("проверка сертификатов", asyncio.to_thread(self.certs.refresh_all))
                 await self._guard("продление сертификатов", self.certs.auto_renew(after=self.after_cert_issued))
+            await self._guard("временный доступ", self.expire_access())
             await self._guard("регулярный отчёт", self.maybe_send_report())
             await self._guard("сверка автопереключения бэкендов", self.reconcile_failover())
             lt = time.localtime(now)
@@ -648,4 +705,4 @@ class App:
                                                                "http3": self.nginx.caps().http3},
                 "backends_down": sum(1 for t in self.health.targets.values() if t.state == "down"),
                 "insights": self.insights.last["counts"],
-                "silence": self._silence_brief()}
+                "silence": self._silence_brief(), "peers": sum(1 for x in self.panel().peers if x.enabled)}

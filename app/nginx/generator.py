@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import html
 import re
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Dict, Iterator, List, Optional, Tuple
@@ -310,6 +311,12 @@ class Generator:
             c.d("default", "0")
             for gsid in self.geo_sites():
                 c.d(f'"{gsid}"', f"$nm_geo_{gsid}")
+        c.comment("1 — отказ «Доступа по IP» сайта, p — запрошен пароль (поле ia журнала доступа)")
+        with c.block("map $nm_site $nm_ia"):
+            c.d("default", "0")
+            for isid, s in self.st.sites:
+                if s.enabled and s.ip_access.enabled:
+                    c.d(f'"{isid}"', f"$nm_ipaw_{isid}" if s.ip_access.deny == "password" else f"$nm_ipdeny_{isid}")
         if self.geo_sites() or self.pc.country_rules():
             c.comment("Доступ по странам: сети выбранных стран из базы GeoIP (файл пересобирает панель)")
             with c.block("geo $nm_cc"):
@@ -668,7 +675,7 @@ class Generator:
 
     # ------------------------------------------------------------------ доверенные адреса и доступ по IP
     def trusted(self) -> List[str]:
-        return [e.address for e in getattr(self.st.panel, "trusted_ips", [])]
+        return [e.address for e in getattr(self.st.panel, "trusted_ips", []) if e.active()]
 
     def limit_key(self, key: str) -> str:
         """Ключ зоны ограничений: доверенные адреса — пустой ключ (nginx их не считает)."""
@@ -681,11 +688,13 @@ class Generator:
         if not a.enabled:
             return
         nets: List[str] = []
-        for n in [e.address for e in a.entries] + LOOPBACK_NETS + (self.trusted() if a.allow_trusted else []) + \
+        now = time.time()
+        for n in [e.address for e in a.entries if e.active(now)] + LOOPBACK_NETS + (self.trusted() if a.allow_trusted else []) + \
                 (PRIVATE_NETS if a.allow_private else []):
             if n not in nets:
                 nets.append(n)
-        if not a.entries and not (a.allow_trusted and self.trusted()) and not a.allow_private:
+        if not any(e.active(now) for e in a.entries) and not (a.allow_trusted and self.trusted()) and \
+                not a.allow_private:
             self.warnings.append(f"Сайт «{s.name}»: доступ только с разрешённых адресов, но список пуст — сайт "
                                  "закрыт для всех (кроме проверки Let's Encrypt)")
         with c.block(f"geo $nm_ipacl_{sid}"):
@@ -701,6 +710,10 @@ class Generator:
             c.d('"~^0:/\\.well-known/acme-challenge/"', allow_v)
             for path in a.public_paths:
                 c.d(quote("~^0:" + re.escape(path)), allow_v)
+        if pw:
+            with c.block(f"map $nm_ipauth_{sid} $nm_ipaw_{sid}"):
+                c.d("default", "p")
+                c.d("off", "0")
 
     def ipacl_check(self, c: Conf, sid: int, s: Site) -> None:
         a = s.ip_access
@@ -1205,7 +1218,7 @@ LOG_FORMAT_HTTP = r"""log_format nm_json escape=json '{'
     '"ref":"$http_referer","agent":"$http_user_agent","cache":"$upstream_cache_status",'
     '"sch":"$scheme","tls":"$ssl_protocol","rid":"$request_id","cr":"$connection_requests","bn":"$nm_banned","gb":"$nm_gb",'
     '"wf":"$nm_waf","wa":"$nm_wchk","ch":"$nm_chk","rs":"$limit_req_status","ri":"$nm_rlid",'
-    '"bt":"$nm_bot_claim:$nm_vbot_ok"'
+    '"bt":"$nm_bot_claim:$nm_vbot_ok","ia":"$nm_ia"'
     '}';"""
 
 LOG_FORMAT_STREAM = r"""log_format nm_stream escape=json '{'

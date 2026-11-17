@@ -69,6 +69,7 @@ elif [ "$FORCE" = 0 ] && [ "$(printf '%s\n%s\n' "$OLD" "$NEW" | sort -V | tail -
   fail "Устанавливаемая версия $NEW не новее текущей $OLD (используйте --force)"
 fi
 detect_os
+os_support_check "$SRC"
 PORT="$(panel_port)"
 TS="$(date +%Y%m%d-%H%M%S)"
 CODE_BACKUP="$DATA_DIR/backups/code-$OLD-$TS.tar.gz"

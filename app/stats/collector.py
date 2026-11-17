@@ -302,6 +302,8 @@ class Aggregator:
         # накопительные счётчики с момента запуска (для /metrics в формате Prometheus)
         self.totals: Dict[str, Totals] = {}
         self.geo_hits: Counter = Counter()  # (сайт, страна) -> отклонено по странам с запуска панели
+        # отказы «Доступа по IP»: (минута, сайт, адрес) -> [число, последний путь, страна]; пишутся в ipdeny_minute
+        self.ipdeny: Dict[tuple, list] = {}
 
     # ------------------------------------------------------------------
     def _sec(self, ts: int) -> Optional[Dict[str, Sec]]:
@@ -345,6 +347,15 @@ class Aggregator:
         r["bot"] = is_bot
         keys = (site, "*") if site != "*" else ("*",)
         geo_blocked = r.get("geo_blocked", False) and not r["banned"]
+        # отказ «Доступа по IP» (с паролем — только запросы без входа: ответ 401)
+        if r.get("ip_denied") and not r["banned"] and (not r.get("ip_pw") or status == 401):
+            k = (min_ts, site, r["ip"])
+            cur = self.ipdeny.get(k)
+            if cur is None:
+                self.ipdeny[k] = [1, r["uri"][:300], country]
+            else:
+                cur[0] += 1
+                cur[1] = r["uri"][:300]
         if geo_blocked:
             # уже отклонён правилом по странам — не нарушитель для автоблокировки
             self.geo_hits[(site, country or "--")] += 1
@@ -525,6 +536,17 @@ class Aggregator:
                     "VALUES(?,?,?,?,?,?,?,?,?,?)", buf)
             except Exception:
                 log.exception("запись журнала ошибок")
+        if self.ipdeny:
+            done = [k for k in self.ipdeny if force or now >= k[0] + 70]
+            rows = [(k[0], k[1], k[2], *self.ipdeny.pop(k)) for k in done]
+            if rows:
+                try:
+                    # строка минуты могла уже быть записана (поздние строки журнала) — суммируем
+                    self.db.executemany(
+                        "INSERT INTO ipdeny_minute(ts, site, ip, n, uri, country) VALUES(?,?,?,?,?,?) "
+                        "ON CONFLICT(ts, site, ip) DO UPDATE SET n=n+excluded.n, uri=excluded.uri", rows)
+                except Exception:
+                    log.exception("запись отказов «Доступа по IP»")
         cutoff = int(now) // 60 * 60 - 60 if not force else int(now) + 60
         # минута закрывается через 60–120 с — запас на буферизацию журнала nginx
         for mts in sorted(k for k in self.mins if k <= cutoff - (0 if force else 0)):

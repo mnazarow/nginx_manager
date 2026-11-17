@@ -37,6 +37,17 @@ async def sync_bans(request: Request, body: Dict[str, Any] = Body(...), user=Dep
         res = await asyncio.to_thread(app.peers.receive_bans, body["origin"], bans, user["username"])
     except ValueError as e:
         raise HTTPException(400, str(e))
+    trusted = body.get("trusted")
+    if isinstance(trusted, list):
+        # доверенные адреса отправителя: снимают защиту — только с токеном администратора и если приём включён
+        if user["role"] != "admin":
+            res["trusted"] = {"skipped": "нужен токен администратора"}
+        elif not app.panel().peers_accept_trusted:
+            res["trusted"] = {"skipped": "приём выключен на сервере-получателе"}
+        else:
+            res["trusted"] = await app.peers.receive_trusted(body["origin"], trusted, user["username"])
+            if res["trusted"].get("changed"):
+                await app.bans.sync(force=True)
     if res["added"] or res["removed"] or res["updated"]:
         await app.bans.sync(force=True)
     return res
@@ -118,12 +129,15 @@ async def peers_status(request: Request, user=Depends(viewer)):
     out = []
     for peer in app.panel().peers:
         out.append({"id": peer.id, "name": peer.name, "url": peer.url, "enabled": peer.enabled, "bans": peer.bans,
-                    "protection": peer.protection, **(st.get(peer.id) or {})})
+                    "protection": peer.protection, "trusted": peer.trusted, **(st.get(peer.id) or {})})
     incoming = app.db.kv_get("peers_incoming", {}) or {}
     counts = {r["source"]: r["n"] for r in app.db.query("SELECT source, COUNT(*) AS n FROM bans WHERE source LIKE "
                                                          "'sync:%' GROUP BY source")}
-    inc = [{"id": k, **v, "active": counts.get(f"sync:{k}", 0)} for k, v in incoming.items()]
-    return {"peers": out, "incoming": inc, "me": app.peers.origin()}
+    from ..services.trusted import by_peer
+    tr = {x["id"]: len(x["entries"]) for x in by_peer(app.db)}
+    inc = [{"id": k, **v, "active": counts.get(f"sync:{k}", 0), "trusted": tr.get(k, 0)} for k, v in incoming.items()]
+    return {"peers": out, "incoming": inc, "me": app.peers.origin(), "accept_trusted": app.panel().peers_accept_trusted,
+            "transfers": app.db.kv_get("transfers_in", []) or []}
 
 
 @router.post("/peers/{pid}/test")
@@ -149,3 +163,78 @@ async def peers_push(request: Request, body: Dict[str, Any] = Body(...), user=De
         raise HTTPException(400, "what: bans или protection")
     audit(request, user, "peers_push", what)
     return {"results": res}
+
+
+@router.post("/sync/sites")
+async def sync_sites(request: Request, body: Dict[str, Any] = Body(...), user=Depends(admin)):
+    """Принять сайты и сертификаты с другого сервера: {origin, sites: [{src_id, name, enabled, data}],
+    certs: [{src_id, name, cert_pem, key_pem, fingerprint}], overwrite, apply}. Сайты с теми же доменами обновляются
+    (overwrite) или пропускаются; сертификаты сохраняются как загруженные и обновляются при повторной отправке."""
+    from ..nginx.manager import ApplyError
+    from ..services import transfer as TF
+    app = _nm(request)
+    origin = body.get("origin") or {}
+    oid = str(origin.get("id") or "")[:32]
+    if not oid or oid == app.peers.origin()["id"]:
+        raise HTTPException(400, "Неверный источник (это этот же сервер?)")
+    origin = {"id": oid, "name": str(origin.get("name") or oid)[:80]}
+    sites = body.get("sites") or []
+    certs = body.get("certs") or []
+    if not isinstance(sites, list) or not isinstance(certs, list):
+        raise HTTPException(400, "sites и certs — списки")
+    want_apply = bool(body.get("apply"))
+    pending_before = bool(sites) and want_apply and bool(app.pending().get("pending"))
+    res: Dict[str, Any] = {"name": app.peers.origin()["name"]}
+    overwrite = bool(body.get("overwrite"))
+    if sites:  # сертификаты — только для сайтов, которые будут созданы или обновлены
+        only = await asyncio.to_thread(TF.needed_certs, app, sites, overwrite)
+        res["certs"] = await asyncio.to_thread(TF.receive_certs, app, origin, certs, user["username"], only)
+    else:  # только сертификаты: продление на источнике — обновляем уже перенесённые
+        res["certs"] = await asyncio.to_thread(TF.receive_certs, app, origin, certs, user["username"], None, False)
+    if sites:
+        res["sites"] = await asyncio.to_thread(TF.receive_sites, app, origin, sites, res["certs"]["map"],
+                                               overwrite, user["username"])
+    app.touch()
+    changed = res.get("sites", {}).get("created", 0) + res.get("sites", {}).get("updated", 0)
+    if changed and want_apply:
+        if pending_before:
+            res["apply_error"] = "на этом сервере есть неприменённые изменения — примените конфигурацию вручную"
+        else:
+            try:
+                r = await app.apply(user["username"], f"Перенос сайтов с сервера «{origin['name']}»", "transfer")
+                res["applied"] = r.get("version")
+            except ApplyError as e:
+                res["apply_error"] = str(e)[:500]
+    elif res["certs"]["changed_ids"]:
+        # только обновлённые сертификаты (продление на источнике) — переприменить, если они используются
+        for cid in res["certs"]["changed_ids"]:
+            await app.after_cert_issued(cid)
+    res["certs"].pop("map", None)
+    TF.log_incoming(app.db, origin, res, user["username"])
+    s_ = res.get("sites") or {}
+    c_ = res["certs"]
+    app.db.event("info", "peers", f"Сервер «{origin['name']}»: сайты — создано {s_.get('created', 0)}, обновлено "
+                 f"{s_.get('updated', 0)}, пропущено {s_.get('skipped', 0)}; сертификаты — новых {c_['created']}, "
+                 f"обновлено {c_['updated']}", {"user": user["username"]})
+    audit(request, user, "sites_received", origin["name"], {"sites": s_.get("items", [])[:50],
+                                                            "certs": {k: c_[k] for k in ("created", "updated")}})
+    return res
+
+
+@router.post("/peers/{pid}/transfer")
+async def peers_transfer(request: Request, pid: str, body: Dict[str, Any] = Body(...), user=Depends(admin)):
+    """Перенести сайты на другой сервер: {sites: [id], certs: true, overwrite: false, apply: true}."""
+    app = _nm(request)
+    peer = next((x for x in app.panel().peers if x.id == pid), None)
+    if not peer:
+        raise HTTPException(404, "Сервер не найден")
+    ids = [int(x) for x in (body.get("sites") or []) if str(x).isdigit()]
+    if not ids:
+        raise HTTPException(400, "Выберите сайты")
+    try:
+        res = await asyncio.to_thread(app.peers.transfer, peer, ids, bool(body.get("certs", True)),
+                                      bool(body.get("overwrite")), bool(body.get("apply", True)))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    audit(request, user, "sites_sent", peer.name, {"sites": ids, "certs": bool(body.get("certs", True))})
+    return res

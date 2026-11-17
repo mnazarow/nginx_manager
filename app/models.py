@@ -9,6 +9,7 @@ from __future__ import annotations
 import ipaddress
 import re
 import secrets
+import time
 import urllib.parse
 from typing import Any, Dict, List, Literal, Optional
 
@@ -602,6 +603,13 @@ LOOPBACK_NETS = ["127.0.0.1", "::1"]
 class IpEntry(Model):
     address: str = F("", label="IP-адрес или подсеть", ph="203.0.113.0/24")
     comment: str = F("", label="Комментарий", ph="Офис, VPN, мониторинг", max_length=120)
+    expires: Optional[float] = F(None, label="Действует до", ui="expires",
+                                 help="Временный доступ: по истечении срока запись перестаёт действовать и удаляется "
+                                      "из списка (конфигурация применяется автоматически)")
+    origin: str = F("", label="Получен с сервера", ui="hidden", max_length=80)
+
+    def active(self, now: Optional[float] = None) -> bool:
+        return not self.expires or self.expires > (now or time.time())
 
     @field_validator("address")
     @classmethod
@@ -2052,6 +2060,9 @@ class Peer(Model):
     bans: bool = F(True, label="Блокировки IP", help="Отправлять свои блокировки на этот сервер")
     protection: bool = F(False, label="Настройки защиты",
                          help="Отправлять настройки защиты от атак при сохранении (нужен токен администратора)")
+    trusted: bool = F(True, label="Доверенные адреса",
+                      help="Отправлять свои доверенные адреса вместе с блокировками (нужен токен администратора; "
+                           "с токеном оператора получатель их не примет)")
 
     @model_validator(mode="after")
     def _chk(self):
@@ -2310,6 +2321,10 @@ class PanelSettings(Model):
                        help="Так блокировки с этого сервера подписаны на других")
     peers_verify_tls: bool = F(True, label="Проверять сертификат HTTPS других серверов", tab="peers",
                                help="Выключите для самоподписанных сертификатов панели")
+    peers_accept_trusted: bool = F(True, label="Принимать доверенные адреса с других серверов", tab="peers",
+                                   help="Адреса, доверенные на другом сервере, не блокируются и здесь (видны в разделе "
+                                        "«Доверенные адреса» с именем сервера; принимаются только с токеном "
+                                        "администратора)")
     s3_path_style: bool = F(True, label="Адресация path-style (endpoint/бакет/ключ)", tab="backup",
                             show={"s3_enabled": [True]}, adv=True,
                             help="Нужна MinIO и большинству совместимых хранилищ; выключите для virtual-hosted (бакет.endpoint)")

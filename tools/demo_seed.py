@@ -228,6 +228,33 @@ def history(db_path: str, days: int):
                         "response header from upstream", rnd.choice(ips), "api.example.com", "2",
                         "GET /api/items HTTP/1.1", "http://127.0.0.1:9003/api/items", "api.example.com"))
     print(f"История за {days} дн.: {len(rows_m)} поминутных строк, {len(rows_h)} почасовых, {len(tops)} позиций топов")
+    ipdeny_history(db, days)
+
+
+def ipdeny_history(db, days: int, site: str = "5"):
+    """Отказы «Доступа по IP» сайта с ограничением по адресам: фоновые сканеры и пара всплесков."""
+    rnd = random.Random(7)
+    now = int(time.time()) // 60 * 60
+    scanners = [("45.155.205.17", "NL", ["/wp-login.php", "/.env", "/xmlrpc.php"]),
+                ("185.220.101.44", "DE", ["/", "/admin", "/login"]),
+                ("103.152.118.9", "IN", ["/.git/config", "/phpmyadmin/"]),
+                ("91.240.118.172", "RU", ["/", "/docs/api", "/robots.txt"]),
+                ("198.51.100.23", "US", ["/docs/install", "/"]),
+                ("80.82.77.139", "NL", ["/", "/.well-known/security.txt"]),
+                ("2a03:b0c0:3:d0::1b2:7001", "DE", ["/"])]
+    rows = {}
+    for t in range(now - days * 86400, now - 120, 60):
+        for ip, cc, uris in scanners:
+            if rnd.random() < 0.035:
+                k = (t, site, ip)
+                rows[k] = (rows.get(k, (0,))[0] + rnd.randint(1, 4), rnd.choice(uris), cc)
+    for burst_at, ip, cc in ((now - 9 * 3600, "45.155.205.17", "NL"), (now - 31 * 3600, "103.152.118.9", "IN")):
+        for t in range(burst_at, burst_at + 25 * 60, 60):
+            rows[(t, site, ip)] = (rnd.randint(20, 60), "/wp-login.php", cc)
+    with db:
+        db.executemany("INSERT OR REPLACE INTO ipdeny_minute(ts, site, ip, n, uri, country) VALUES(?,?,?,?,?,?)",
+                       [(*k, *v) for k, v in rows.items()])
+    print(f"Отказы «Доступа по IP» (сайт {site}): {len(rows)} строк")
 
 
 if __name__ == "__main__":

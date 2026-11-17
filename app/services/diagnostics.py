@@ -762,6 +762,15 @@ class Diagnostics:
                 res.append(R("sys_inodes", g, "Inode", FAIL, "свободных inode < 5%"))
         except OSError:
             pass
+        from . import osinfo
+        o = osinfo.check()
+        res.append(R("sys_os_support", g, "Поддержка ОС",
+                     {"eol": FAIL, "soon": WARN, "ok": OK}.get(o["level"], INFO), o["message"],
+                     details={k: o[k] for k in ("name", "eol", "days_left", "note")},
+                     hint="После окончания поддержки дистрибутив не получает исправлений уязвимостей (OpenSSL, ядро, "
+                          "сам nginx): обновите ОС (do-release-upgrade, apt full-upgrade на новый выпуск Debian, "
+                          "leapp для RHEL) или перенесите сайты на новый сервер — «Блокировки IP → Другие серверы → "
+                          "Перенести сайты»." if o["level"] in ("eol", "soon") else ""))
         db_size = sum(f.stat().st_size for f in settings.data_dir.glob("nginx-manager.db*") if f.exists())
         res.append(R("sys_db", g, "База данных панели", WARN if db_size > 5 * 1024 ** 3 else OK,
                      f"{db_size / 1024 ** 2:.0f} МБ"))

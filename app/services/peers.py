@@ -95,13 +95,22 @@ class PeerSync:
         return {"id": instance_id(self.db), "name": self.app.panel().peer_name or socket.gethostname()}
 
     # ---------------------------------------------------------------- отправка
+    def own_trusted(self) -> List[Dict[str, Any]]:
+        """Свои действующие доверенные адреса (полученные с других серверов дальше не передаются)."""
+        from .trusted import active
+        return [{"address": e.address, "comment": e.comment, "expires": e.expires}
+                for e in active([e for e in self.app.panel().trusted_ips if not e.origin])]
+
     def push_bans_to(self, peer) -> Dict[str, Any]:
         verify = self.app.panel().peers_verify_tls
         bans = self.own_bans()
-        code, d = call(peer, "POST", "/sync/bans", {"origin": self.origin(), "bans": bans}, verify)
+        body: Dict[str, Any] = {"origin": self.origin(), "bans": bans}
+        # пустой список — получатель уберёт ранее полученные адреса (отправку выключили)
+        body["trusted"] = self.own_trusted() if getattr(peer, "trusted", True) else []
+        code, d = call(peer, "POST", "/sync/bans", body, verify)
         if code != 200:
             raise ValueError(_err(code, d))
-        return {"sent": len(bans), **(d or {})}
+        return {"sent": len(bans), "trusted_sent": len(body["trusted"]), **(d or {})}
 
     def push_bans(self) -> Dict[str, Any]:
         res: Dict[str, Any] = {}
@@ -110,8 +119,12 @@ class PeerSync:
                 continue
             try:
                 r = self.push_bans_to(peer)
+                tr = r.get("trusted") if isinstance(r.get("trusted"), dict) else {}
                 self._set(peer.id, bans_ok=True, bans_at=time.time(), bans_error="", bans_sent=r["sent"],
-                          bans_added=r.get("added", 0), bans_removed=r.get("removed", 0), peer_name=r.get("name", ""))
+                          bans_added=r.get("added", 0), bans_removed=r.get("removed", 0), peer_name=r.get("name", ""),
+                          trusted_sent=r.get("trusted_sent", 0), trusted_skipped=str(tr.get("skipped") or ""),
+                          # старая версия на получателе не возвращает trusted — адреса там не применяются
+                          trusted_old="trusted" not in r)
                 res[peer.id] = {"ok": True, **r}
             except Exception as e:  # noqa: BLE001
                 msg = str(e)[:300] if isinstance(e, ValueError) else f"нет связи: {e}"[:300]
@@ -146,6 +159,53 @@ class PeerSync:
             except Exception as e:  # noqa: BLE001
                 msg = str(e)[:300]
                 self._set(peer.id, prot_ok=False, prot_error=msg, prot_tried=time.time())
+                res[peer.id] = {"ok": False, "error": msg}
+        return res
+
+    def transfer(self, peer, site_ids: List[int], with_certs: bool, overwrite: bool, apply: bool) -> Dict[str, Any]:
+        """Отправить сайты (и их сертификаты) на сервер peer. Сертификаты запоминаются: после продления здесь они
+        будут отправлены туда же автоматически."""
+        from . import transfer as TF
+        payload = TF.build(self.db, site_ids, with_certs)
+        body = {"origin": self.origin(), **payload, "overwrite": overwrite, "apply": apply}
+        try:
+            code, d = call(peer, "POST", "/sync/sites", body, self.app.panel().peers_verify_tls, timeout=180)
+        except Exception as e:  # noqa: BLE001
+            raise ValueError(f"нет связи: {e}"[:300])
+        if code == 404:
+            raise ValueError("на сервере старая версия Nginx Manager (перенос сайтов — с версии 2.6)")
+        if code != 200:
+            raise ValueError(_err(code, d))
+        if payload["certs"]:
+            TF.remember(self.db, peer.id, payload["certs"])
+        self.db.event("info", "peers", f"Сайты отправлены на сервер «{peer.name}»: {len(payload['sites'])}, "
+                      f"сертификатов {len(payload['certs'])}")
+        return {"ok": True, "sent": len(payload["sites"]), "certs_sent": len(payload["certs"]), **(d or {})}
+
+    def push_cert(self, cid: int) -> Dict[str, Any]:
+        """Продлённый сертификат — на серверы, куда он раньше переносился вместе с сайтами."""
+        from . import transfer as TF
+        pids = TF.peers_for_cert(self.db, cid)
+        if not pids:
+            return {}
+        c = TF.read_cert(self.db, cid)
+        if not c:
+            return {}
+        res: Dict[str, Any] = {}
+        for peer in self.peers():
+            if peer.id not in pids:
+                continue
+            try:
+                code, d = call(peer, "POST", "/sync/sites", {"origin": self.origin(), "sites": [], "certs": [c]},
+                               self.app.panel().peers_verify_tls, timeout=120)
+                if code != 200:
+                    raise ValueError(_err(code, d))
+                TF.remember(self.db, peer.id, [c])
+                res[peer.id] = {"ok": True}
+            except Exception as e:  # noqa: BLE001
+                msg = str(e)[:300]
+                self.db.event("warning", "peers", f"Сертификат «{c['name']}» не отправлен на сервер «{peer.name}»: "
+                              f"{msg}")
                 res[peer.id] = {"ok": False, "error": msg}
         return res
 
@@ -208,6 +268,24 @@ class PeerSync:
         st[oid] = {"name": oname, "at": now, "count": len(want), "added": added, "removed": removed}
         self.db.kv_set("peers_incoming", st)
         return {"added": added, "removed": removed, "updated": updated, "name": self.origin()["name"]}
+
+    async def receive_trusted(self, origin: Dict[str, Any], entries: List[Dict[str, Any]], user: str) -> Dict[str, Any]:
+        """Принять доверенные адреса другого сервера: заменить полученные от него ранее; при изменении — снять
+        блокировки этих адресов и переприменить последнюю применённую конфигурацию (неприменённые правки не трогаем)."""
+        from . import trusted as TR
+        oid = str(origin.get("id") or "")[:32]
+        oname = str(origin.get("name") or oid)[:80]
+        if not oid or oid == instance_id(self.db):
+            raise ValueError("неверный источник")
+        res = await asyncio.to_thread(TR.store, self.db, oid, oname, entries)
+        if res["changed"]:
+            res["unbanned"] = await asyncio.to_thread(self.app.bans.drop_trusted)
+            self.db.event("info", "peers", f"Сервер «{oname}»: доверенные адреса обновлены — {res['count']} "
+                          f"(+{res['added']}, −{res['removed']})", {"user": user})
+            self.app.touch()
+            applied = await self.app.apply_snapshot(f"Доверенные адреса с сервера «{oname}»", "sync")
+            res["applied"] = bool(applied)
+        return res
 
     # ---------------------------------------------------------------- фон
     def mark(self) -> None:

@@ -297,6 +297,26 @@ function dnsAccountSelect(f, obj, ctx) {
       `${a.data.name} — ${a.provider_title}${a.plugin === false ? ' (плагин certbot не установлен)' : ''}`)));
 }
 
+const EXPIRE_OPTS = [[1, '1 час'], [4, '4 часа'], [8, '8 часов'], [24, 'сутки'], [72, '3 дня'], [168, 'неделю'], [720, '30 дней']];
+
+/** Срок записи (временный доступ): «бессрочно» или «на N часов» от текущего момента; текущий срок — первым пунктом. */
+export function expiresSelect(item, key, label, onChange) {
+  const cur = item[key];
+  const d = cur ? new Date(cur * 1000) : null;
+  const p2 = (x) => String(x).padStart(2, '0');
+  const curLbl = d ? (cur * 1000 <= Date.now() ? 'истёк' : `до ${p2(d.getDate())}.${p2(d.getMonth() + 1)} ${p2(d.getHours())}:${p2(d.getMinutes())}`) : '';
+  return h('select', { 'aria-label': label, class: d && cur * 1000 <= Date.now() ? 'invalid' : '', title: d ? d.toLocaleString('ru-RU') : 'Без срока', style: { minWidth: '10.5em' },
+    onchange: (e) => {
+      const v = e.target.value;
+      if (v === 'cur') return;
+      item[key] = v === '' ? null : Math.round(Date.now() / 1000 + Number(v) * 3600);
+      onChange();
+    } },
+  d ? h('option', { value: 'cur', selected: true }, curLbl) : null,
+  h('option', { value: '', selected: !d }, 'бессрочно'),
+  EXPIRE_OPTS.map(([v, t]) => h('option', { value: v }, `на ${t}`)));
+}
+
 function arrayTable(f, obj, ctx, p) {
   if (!Array.isArray(obj[f.key])) obj[f.key] = [];
   const arr = obj[f.key];
@@ -310,6 +330,8 @@ function arrayTable(f, obj, ctx, p) {
         w = h('label', { class: 'switch', title: c.help || c.label }, h('input', { type: 'checkbox', checked: !!item[c.key], onchange: (e) => { item[c.key] = e.target.checked; changed(ctx); } }), h('span', { class: 'track' }));
       } else if (c.type === 'select') {
         w = h('select', { 'aria-label': `${c.label}, строка ${i + 1}`, onchange: (e) => { item[c.key] = c.options[+e.target.value]; changed(ctx); } }, c.options.map((o, j) => h('option', { value: j, selected: o === item[c.key] }, (c.labels && c.labels[String(o)]) || String(o))));
+      } else if (c.ui === 'expires') {
+        w = expiresSelect(item, c.key, `${c.label}, строка ${i + 1}`, () => changed(ctx));
       } else if (c.type === 'int' || c.type === 'float') {
         w = h('input', { type: 'number', value: item[c.key] ?? '', min: c.min, max: c.max, class: ctx.errors && ctx.errors[cp] ? 'invalid' : '',
           'aria-label': `${c.label}, строка ${i + 1}`,

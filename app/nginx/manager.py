@@ -174,6 +174,8 @@ class NginxManager:
                    for r in self.db.query("SELECT id, data FROM streams ORDER BY id")]
         glob = GlobalSettings.model_validate(self.db.kv_get("global_settings", {}))
         panel = PanelSettings.model_validate(self.db.kv_get("panel_settings", {}))
+        from ..services.trusted import with_effective
+        panel = with_effective(self.db, panel)  # свои действующие + полученные с других серверов
         certs = {}
         for r in self.db.query("SELECT id, cert_path, key_path, status FROM certificates"):
             ok = r["status"] == "valid" and Path(r["cert_path"]).exists() and Path(r["key_path"]).exists()

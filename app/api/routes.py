@@ -840,6 +840,8 @@ async def nginx_info(request: Request, user=Depends(viewer)):
     app = nm(request)
     info = await asyncio.to_thread(app.nginx.info)
     info["status"] = app.nginx.status()
+    from ..services import osinfo
+    info["os"] = osinfo.check()
     return info
 
 
@@ -1327,7 +1329,8 @@ async def bans_add(body: BanBody, request: Request, user=Depends(operator)):
         hit = app.bans.trusted_entry(n)
         if hit:
             raise HTTPException(400, f"{n}: адрес в разделе «Доверенные адреса» ({hit}) — доверенные адреса не "
-                                     "блокируются. Уберите его оттуда, если блокировка действительно нужна")
+                                     "блокируются. Уберите его оттуда (полученный с другого сервера — на том "
+                                     "сервере), если блокировка действительно нужна")
         if not body.force and (in_any(n, trusted) or in_any(n.split("/")[0], trusted)):
             raise HTTPException(400, f"{n}: адрес в списке доверенных (localhost или «Доступ к панели только с IP»). "
                                      "Уберите его оттуда или подтвердите блокировку")

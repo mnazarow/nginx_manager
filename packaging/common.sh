@@ -70,6 +70,21 @@ detect_os() {
   OS_MAJOR="${OS_VER%%.*}"
 }
 
+# Срок поддержки ОС (app/services/osinfo.py, системным python3 — до создания venv). $1 — каталог с app/.
+os_support_check() {
+  local py out level msg
+  py="$(command -v python3 2>/dev/null || true)"
+  [ -n "$py" ] || { [ -x /usr/libexec/platform-python ] && py=/usr/libexec/platform-python; }
+  [ -n "$py" ] && [ -f "$1/app/services/osinfo.py" ] || return 0
+  out="$("$py" -I "$1/app/services/osinfo.py" 2>/dev/null || true)"
+  level="${out%%|*}"; msg="${out#*|}"
+  case "$level" in
+    eol) warn "$msg"; warn "Панель будет работать, но сервер без исправлений уязвимостей ОС — обновите систему как можно скорее" ;;
+    soon) warn "$msg" ;;
+    ok) info "$msg" ;;
+  esac
+}
+
 has_systemd() { [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; }
 
 pkg_install() {

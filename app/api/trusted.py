@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 import ipaddress
 from typing import Any, Dict
 
@@ -41,8 +42,11 @@ async def trusted_get(request: Request, user=Depends(viewer)):
     """Доверенные адреса, всегда доверенные (сервер, доступ к панели) и ваш адрес."""
     app = _nm(request)
     p = app.panel()
-    return {"entries": [e.model_dump() for e in p.trusted_ips], "always": LOOPBACK_NETS + list(p.panel_allow),
-            "your_ip": app.auth.client_ip(request)}
+    from ..services.trusted import by_peer
+    return {"entries": [e.model_dump() for e in p.trusted_ips if not e.origin],
+            "always": LOOPBACK_NETS + list(p.panel_allow), "your_ip": app.auth.client_ip(request),
+            "received": by_peer(app.db), "accept": p.peers_accept_trusted,
+            "share": [{"id": x.id, "name": x.name, "trusted": x.trusted} for x in p.peers if x.enabled]}
 
 
 @router.put("/trusted")
@@ -56,6 +60,8 @@ async def trusted_put(request: Request, body: Dict[str, Any] = Body(...), apply:
     if not isinstance(raw, list) or len(raw) > 5000:
         raise HTTPException(400, "Ожидается список entries (не больше 5000 записей)")
     raw = [e if isinstance(e, dict) else {"address": str(e)} for e in raw]
+    # полученные с других серверов записи здесь не редактируются (поле origin ставит только синхронизация)
+    raw = [{k: v for k, v in e.items() if k != "origin"} for e in raw]
     # проверка — моделью настроек панели (ошибки с указанием строки: trusted_ips.N.address)
     checked = PanelSettings.model_validate({**app.panel().model_dump(), "trusted_ips": raw})
     entries, seen = [], set()
@@ -65,6 +71,7 @@ async def trusted_put(request: Request, body: Dict[str, Any] = Body(...), apply:
             entries.append(item)
     if any(_net(e.address).prefixlen == 0 for e in entries):
         raise HTTPException(400, "Нельзя сделать доверенными все адреса (0.0.0.0/0 или ::/0)")
+    entries = [e for e in entries if e.active()]  # истёкшие временные записи не сохраняем
     old = {e.address for e in app.panel().trusted_ips}
     app.save_panel(app.panel().model_copy(update={"trusted_ips": entries}))
     unbanned = await asyncio.to_thread(app.bans.drop_trusted)
@@ -72,6 +79,7 @@ async def trusted_put(request: Request, body: Dict[str, Any] = Body(...), apply:
     new = {e.address for e in entries}
     audit(request, user, "trusted_updated", f"{len(entries)} адресов",
           {"added": sorted(new - old)[:50], "removed": sorted(old - new)[:50], "unbanned": unbanned})
+    app.peers.mark()  # другим серверам — со следующей отправкой блокировок
     res = await app.apply(user["username"], "Изменены доверенные адреса") if apply else None
     return {"ok": True, "count": len(entries), "unbanned": unbanned, "applied": res}
 
@@ -86,7 +94,7 @@ async def trusted_check(request: Request, ip: str = Query(...), user=Depends(vie
         raise HTTPException(400, f"«{ip}» — не IP-адрес")
     a = str(addr)
     p = app.panel()
-    entry = next((e for e in p.trusted_ips if _in(a, [e.address])), None)
+    entry = next((e for e in app.trusted_entries() if _in(a, [e.address])), None)
     always = _in(a, LOOPBACK_NETS + list(p.panel_allow))
     ban = None
     for r in app.db.query("SELECT net, reason, expires_at FROM bans"):
@@ -98,8 +106,8 @@ async def trusted_check(request: Request, ip: str = Query(...), user=Depends(vie
         x = s.ip_access
         if not x.enabled:
             continue
-        by = next((e.address + (f" ({e.comment})" if e.comment else "") for e in x.entries if _in(a, [e.address])),
-                  "")
+        by = next((e.address + (f" ({e.comment})" if e.comment else "") for e in x.entries
+                   if e.active() and _in(a, [e.address])), "")
         if not by and x.allow_trusted and entry:
             by = "доверенные адреса"
         if not by and x.allow_private and _in(a, PRIVATE_NETS):
@@ -109,3 +117,28 @@ async def trusted_check(request: Request, ip: str = Query(...), user=Depends(vie
         sites.append({"id": sid, "name": s.name, "allowed": bool(by), "by": by})
     return {"ip": a, "trusted": entry.model_dump() if entry else None, "always": always,
             "banned": ban, "sites": sites}
+
+
+@router.get("/sites/{sid}/ip-denials")
+async def site_ip_denials(request: Request, sid: int, hours: int = Query(24, ge=1, le=24 * 30), user=Depends(viewer)):
+    """Отказы «Доступа по IP» сайта: ряд по времени, самые частые адреса (с последним путём и страной)."""
+    app = _nm(request)
+    now = time.time()
+    since = int(now - hours * 3600) // 60 * 60
+    step = 300 if hours <= 6 else 3600 if hours <= 168 else 86400
+    rows = app.db.query("SELECT (ts / ?) * ? AS b, SUM(n) AS n FROM ipdeny_minute WHERE site=? AND ts>=? "
+                        "GROUP BY b ORDER BY b", (step, step, str(sid), since))
+    by = {r["b"]: r["n"] for r in rows}
+    start = since // step * step
+    series = [[t, by.get(t, 0)] for t in range(start, int(now) // step * step + step, step)]
+    top = app.db.query("SELECT ip, SUM(n) AS n, MAX(ts) AS last, MIN(ts) AS first, country FROM ipdeny_minute "
+                       "WHERE site=? AND ts>=? GROUP BY ip ORDER BY n DESC LIMIT 50", (str(sid), since))
+    out = []
+    for r in top:
+        last = app.db.one("SELECT uri FROM ipdeny_minute WHERE site=? AND ip=? AND ts=?", (str(sid), r["ip"], r["last"]))
+        out.append({**r, "uri": (last or {}).get("uri", ""),
+                    "trusted": bool(app.bans.trusted_entry(r["ip"]))})
+    total = sum(r["n"] for r in rows)
+    ips = (app.db.one("SELECT COUNT(DISTINCT ip) AS n FROM ipdeny_minute WHERE site=? AND ts>=?",
+                      (str(sid), since)) or {}).get("n", 0)
+    return {"hours": hours, "step": step, "total": total, "ips": ips, "series": series, "top": out}

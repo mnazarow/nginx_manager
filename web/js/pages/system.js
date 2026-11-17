@@ -49,7 +49,10 @@ export async function render(root) {
     const s = info.status;
     mount(infoBox, h('div', { class: 'grid g2' },
       card('Сборка nginx', h('div', { class: 'col' },
-        h('dl', { class: 'kv' }, h('dt', {}, 'Версия'), h('dd', {}, info.version_full), h('dt', {}, 'Библиотека TLS'), h('dd', {}, info.openssl || '—'),
+        h('dl', { class: 'kv' }, info.os ? [h('dt', {}, 'Операционная система'), h('dd', {}, info.os.name,
+          info.os.level === 'unknown' ? null : h('div', { class: 'small ' + ({ eol: 'bad-text', soon: 'warning-text', ok: 'muted' }[info.os.level] || 'muted') },
+            info.os.level === 'ok' ? `поддержка до ${info.os.eol_text}` : info.os.message))] : null,
+          h('dt', {}, 'Версия'), h('dd', {}, info.version_full), h('dt', {}, 'Библиотека TLS'), h('dd', {}, info.openssl || '—'),
           h('dt', {}, 'Исполняемый файл'), h('dd', { class: 'mono' }, info.binary), h('dt', {}, 'PID-файл'), h('dd', { class: 'mono' }, info.pid_path),
           h('dt', {}, 'Пользователь воркеров'), h('dd', {}, info.user), h('dt', {}, 'Состояние'), h('dd', {}, s.running ? `работает ${fmtDur(s.uptime)}, PID ${s.pid}, воркеров ${s.workers}` : 'остановлен'),
           h('dt', {}, 'Возможности'), h('dd', { class: 'row', style: { gap: '4px' } }, badge('stream ' + (info.stream ? '✓' : '✗'), info.stream ? 'good' : 'bad'),

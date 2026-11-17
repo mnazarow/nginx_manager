@@ -211,7 +211,7 @@ class BanService:
 
     def trusted_nets(self) -> List[str]:
         p = self.app.panel()
-        return ALWAYS_TRUSTED + [e.address for e in p.trusted_ips] + list(p.autoban_whitelist) + list(p.panel_allow)
+        return ALWAYS_TRUSTED + self.app.trusted() + list(p.autoban_whitelist) + list(p.panel_allow)
 
     def trusted_entry(self, net: str) -> Optional[str]:
         """Доверенная запись, в которую входит адрес или подсеть (или которая входит в подсеть) — либо None."""
@@ -219,15 +219,16 @@ class BanService:
             n = ipaddress.ip_network(net, strict=False)
         except ValueError:
             return None
-        for e in self.app.panel().trusted_ips:
+        for e in self.app.trusted_entries():
             t = ipaddress.ip_network(e.address, strict=False)
             if t.version == n.version and (n.subnet_of(t) or t.subnet_of(n)):
-                return f"{e.address}" + (f" ({e.comment})" if e.comment else "")
+                note = ", ".join(x for x in (e.comment, f"с сервера «{e.origin}»" if e.origin else "") if x)
+                return f"{e.address}" + (f" ({note})" if note else "")
         return None
 
     def drop_trusted(self) -> int:
         """Снять блокировки адресов, попавших в доверенные (после пополнения списка)."""
-        trusted = [ipaddress.ip_network(e.address, strict=False) for e in self.app.panel().trusted_ips]
+        trusted = [ipaddress.ip_network(a, strict=False) for a in self.app.trusted()]
         n = 0
         for r in self.db.query("SELECT id, net FROM bans"):
             try:
@@ -307,7 +308,7 @@ class BanService:
     def render_file(self) -> str:
         nets = [r["net"] for r in self.db.query(
             "SELECT net FROM bans WHERE expires_at IS NULL OR expires_at > ? ORDER BY net", (time.time(),))]
-        trusted = [e.address for e in self.app.panel().trusted_ips]
+        trusted = self.app.trusted()
         tn = [ipaddress.ip_network(t, strict=False) for t in trusted]
 
         def inside(n: str) -> bool:

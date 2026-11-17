@@ -93,6 +93,7 @@ step "Проверка системы"
 detect_os
 info "ОС: $OS_NAME (менеджер пакетов: $PKG)"
 [ "$PKG" != unknown ] || fail "Неподдерживаемая ОС. Нужны Debian/Ubuntu или RHEL-совместимая система."
+os_support_check "$SRC_DIR"
 ARCH="$(uname -m)"; info "Архитектура: $ARCH"
 MEM_MB=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 0)
 [ "$MEM_MB" -lt 400 ] && warn "Мало памяти (${MEM_MB} МБ): рекомендуется не менее 512 МБ"

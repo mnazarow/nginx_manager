@@ -388,6 +388,14 @@ SCHEMA: List[str] = [
     CREATE INDEX IF NOT EXISTS wp_vulns_slug ON wp_vulns(type, slug);
     ALTER TABLE vulns ADD COLUMN wp TEXT NOT NULL DEFAULT '';
     """,
+    # ---- v11: отказы «Доступа по IP» (поминутно по сайту и адресу) --------------------------------------------
+    """
+    CREATE TABLE IF NOT EXISTS ipdeny_minute (
+        ts INTEGER NOT NULL, site TEXT NOT NULL, ip TEXT NOT NULL, n INTEGER NOT NULL DEFAULT 0,
+        uri TEXT NOT NULL DEFAULT '', country TEXT NOT NULL DEFAULT '', PRIMARY KEY (ts, site, ip)
+    );
+    CREATE INDEX IF NOT EXISTS ipdeny_site_ts ON ipdeny_minute(site, ts);
+    """,
 ]
 
 

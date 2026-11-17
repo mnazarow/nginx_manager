@@ -96,9 +96,29 @@ async def theme_run(browser, a, axe, theme, out):
         const s = d.find(x => x.ip_access) || d[0]; return s ? s.id : null; }""")
     if sid:
         await page.goto(f"{a.url}/#/sites?edit={sid}&tab=ip_access")
-        await page.wait_for_timeout(2000)
-        await check(page, axe, f"{theme}: сайт — доступ по IP", out)
+        await page.wait_for_timeout(3000)  # журнал отказов с графиком подгружается отдельно
+        await check(page, axe, f"{theme}: сайт — доступ по IP и журнал отказов", out)
+        btn = page.locator(".ipa-tools button", has_text="Временный доступ")
+        if await btn.count():
+            await btn.click()
+            try:
+                await page.wait_for_selector(".modal #nm-temp-addr", timeout=10000)
+                await check(page, axe, f"{theme}: окно «Временный доступ»", out)
+            finally:
+                await page.keyboard.press("Escape")
         print(f"{theme}: site ip_access", flush=True)
+    # окно «Перенести сайты на другой сервер»
+    await page.goto(f"{a.url}/#/bans?tab=peers")
+    await page.wait_for_timeout(2500)
+    tr = page.locator("button", has_text="Перенести сайты")
+    if await tr.count():
+        await tr.first.click()
+        try:
+            await page.wait_for_selector(".modal .tr-list", timeout=10000)
+            await page.wait_for_timeout(500)
+            await check(page, axe, f"{theme}: окно «Перенести сайты»", out)
+        finally:
+            await page.keyboard.press("Escape")
     # каналы уведомлений и окно канала Telegram (кнопки действий, список разрешённых пользователей)
     await page.goto(f"{a.url}/#/alerts")
     await page.wait_for_timeout(1500)

@@ -40,9 +40,11 @@ PAGES = [
 SCROLL = {"protection-intel": ("#/protection?tab=threats", "Обмен данными об угрозах", 3000),
           "protection-tech": ("#/protection?tab=vulns", "Технологии ваших сайтов", 3500),
           "protection-networks": ("#/protection?tab=analytics&hours=168", "Известные уязвимости", 3500),
-          "geo-databases": ("#/bans?tab=countries", "Базы GeoIP", 3000)}
+          "geo-databases": ("#/bans?tab=countries", "Базы GeoIP", 3000),
+          "system-os": ("#/system", "Сборка nginx", 4000)}
 SCENES = {"protection-ip", "protection-rule", "protection-ratelimit", "protection-vuln", "protection-ip-network",
           "alerts-channels", "protection-vuln-installed", "protection-tech-wp", "trusted", "site-ip-access",
+          "site-ip-denials", "ip-temp-access", "peers-transfer",
           *SCROLL, "geo-site", "sites-bulk", "backup-s3", "backup-restore"}  # снимки с действиями: --only geo-site,sites-bulk или --extras
 
 
@@ -211,6 +213,42 @@ async def scenes(page, a, only):
         await page.wait_for_timeout(500)
         await page.screenshot(path=f"{a.out}/site-ip-access.png")
         print("site-ip-access: ok")
+    if not only or "site-ip-denials" in only or "ip-temp-access" in only:
+        sid = await page.evaluate("""async () => { const r = await fetch('/api/sites'); const d = await r.json();
+            const s = d.find(x => x.ip_access); return s ? s.id : (d[0] || {}).id; }""")
+        await page.goto(f"{a.url}/#/sites?edit={sid}&tab=ip_access")
+        await page.wait_for_timeout(3000)
+        if not only or "site-ip-denials" in only:
+            # журнал отказов «Доступа по IP» под полями раздела
+            await page.evaluate("""() => { const h = [...document.querySelectorAll('.card h2')]
+                .find(x => x.textContent.includes('Журнал отказов')); h.scrollIntoView({block: 'start'});
+                window.scrollBy(0, -80); }""")
+            await page.wait_for_timeout(800)
+            await page.screenshot(path=f"{a.out}/site-ip-denials.png")
+            print("site-ip-denials: ok")
+        if not only or "ip-temp-access" in only:
+            await page.evaluate("window.scrollTo(0, 0)")
+            await page.locator(".ipa-tools button", has_text="Временный доступ").click()
+            await page.wait_for_selector(".modal #nm-temp-addr", timeout=10000)
+            await page.fill("#nm-temp-addr", "192.0.2.140")
+            await page.fill("#nm-temp-cmt", "Подрядчик (вёрстка)")
+            await page.wait_for_timeout(400)
+            await page.screenshot(path=f"{a.out}/ip-temp-access.png")
+            await page.keyboard.press("Escape")
+            print("ip-temp-access: ok")
+    if not only or "peers-transfer" in only:
+        # окно «Перенести сайты на другой сервер» (выбраны два сайта)
+        await page.goto(f"{a.url}/#/bans?tab=peers")
+        await page.wait_for_timeout(2500)
+        await page.locator("button", has_text="Перенести сайты").first.click()
+        await page.wait_for_selector(".modal .tr-list", timeout=10000)
+        await page.wait_for_timeout(600)
+        for name in ("Документация", "Интернет-магазин"):
+            await page.locator(".modal .tr-list label", has_text=name).locator("input").check()
+        await page.wait_for_timeout(300)
+        await page.screenshot(path=f"{a.out}/peers-transfer.png")
+        await page.keyboard.press("Escape")
+        print("peers-transfer: ok")
     if not only or "protection-tech-wp" in only:
         # окно уязвимостей плагина WordPress из карточки «Технологии ваших сайтов»
         await page.goto(f"{a.url}/#/protection?tab=vulns")

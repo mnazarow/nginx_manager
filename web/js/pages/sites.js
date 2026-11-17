@@ -5,7 +5,7 @@ import { h, mount, icon, badge, toast, modal, confirmDlg, promptDlg, table, tabs
 import { model, defaults, renderFields, errorsToMap, SCHEMA } from '../forms.js';
 import { ctx, can, refreshState, applyDialog, applyErrorView } from '../app.js';
 import { certDialog } from './certs.js';
-import { ipAccessTools } from './ipaccess.js';
+import { ipAccessTools, ipDenialsCard } from './ipaccess.js';
 
 export async function render(root) {
   if (ctx.params.edit || ctx.params.new !== undefined) return editor(root, ctx.params.edit ? +ctx.params.edit : null);
@@ -26,6 +26,11 @@ async function list(root) {
     h('div', { class: 'page-head' }, h('div', {}, h('h1', {}, 'Сайты'),
       h('p', {}, 'Виртуальные хосты nginx: домены, бэкенды, HTTPS, кэш, безопасность. Изменения сохраняются в базе и вступают в силу после «Применить».')),
       can('operator') ? h('div', { class: 'row' }, h('button', { class: 'btn', onclick: () => importDialog() }, icon('import'), 'Импорт из nginx'),
+        can('admin') && (ctx.state?.peers || 0) > 0 ? h('button', { class: 'btn', title: 'Перенести сайты с сертификатами на другой сервер с Nginx Manager', onclick: async () => {
+          const { transferDialog } = await import('./protection-intel.js');
+          const d = await api('/peers');
+          transferDialog(d.peers.filter(p => p.enabled));
+        } }, icon('upload'), 'На другой сервер…') : null,
         h('button', { class: 'btn primary', onclick: () => wizard() }, icon('plus'), 'Добавить сайт')) : null),
     h('div', { class: 'toolbar' }, search, tags.length ? tagSel : null, h('span', { class: 'muted small' }, `Всего: ${sites.length}`)),
     bar, h('div', { class: 'card' }, box));
@@ -239,6 +244,7 @@ async function editor(root, id) {
     mount(formBox);
     if (tab === 'ip_access') formBox.append(ipAccessTools(site, { onChange: fctx.onChange, redraw: drawForm, readonly: !can('operator') }));
     renderFields(formBox, fields, site, { ...fctx, tab, advanced, errors });
+    if (tab === 'ip_access' && id && site.ip_access?.enabled) formBox.append(ipDenialsCard(id, site, { onChange: fctx.onChange, redraw: drawForm, readonly: !can('operator') }));
     window.scrollTo(0, y);
   }
 
