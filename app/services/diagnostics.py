@@ -11,7 +11,7 @@ import socket
 import time
 import urllib.request
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 import psutil
 
@@ -779,18 +779,52 @@ class Diagnostics:
                      f"{db_size / 1024 ** 2:.0f} МБ"))
         return res
 
-    def transfer_check(self, c: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Сертификат, перенесённый с другого сервера: продлевается там. Если тот сервер давно не выходит на связь,
-        а срок подходит к концу, — предложить выпустить сертификат здесь."""
+    def transfer_silence(self, c: Dict[str, Any]) -> Optional[Tuple[str, float, float]]:
+        """Перенесённый сертификат: (имя сервера-источника, сколько дней он не выходит на связь, дней до истечения)."""
         t = (c.get("data") or {}).get("transfer") or {}
-        if not t.get("origin") or c["days_left"] is None or c["status"] != "valid":
+        if not t.get("origin") or t.get("origin") == "restore" or c["days_left"] is None or c["status"] != "valid":
             return None
         oid, oname = t["origin"], t.get("origin_name") or t["origin"]
         seen = [float(t.get("at") or 0)]
         seen.append(float(((self.app.db.kv_get("peers_incoming", {}) or {}).get(oid) or {}).get("at") or 0))
         seen.append(float(((self.app.db.kv_get("synced_sites", {}) or {}).get(oid) or {}).get("at") or 0))
-        silent = (time.time() - max(seen)) / 86400
-        days = c["days_left"]
+        return oname, (time.time() - max(seen)) / 86400, float(c["days_left"])
+
+    async def auto_takeover(self) -> List[int]:
+        """«Выпускать перенесённые сертификаты здесь, если сервер-источник молчит N дней»: раз в час; на сертификат —
+        одна попытка в сутки (неудачная повторяется на следующие сутки)."""
+        n = self.app.panel().cert_takeover_days
+        if n <= 0:
+            return []
+        st = self.app.db.kv_get("cert_takeover", {}) or {}
+        started = []
+        now = time.time()
+        for c in self.app.certs.list():
+            x = self.transfer_silence(c)
+            if not x:
+                continue
+            oname, silent, days = x
+            prev = st.get(str(c["id"])) or {}
+            if silent < n or days >= 20 or now - float(prev.get("at") or 0) < 86400:
+                continue
+            res = await self.issue_here(int(c["id"]), "system")
+            st[str(c["id"])] = {"at": now, "ok": res["ok"], "output": res["output"][:300]}
+            self.app.db.event("warning" if res["ok"] else "error", "certs",
+                              f"Сервер «{oname}» не выходит на связь {silent:.0f} дн., сертификат «{c['name']}» "
+                              f"истекает через {days:.0f} дн. — " + ("выпускается здесь" if res["ok"] else
+                                                                      f"выпустить здесь не удалось: {res['output']}"))
+            if res["ok"]:
+                started.append(int(c["id"]))
+        self.app.db.kv_set("cert_takeover", st)
+        return started
+
+    def transfer_check(self, c: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Сертификат, перенесённый с другого сервера: продлевается там. Если тот сервер давно не выходит на связь,
+        а срок подходит к концу, — предложить выпустить сертификат здесь."""
+        st = self.transfer_silence(c)
+        if not st:
+            return None
+        oname, silent, days = st
         name = f"Сертификат «{c['name']}»"
         fix = dict(fix="cert_issue_here", fix_label="Выпустить сертификат здесь", fix_args={"id": c["id"]})
         if silent >= 1 and days < 20:

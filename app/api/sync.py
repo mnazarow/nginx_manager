@@ -204,8 +204,6 @@ async def sync_sites(request: Request, body: Dict[str, Any] = Body(...), user=De
     """Принять сайты и сертификаты с другого сервера: {origin, sites: [{src_id, name, enabled, data}],
     certs: [{src_id, name, cert_pem, key_pem, fingerprint}], overwrite, apply}. Сайты с теми же доменами обновляются
     (overwrite) или пропускаются; сертификаты сохраняются как загруженные и обновляются при повторной отправке."""
-    from ..nginx.manager import ApplyError
-    from ..services import transfer as TF
     app = _nm(request)
     origin = body.get("origin") or {}
     oid = str(origin.get("id") or "")[:32]
@@ -220,16 +218,31 @@ async def sync_sites(request: Request, body: Dict[str, Any] = Body(...), user=De
     mirror = bool(body.get("mirror"))
     if mirror and not app.panel().peers_accept_sites:
         raise HTTPException(403, "Приём синхронизации сайтов выключен на этом сервере (Настройки панели → Другие серверы)")
+    res = await receive_payload(app, origin, sites, certs, bool(body.get("overwrite")), want_apply, mirror,
+                                user["username"])
+    if res.pop("_quiet", False):
+        return res
+    s_ = res.get("sites") or {}
+    audit(request, user, "sites_received", origin["name"], {"sites": s_.get("items", [])[:50],
+                                                            "certs": {k: res["certs"][k] for k in ("created", "updated")}})
+    return res
+
+
+async def receive_payload(app, origin: Dict[str, str], sites, certs, overwrite: bool, want_apply: bool, mirror: bool,
+                          username: str) -> Dict[str, Any]:
+    """Принять сайты и сертификаты (перенос, синхронизация или «Забрать с сервера»)."""
+    from ..nginx.manager import ApplyError
+    from ..services import transfer as TF
     pending_before = (bool(sites) or mirror) and want_apply and bool(app.pending().get("pending"))
     res: Dict[str, Any] = {"name": app.peers.origin()["name"]}
-    overwrite = bool(body.get("overwrite")) or mirror
+    overwrite = overwrite or mirror
     if sites or mirror:  # сертификаты — только для сайтов, которые будут созданы или обновлены
         only = await asyncio.to_thread(TF.needed_certs, app, sites, overwrite)
-        res["certs"] = await asyncio.to_thread(TF.receive_certs, app, origin, certs, user["username"], only)
+        res["certs"] = await asyncio.to_thread(TF.receive_certs, app, origin, certs, username, only)
         res["sites"] = await asyncio.to_thread(TF.receive_sites, app, origin, sites, res["certs"]["map"],
-                                               overwrite, user["username"], mirror)
+                                               overwrite, username, mirror)
     else:  # только сертификаты: продление на источнике — обновляем уже перенесённые
-        res["certs"] = await asyncio.to_thread(TF.receive_certs, app, origin, certs, user["username"], None, False)
+        res["certs"] = await asyncio.to_thread(TF.receive_certs, app, origin, certs, username, None, False)
     app.touch()
     changed = sum(res.get("sites", {}).get(k, 0) for k in ("created", "updated", "deleted")) + \
         (len(res["certs"]["changed_ids"]) if mirror else 0)
@@ -238,7 +251,7 @@ async def sync_sites(request: Request, body: Dict[str, Any] = Body(...), user=De
             res["apply_error"] = "на этом сервере есть неприменённые изменения — примените конфигурацию вручную"
         else:
             try:
-                r = await app.apply(user["username"], f"{'Синхронизация' if mirror else 'Перенос'} сайтов с сервера "
+                r = await app.apply(username, f"{'Синхронизация' if mirror else 'Перенос'} сайтов с сервера "
                                     f"«{origin['name']}»", "transfer")
                 res["applied"] = r.get("version")
             except ApplyError as e:
@@ -249,15 +262,61 @@ async def sync_sites(request: Request, body: Dict[str, Any] = Body(...), user=De
             await app.after_cert_issued(cid)
     res["certs"].pop("map", None)
     if mirror and not changed:
+        res["_quiet"] = True
         return res  # синхронизация без изменений — не засоряем журнал событий
-    TF.log_incoming(app.db, origin, res, user["username"])
+    TF.log_incoming(app.db, origin, res, username)
     s_ = res.get("sites") or {}
     c_ = res["certs"]
     app.db.event("info", "peers", f"Сервер «{origin['name']}»: сайты — создано {s_.get('created', 0)}, обновлено "
                  f"{s_.get('updated', 0)}, пропущено {s_.get('skipped', 0)}; сертификаты — новых {c_['created']}, "
-                 f"обновлено {c_['updated']}", {"user": user["username"]})
-    audit(request, user, "sites_received", origin["name"], {"sites": s_.get("items", [])[:50],
-                                                            "certs": {k: c_[k] for k in ("created", "updated")}})
+                 f"обновлено {c_['updated']}", {"user": username})
+    return res
+
+
+@router.post("/sync/sites/export")
+async def sync_sites_export(request: Request, body: Dict[str, Any] = Body(...), user=Depends(admin)):
+    """Отдать сайты применённой версии (по ключам сравнения — доменам) с сертификатами для «Забрать с сервера»:
+    {keys: [...], certs: true}."""
+    from ..services import transfer as TF
+    from ..services.compare import site_key
+    app = _nm(request)
+    keys = {str(k) for k in (body.get("keys") or [])}
+    state = app.last_applied_state() or app.nginx.load_state()
+    ids = [sid for sid, s in state.sites if site_key(s) in keys]
+    if not ids:
+        raise HTTPException(404, "Таких сайтов здесь нет")
+    payload = await asyncio.to_thread(TF.build, app.db, ids, bool(body.get("certs", True)))
+    audit(request, user, "sites_exported", ",".join(sorted(keys))[:200], {"sites": ids})
+    return {"origin": app.peers.origin(), **payload}
+
+
+@router.post("/peers/{pid}/pull")
+async def peers_pull(request: Request, pid: str, body: Dict[str, Any] = Body(...), user=Depends(admin)):
+    """Забрать сайты с другого сервера (из окна сравнения): {keys: [ключи сайтов], overwrite: true, apply: true}."""
+    from ..services.peers import _err, call
+    app = _nm(request)
+    peer = next((x for x in app.panel().peers if x.id == pid), None)
+    if not peer:
+        raise HTTPException(404, "Сервер не найден")
+    keys = [str(k) for k in (body.get("keys") or [])][:200]
+    if not keys:
+        raise HTTPException(400, "Выберите сайты")
+    try:
+        code, d = await asyncio.to_thread(call, peer, "POST", "/sync/sites/export", {"keys": keys, "certs": True},
+                                          app.panel().peers_verify_tls, 120)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"нет связи: {e}"[:300])
+    if code == 404 and not isinstance(d, dict):
+        raise HTTPException(400, "на сервере старая версия Nginx Manager — «Забрать» есть с версии 2.9")
+    if code != 200 or not isinstance(d, dict):
+        raise HTTPException(400, _err(code, d))
+    o = d.get("origin") or {}
+    origin = {"id": str(o.get("id") or peer.id)[:32], "name": str(o.get("name") or peer.name)[:80]}
+    res = await receive_payload(app, origin, d.get("sites") or [], d.get("certs") or [],
+                                bool(body.get("overwrite", True)), bool(body.get("apply", True)), False,
+                                user["username"])
+    res.pop("_quiet", None)
+    audit(request, user, "sites_pulled", peer.name, {"keys": keys, "sites": (res.get("sites") or {}).get("items", [])[:50]})
     return res
 
 

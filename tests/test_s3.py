@@ -120,11 +120,10 @@ def test_offsite_cycle(moto, monkeypatch, tmp_path):
     original = (settings.backups_dir / js_name[:-4]).read_text()
     os.unlink(settings.backups_dir / js_name[:-4])
     assert (settings.backups_dir / backup.offsite_download(app, js_name)).read_text() == original
-    # копия всех настроек скачивается как есть (архив tar.gz, без распаковки)
+    # копия всех настроек скачивается как есть (зашифрованной — пароль спросит окно восстановления)
     st_name = next(n for n in names if ".settings.tar.gz" in n)
-    os.unlink(settings.backups_dir / st_name[:-4])
     got = backup.offsite_download(app, st_name)
-    assert got == st_name[:-4] and (settings.backups_dir / got).read_bytes()[:2] == b"\x1f\x8b"
+    assert got == st_name and (settings.backups_dir / got).read_bytes()[:8] == b"Salted__"
     # неверный пароль — понятная ошибка, мусор не остаётся
     app.save_panel(p.model_copy(update={"s3_encrypt_password": "не тот"}))
     with pytest.raises(ValueError, match="расшифровать"):

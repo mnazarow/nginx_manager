@@ -338,7 +338,7 @@ function arrayTable(f, obj, ctx, p) {
           oninput: (e) => { const s = e.target.value; item[c.key] = s === '' ? (c.nullable ? null : c.default) : Number(s); changed(ctx); } });
       } else {
         w = h('input', { type: c.ui === 'password' ? 'password' : 'text', value: item[c.key] ?? '', placeholder: c.ph || '',
-          'aria-label': `${c.label}, строка ${i + 1}`,
+          'aria-label': `${c.label}, строка ${i + 1}`, style: c.key === 'url' ? { minWidth: '260px' } : c.key === 'sha256' ? { minWidth: '160px' } : null,
           class: ctx.errors && ctx.errors[cp] ? 'invalid' : '', autocomplete: 'new-password', spellcheck: false,
           oninput: (e) => { item[c.key] = e.target.value; changed(ctx); } });
       }

@@ -35,6 +35,7 @@ PAGES = [
     ("protection-bots", "#/protection?tab=bots", 3000), ("protection-modsec", "#/protection?tab=modsec", 3500),
     ("protection-vulns", "#/protection?tab=vulns", 3500),
     ("bans-peers", "#/bans?tab=peers", 3000), ("trusted", "#/trusted", 1500), ("settings-peers", "#/settings?tab=peers", 2000),
+    ("settings-sbackup", "#/settings?tab=sbackup", 1500),
 ]
 # снимки части страницы: прокрутка к карточке с заголовком
 SCROLL = {"protection-intel": ("#/protection?tab=threats", "Обмен данными об угрозах", 3000),
@@ -46,7 +47,7 @@ SCENES = {"protection-ip", "protection-rule", "protection-ratelimit", "protectio
           "alerts-channels", "protection-vuln-installed", "protection-tech-wp", "trusted", "site-ip-access",
           "site-ip-denials", "ip-temp-access", "peers-transfer", "ip-link", "site-ip-links",
           *SCROLL, "geo-site", "sites-bulk", "backup-s3", "backup-restore", "backup-settings-restore",
-          "site-ip-lists", "ip-bulk-file", "peers-compare"}  # снимки с действиями: --only geo-site,sites-bulk или --extras
+          "site-ip-lists", "ip-bulk-file", "peers-compare", "backup-restore-sites", "trusted-lists"}  # снимки с действиями: --only geo-site,sites-bulk или --extras
 
 
 async def main(a):
@@ -214,7 +215,7 @@ async def scenes(page, a, only):
         await page.wait_for_timeout(500)
         await page.screenshot(path=f"{a.out}/site-ip-access.png")
         print("site-ip-access: ok")
-    if not only or "site-ip-denials" in only or "ip-temp-access" in only or "ip-link" in only or "site-ip-links" in only:
+    if not only or {"site-ip-denials", "ip-temp-access", "ip-link", "site-ip-links", "site-ip-lists", "ip-bulk-file"} & set(only):
         sid = await page.evaluate("""async () => { const r = await fetch('/api/sites'); const d = await r.json();
             const s = d.find(x => x.ip_access); return s ? s.id : (d[0] || {}).id; }""")
         await page.goto(f"{a.url}/#/sites?edit={sid}&tab=ip_access")
@@ -360,6 +361,29 @@ async def scenes(page, a, only):
         await page.screenshot(path=f"{a.out}/backup-settings-restore.png")
         await page.keyboard.press("Escape")
         print("backup-settings-restore: ok")
+    if not only or "backup-restore-sites" in only:
+        # то же окно в режиме «Отдельные сайты»
+        await page.goto(f"{a.url}/#/backup")
+        await page.wait_for_timeout(2000)
+        btn = page.locator("table.t tbody tr", has_text="-all.settings.tar.gz").locator("button", has_text="Восстановить").first
+        await btn.click()
+        await page.wait_for_selector(".modal dl.kv", timeout=15000)
+        await page.locator(".modal .btn-group button", has_text="Отдельные сайты").click()
+        await page.get_by_role("checkbox", name="API сервис api.example.com").check()
+        await page.wait_for_timeout(400)
+        await page.screenshot(path=f"{a.out}/backup-restore-sites.png")
+        await page.keyboard.press("Escape")
+        print("backup-restore-sites: ok")
+    if not only or "trusted-lists" in only:
+        # «Доверенные адреса»: списки по ссылке и их загрузка
+        await page.goto(f"{a.url}/#/trusted")
+        await page.wait_for_timeout(1500)
+        await page.evaluate("""() => { const h = [...document.querySelectorAll('.card h2')]
+            .find(x => x.textContent.includes('Списки доверенных адресов')); h.closest('.card').scrollIntoView({block: 'end'});
+            window.scrollBy(0, 20); }""")
+        await page.wait_for_timeout(500)
+        await page.screenshot(path=f"{a.out}/trusted-lists.png")
+        print("trusted-lists: ok")
 
 
 async def extras(page, a):

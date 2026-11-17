@@ -1,6 +1,6 @@
 // Резервные копии, экспорт/импорт настроек, выгрузка во внешнее S3-хранилище.
 import { api } from '../api.js';
-import { h, mount, icon, toast, table, badge, fmtBytes, fmtDate, fmtAgo, confirmDlg, card, pickFile, downloadText, loading, modal } from '../ui.js';
+import { h, mount, icon, toast, table, badge, fmtBytes, fmtDate, fmtAgo, confirmDlg, card, pickFile, downloadText, loading, modal, segmented } from '../ui.js';
 import { refreshState } from '../app.js';
 
 const ROLE = { admin: 'администратор', operator: 'оператор', viewer: 'наблюдатель' };
@@ -106,9 +106,36 @@ function settingsCard(onDone) {
       if (onDone) onDone();
     } catch (e) { toast(e.data?.detail || e.message, 'bad'); } finally { btn.disabled = false; }
   } }, icon('download'), 'Создать и скачать');
+  const job = h('div', { class: 'small' });
+  const drawJob = (j) => {
+    const last = j.last;
+    const bad = last ? Object.entries(last.targets || {}).filter(([, v]) => !v.ok) : [];
+    const run = h('button', { class: 'btn sm', type: 'button', disabled: !j.targets.length, title: j.targets.length ? 'Создать копию и отправить во все выбранные места сейчас' : 'Места отправки не выбраны', onclick: async () => {
+      run.disabled = true;
+      try {
+        const r = await api('/backup/settings/job', { method: 'POST' });
+        toast(r.ok ? `Копия ${r.name} отправлена` : `Не всё отправлено: ${Object.values(r.targets || {}).filter(v => !v.ok).map(v => (v.name ? v.name + ': ' : '') + v.error).join('; ') || r.error}`, r.ok ? 'good' : 'bad');
+        drawJob(await api('/backup/settings/job'));
+        if (onDone) onDone();
+      } catch (e) { toast(e.data?.detail || e.message, 'bad'); } finally { run.disabled = false; }
+    } }, icon('upload'), 'Отправить сейчас');
+    mount(job, h('div', { class: 'sub-h', style: { margin: '6px 0 4px', fontWeight: 600 } }, 'По расписанию'),
+      h('div', { class: 'muted' }, j.hours ? `каждые ${j.hours} ч${j.only_changed ? ', если настройки изменились' : ''}` : 'вместе с ежедневной копией базы',
+        j.targets.length ? ` → ${j.targets.map(t => t.name).join(', ')}` : ' — во внешние места не отправляется'),
+      last ? h('div', { class: bad.length || last.ok === false ? 'bad-text' : 'muted' },
+        `последняя: ${fmtAgo(last.at)}${last.name ? ' — ' + last.name : ''}`,
+        bad.length ? ` — ошибки: ${bad.map(([k, v]) => (v.name || k) + ': ' + v.error).join('; ')}` : last.error ? ` — ${last.error}` : '') : null,
+      h('div', { class: 'row', style: { gap: '8px', marginTop: '6px', flexWrap: 'wrap' } }, run,
+        j.targets.some(t => t.id === 's3_second') ? h('button', { class: 'btn sm', type: 'button', onclick: async () => {
+          const r = await api('/backup/settings/s3-check', { method: 'POST' });
+          toast(r.ok ? `Второе хранилище: ${r.steps.join(', ')}` : `Второе хранилище недоступно: ${r.error}`, r.ok ? 'good' : 'bad');
+        } }, icon('check'), 'Проверить второе хранилище') : null,
+        h('a', { class: 'btn sm ghost', href: '#/settings?tab=sbackup' }, 'Настроить')));
+  };
+  api('/backup/settings/job', { silent: true }).then(drawJob).catch(() => {});
   return card('Копия всех настроек', h('div', { class: 'col' },
     h('div', { class: 'small ink2' }, 'Один файл со всеми настройками: сайты и потоки, сертификаты с ключами и данными certbot, учётные записи DNS, настройки nginx, панели и защиты от атак, оповещения, пользователи с 2FA и API-токены, ручные блокировки. Без статистики и журналов — файл небольшой.'),
-    h('div', { class: 'field' }, h('label', { for: 'nm-sb-pass' }, 'Пароль для шифрования (рекомендуется)'), pass), note, btn));
+    h('div', { class: 'field' }, h('label', { for: 'nm-sb-pass' }, 'Пароль для шифрования (рекомендуется)'), pass), note, btn, job));
 }
 
 /** Окно восстановления настроек из копии: пароль (если зашифрована), проверка, выбор разделов, восстановление. */
@@ -117,15 +144,27 @@ export async function restoreSettingsDlg(name, encrypted, onDone) {
   const body = h('div', { class: 'col' });
   const foot = h('div', { class: 'row' });
   let info = null;
+  let mode = 'sections';
   const checks = {};
+  const siteChecks = {};
   const applyCb = h('input', { type: 'checkbox', checked: true });
   const go = h('button', { class: 'btn danger solid', disabled: true, onclick: async () => {
     const sections = Object.keys(checks).filter(k => checks[k].checked);
-    if (!sections.length) { toast('Выберите разделы', 'bad'); return; }
-    if (!await confirmDlg(`Заменить ${sections.length === Object.keys(checks).length ? 'все настройки' : 'выбранные разделы'} содержимым копии ${name}?\nТекущие настройки будут сохранены в копию before-settings-restore.`, { danger: true, ok: 'Восстановить' })) return;
+    const sites = Object.keys(siteChecks).filter(k => siteChecks[k].checked).map(Number);
+    let body, question;
+    if (mode === 'sites') {
+      if (!sites.length) { toast('Выберите сайты', 'bad'); return; }
+      body = { name, password: pass.value, sites, apply: applyCb.checked };
+      question = `Восстановить из копии ${name} сайтов: ${sites.length}?\nСайт с теми же доменами обновится, остальные будут созданы; другие сайты и настройки не меняются. Текущие настройки будут сохранены в копию before-settings-restore.`;
+    } else {
+      if (!sections.length) { toast('Выберите разделы', 'bad'); return; }
+      body = { name, password: pass.value, sections, apply: applyCb.checked };
+      question = `Заменить ${sections.length === Object.keys(checks).length ? 'все настройки' : 'выбранные разделы'} содержимым копии ${name}?\nТекущие настройки будут сохранены в копию before-settings-restore.`;
+    }
+    if (!await confirmDlg(question, { danger: true, ok: 'Восстановить' })) return;
     go.disabled = true;
     try {
-      const r = await api('/backup/settings/restore', { method: 'POST', body: { name, password: pass.value, sections, apply: applyCb.checked } });
+      const r = await api('/backup/settings/restore', { method: 'POST', body });
       m.close();
       resultDlg(r);
       if (onDone) onDone();
@@ -138,19 +177,37 @@ export async function restoreSettingsDlg(name, encrypted, onDone) {
       h('dt', {}, 'Версия панели'), h('dd', {}, mf.version || '—'),
       h('dt', {}, 'Файлы сертификатов'), h('dd', {}, `${info.files.certs}` + (info.files.letsencrypt ? `, данные certbot — ${info.files.letsencrypt} файлов` : '')),
       h('dt', {}, 'Размер'), h('dd', {}, fmtBytes(info.size)));
+    const siteSec = info.sections.find(x => x.id === 'sites');
+    const secBox = h('div', { class: 'col', style: { gap: '6px' } });
+    const siteBox = h('div', { class: 'col', style: { gap: '6px' } });
+    const all = h('button', { class: 'btn sm ghost', type: 'button', onclick: () => Object.values(mode === 'sites' ? siteChecks : checks).forEach(c => { c.checked = true; }) }, 'Выбрать все');
+    const pick = segmented([['sections', 'Разделы целиком'], ['sites', 'Отдельные сайты']], mode, (v) => {
+      mode = v; secBox.style.display = v === 'sections' ? '' : 'none'; siteBox.style.display = v === 'sites' ? '' : 'none';
+    });
+    siteBox.style.display = 'none';
+    mount(siteBox, h('div', { class: 'small muted' }, 'Отмеченные сайты восстанавливаются вместе с их сертификатами из копии; сайт с теми же доменами обновляется, остальные создаются. Другие сайты и разделы не меняются.'),
+      ...((siteSec && siteSec.items) || []).map(it => {
+        const cb = h('input', { type: 'checkbox' });
+        siteChecks[it.id] = cb;
+        return h('label', { class: 'check', style: { display: 'flex', gap: '8px', alignItems: 'baseline' } }, cb,
+          h('span', {}, it.name, it.https ? h('span', { class: 'muted small' }, ' · HTTPS') : null,
+            h('div', { class: 'small muted' }, (it.domains || []).join(', '))));
+      }));
     mount(body,
       h('div', { class: 'alert good' }, 'Копия проверена: архив цел, контрольные суммы совпадают.'), dl,
       info.warnings.length ? h('div', { class: 'alert warn' }, info.warnings.map(w => h('div', {}, w))) : null,
-      h('div', { class: 'row', style: { justifyContent: 'space-between' } }, h('b', {}, 'Что восстановить'),
-        h('button', { class: 'btn sm ghost', type: 'button', onclick: () => Object.values(checks).forEach(c => { c.checked = true; }) }, 'Все разделы')),
-      h('div', { class: 'col', style: { gap: '6px' } }, info.sections.map(sec => {
-        const cb = h('input', { type: 'checkbox', checked: true });
-        checks[sec.id] = cb;
-        return h('label', { class: 'check', style: { display: 'flex', gap: '8px', alignItems: 'baseline' } }, cb,
-          h('span', {}, sec.title, h('span', { class: 'muted small' }, ` — ${sec.count}`),
-            sec.names.length ? h('div', { class: 'small muted' }, sec.names.slice(0, 8).join(', ') + (sec.count > 8 ? ' …' : '')) : null,
-            sec.id === 'users' ? h('div', { class: 'small warning-text' }, 'Все выйдут из панели и войдут с паролями и 2FA из копии') : null));
-      })),
+      h('div', { class: 'row', style: { justifyContent: 'space-between', alignItems: 'center' } }, h('b', {}, 'Что восстановить'),
+        h('div', { class: 'row', style: { gap: '8px' } }, siteSec && (siteSec.items || []).length ? pick : null, all)),
+      siteBox, secBox);
+    mount(secBox, info.sections.map(sec => {
+      const cb = h('input', { type: 'checkbox', checked: true });
+      checks[sec.id] = cb;
+      return h('label', { class: 'check', style: { display: 'flex', gap: '8px', alignItems: 'baseline' } }, cb,
+        h('span', {}, sec.title, h('span', { class: 'muted small' }, ` — ${sec.count}`),
+          sec.names.length ? h('div', { class: 'small muted' }, sec.names.slice(0, 8).join(', ') + (sec.count > 8 ? ' …' : '')) : null,
+          sec.id === 'users' ? h('div', { class: 'small warning-text' }, 'Все выйдут из панели и войдут с паролями и 2FA из копии') : null));
+    }));
+    body.append(
       h('label', { class: 'check', style: { display: 'flex', gap: '8px', alignItems: 'baseline' } }, applyCb,
         h('span', {}, 'Сразу применить конфигурацию nginx', h('div', { class: 'small muted' }, 'С проверкой nginx -t; если nginx её не примет — настройки вернутся к текущим автоматически'))),
       h('div', { class: 'alert info small' }, 'Каждый выбранный раздел заменяется целиком. Статистика, журналы и история версий не меняются. Перед восстановлением текущие настройки сохраняются в копию before-settings-restore — к ним можно вернуться так же.'));
@@ -175,7 +232,7 @@ export async function restoreSettingsDlg(name, encrypted, onDone) {
 function resultDlg(r) {
   const ok = !r.rolled_back;
   const m = modal({ title: ok ? 'Настройки восстановлены' : 'Восстановление отменено', size: 'lg', body: h('div', { class: 'col' },
-    ok ? h('div', { class: 'alert good' }, `Восстановлено разделов: ${r.sections.length}. ` + (r.applied ? `Конфигурация nginx применена (версия ${r.applied}).` : r.nginx ? 'Конфигурация не применялась — примените её кнопкой «Применить» вверху.' : ''))
+    ok ? h('div', { class: 'alert good' }, (r.sites ? `Сайты: создано ${r.sites.created}, обновлено ${r.sites.updated}${r.sites.skipped ? ', не восстановлено ' + r.sites.skipped : ''}. ` : `Восстановлено разделов: ${r.sections.length}. `) + (r.applied ? `Конфигурация nginx применена (версия ${r.applied}).` : r.nginx ? 'Конфигурация не применялась — примените её кнопкой «Применить» вверху.' : ''))
       : h('div', { class: 'alert bad' }, h('b', {}, 'nginx не принял конфигурацию из копии — настройки возвращены к прежним. '), h('pre', { class: 'code small', style: { whiteSpace: 'pre-wrap', maxHeight: '240px' } }, r.apply_error || '')),
     r.notes.length ? h('div', { class: 'alert warn' }, r.notes.map(n => h('div', {}, n))) : null,
     h('div', { class: 'small muted' }, `Прежние настройки сохранены в ${r.safety}.`),

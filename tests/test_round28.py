@@ -71,7 +71,7 @@ def test_iplists_refresh_and_render(tmp_path):
                                                                                lists=[IpListSource(url=url2)]))
     st = State(sites=[(1, s1), (2, s2), (3, off)], streams=[], glob=GlobalSettings(), panel=PanelSettings(), certs={})
     src = iplists.sources(st)
-    assert src[url] == {"hours": 6, "sites": [1, 2]} and src[url2]["sites"] == [2]
+    assert src[url]["hours"] == 6 and src[url]["sites"] == [1, 2] and src[url2]["sites"] == [2]
     calls = []
     data = {url: ["198.51.100.0/24"], url2: ["203.0.113.0/28", "2001:db8::/48"]}
 
@@ -115,10 +115,10 @@ def test_iplists_api(client, monkeypatch):
     url = "https://lists.test/office.txt"
     sid = _insert(nm.db, _site(ip_access=IpAccessSettings(enabled=True, entries=[IpEntry(address="198.51.100.1")],
                                                           lists=[IpListSource(url=url, comment="офис")])))
-    monkeypatch.setattr(iplists, "fetch", lambda u: ["203.0.113.0/24", "2001:db8::/48"])
+    monkeypatch.setattr(iplists, "fetch", lambda u, timeout=20, sha256="": ["203.0.113.0/24", "2001:db8::/48"])
     assert client.post("/api/ip-lists/check", headers=client.op, json={"url": "ftp://x"}).status_code == 400
     r = client.post("/api/ip-lists/check", headers=client.op, json={"url": url}).json()
-    assert r == {"ok": True, "count": 2, "sample": ["203.0.113.0/24", "2001:db8::/48"], "v6": 1}
+    assert r == {"ok": True, "count": 2, "sample": ["203.0.113.0/24", "2001:db8::/48"], "v6": 1, "dropped": 0}
     assert client.post("/api/ip-lists/check", headers=client.vw, json={"url": url}).status_code == 403
     # до применения списков нет
     assert client.get(f"/api/sites/{sid}/ip-lists", headers=client.vw).json()["lists"] == []

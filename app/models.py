@@ -631,6 +631,15 @@ class IpListSource(Model):
     url: str = F("", label="Адрес списка", ph="https://example.com/office-ips.txt")
     comment: str = F("", label="Комментарий", ph="Офисы (от провайдера)", max_length=120)
     hours: int = F(24, label="Обновлять раз в", unit="ч", ge=1, le=720)
+    min_prefix: int = F(16, label="Не шире подсети IPv4 /", ge=0, le=32,
+                        help="Подсети шире (например, /8) из списка отбрасываются; для IPv6 — на 16 бит длиннее "
+                             "(/16 → /32). 0 — без ограничения")
+    max_change: int = F(50, label="Подтверждать, если изменилось больше", unit="%", ge=0, le=100,
+                        help="Если новая загрузка отличается от действующей больше чем на столько процентов адресов, "
+                             "она не применяется, пока вы не нажмёте «Принять изменения» (защита от подмены или "
+                             "ошибки в файле). 0 — применять любые изменения")
+    sha256: str = F("", label="Контрольная сумма SHA-256", ph="пусто — не проверять",
+                    help="Для неизменного файла: если содержимое не совпадает с этой суммой, загрузка отклоняется")
 
     @field_validator("url")
     @classmethod
@@ -639,6 +648,14 @@ class IpListSource(Model):
         u = urllib.parse.urlparse(v)
         if u.scheme not in ("https", "http") or not u.netloc or any(c in v for c in " \"'\n"):
             raise V.ValidationError("Адрес списка — https://…")
+        return v
+
+    @field_validator("sha256")
+    @classmethod
+    def _sha(cls, v):
+        v = (v or "").strip().lower()
+        if v and not re.match(r"^[0-9a-f]{64}$", v):
+            raise V.ValidationError("SHA-256 — 64 шестнадцатеричных символа (sha256sum файла)")
         return v
 
 
@@ -2067,6 +2084,7 @@ class GlobalSettings(Model):
 PANEL_TABS = [("stats", "Статистика и хранение"), ("network", "Сеть и внешний IP"), ("security", "Безопасность панели"),
               ("bans", "Блокировки IP"), ("acme", "Сертификаты (ACME)"), ("monitor", "Мониторинг"),
               ("reports", "Отчёты"), ("events", "Уведомления о событиях"), ("backup", "Резервные копии"),
+              ("sbackup", "Копия настроек"),
               ("peers", "Другие серверы")]
 
 
@@ -2174,7 +2192,7 @@ class PanelSettings(Model):
     renew_days_before: int = F(30, label="Продлевать за", unit="дн", tab="acme", ge=5, le=60,
                                help="Для коротких сертификатов — не позже, чем за треть срока действия")
 
-    @field_validator("s3_endpoint")
+    @field_validator("s3_endpoint", "sb_s3_endpoint")
     @classmethod
     def _s3_endpoint(cls, v):
         v = V.http_url(v).rstrip("/")
@@ -2182,7 +2200,7 @@ class PanelSettings(Model):
             raise V.ValidationError("Укажите только адрес хранилища, без бакета и пути: https://s3.example.com")
         return v
 
-    @field_validator("s3_bucket")
+    @field_validator("s3_bucket", "sb_s3_bucket")
     @classmethod
     def _s3_bucket(cls, v):
         v = (v or "").strip()
@@ -2190,7 +2208,7 @@ class PanelSettings(Model):
             raise V.ValidationError("Имя бакета: 3–63 символа, строчные латинские буквы, цифры, точки и дефисы")
         return v
 
-    @field_validator("s3_prefix")
+    @field_validator("s3_prefix", "sb_s3_prefix")
     @classmethod
     def _s3_prefix(cls, v):
         v = (v or "").strip().lstrip("/")
@@ -2198,7 +2216,8 @@ class PanelSettings(Model):
             raise V.ValidationError("Префикс: латинские буквы, цифры, «_ . - /»")
         return v if not v or v.endswith("/") else v + "/"
 
-    @field_validator("s3_region", "s3_access_key", "s3_secret_key")
+    @field_validator("s3_region", "s3_access_key", "s3_secret_key", "sb_s3_region", "sb_s3_access_key",
+                     "sb_s3_secret_key")
     @classmethod
     def _s3_token(cls, v):
         v = (v or "").strip()
@@ -2214,6 +2233,17 @@ class PanelSettings(Model):
                     if not getattr(self, k)]
             if miss:
                 raise V.ValidationError("Для выгрузки в S3 заполните: " + ", ".join(miss))
+        if self.sb_s3:
+            miss = [lbl for k, lbl in (("sb_s3_endpoint", "адрес"), ("sb_s3_bucket", "бакет"),
+                                       ("sb_s3_access_key", "access key"), ("sb_s3_secret_key", "secret key"))
+                    if not getattr(self, k)]
+            if miss:
+                raise V.ValidationError("Для второго хранилища копий настроек заполните: " + ", ".join(miss))
+        if (self.sb_s3 or self.sb_channels) and not (self.sb_password or self.s3_encrypt_password):
+            raise V.ValidationError("Задайте пароль шифрования копий настроек: без него копия с закрытыми ключами "
+                                    "не отправляется во внешние места")
+        if self.sb_password and len(self.sb_password) < 8:
+            raise V.ValidationError("Пароль шифрования копий настроек — не короче 8 символов")
         return self
 
     @field_validator("acme_directory")
@@ -2291,6 +2321,14 @@ class PanelSettings(Model):
                                        "«Доступом только с разрешённых адресов» доверенные адреса открыты, если там "
                                        "включено «Пускать доверенные адреса». Всегда доверенные: 127.0.0.1 и ::1 "
                                        "(сам сервер) и адреса из «Доступ к панели только с IP».")
+    trusted_lists: List[IpListSource] = F(factory=list, label="Списки доверенных адресов по ссылке", tab="trusted",
+                                          ui="table",
+                                          help="Файлы со списками адресов (адреса платёжного шлюза, мониторинга, "
+                                               "CDN), которые панель скачивает по расписанию: адреса из них доверенные "
+                                               "так же, как записи выше. При изменении списка конфигурация "
+                                               "переприменяется сама",
+                                          rec="Официальные списки адресов сервисов по HTTPS: платёжного шлюза, "
+                                              "мониторинга, системы CI/CD")
     # ---------------------------------------------------------------- регулярные отчёты
     report_enabled: bool = F(False, label="Отправлять регулярный отчёт", tab="reports",
                              help="Сводка нагрузки, ошибок, проблем по анализу и состояния в выбранные каналы")
@@ -2354,6 +2392,13 @@ class PanelSettings(Model):
     peers_accept_sites: bool = F(True, label="Принимать синхронизацию сайтов с других серверов", tab="peers",
                                  help="Сайты, которые другой сервер присылает в режиме синхронизации, создаются, "
                                       "обновляются и удаляются здесь автоматически (только с токеном администратора)")
+    cert_takeover_days: int = F(0, label="Выпускать перенесённые сертификаты здесь, если сервер-источник молчит",
+                                unit="дн", tab="peers", ge=0, le=60,
+                                help="Сертификат, перенесённый с другого сервера, продлевается там. Если тот сервер не "
+                                     "выходит на связь столько дней, а до истечения меньше 20 дней, панель сама "
+                                     "выпускает сертификат здесь (по ACME, с теми же доменами) и переключает на него "
+                                     "сайты. 0 — только кнопкой в «Диагностике»",
+                                rec="3–7 дней для резервного сервера кластера, на который приходят запросы Let's Encrypt")
     peers_accept_trusted: bool = F(True, label="Принимать доверенные адреса с других серверов", tab="peers",
                                    help="Адреса, доверенные на другом сервере, не блокируются и здесь (видны в разделе "
                                         "«Доверенные адреса» с именем сервера; принимаются только с токеном "
@@ -2372,6 +2417,39 @@ class PanelSettings(Model):
     backup_keep_update: int = F(5, label="Хранить копий перед обновлениями", tab="backup", ge=1, le=100,
                                 help="Копии базы, кода прежней версии и nginx.conf, которые делает update.sh и "
                                      "nmctl backup. Ручные копии из панели не удаляются")
+    # ---- копия всех настроек по расписанию и её отправка
+    sb_hours: int = F(0, label="Отдельная копия настроек каждые", unit="ч", tab="sbackup", ge=0, le=168,
+                      help="0 — только вместе с ежедневной копией базы. Копия всех настроек — десятки килобайт, её "
+                           "можно делать часто (например, каждый час)",
+                      rec="1–6 ч, если настройки меняются часто; вместе с «Только если настройки изменились»")
+    sb_only_changed: bool = F(True, label="Только если настройки изменились", tab="sbackup",
+                              help="Копия по расписанию не создаётся и не отправляется, если с прошлой ничего не "
+                                   "поменялось (время входа, использование токенов и проверки сертификатов не считаются)")
+    sb_keep: int = F(48, label="Хранить копий по расписанию на сервере", tab="sbackup", ge=1, le=2000)
+    sb_password: str = F("", label="Пароль шифрования копий настроек", tab="sbackup", ui="password",
+                         help="Копии по расписанию и всё, что уходит в каналы и хранилища, шифруются им (AES-256). "
+                              "Пусто — пароль шифрования S3 с вкладки «Резервные копии». Без пароля копия во внешние "
+                              "места не отправляется: в ней закрытые ключи сертификатов и пароли интеграций")
+    sb_channels: List[int] = F(factory=list, label="Отправлять в каналы", tab="sbackup", ui="channels",
+                               help="Telegram — файлом в чат, e-mail — вложением: копия окажется у администратора "
+                                    "(на компьютере, в телефоне). Slack, Discord и webhook файлы не принимают")
+    sb_main_s3: bool = F(True, label="Выгружать в основное S3-хранилище", tab="sbackup",
+                         help="Каталог settings/ под префиксом хранилища с вкладки «Резервные копии» (если выгрузка "
+                              "включена). Ежедневная копия уходит туда и так — вместе с базой")
+    sb_s3: bool = F(False, label="Второе S3-хранилище для копий настроек", tab="sbackup",
+                    help="Другой провайдер или другой аккаунт — копия настроек переживёт потерю и сервера, и основного "
+                         "хранилища")
+    sb_s3_endpoint: str = F("", label="Адрес хранилища (endpoint)", tab="sbackup", show={"sb_s3": [True]},
+                            ph="https://s3.eu-central-1.amazonaws.com")
+    sb_s3_region: str = F("us-east-1", label="Регион", tab="sbackup", show={"sb_s3": [True]})
+    sb_s3_bucket: str = F("", label="Бакет", tab="sbackup", show={"sb_s3": [True]}, ph="nm-settings-example")
+    sb_s3_prefix: str = F("nginx-manager-settings/", label="Префикс (папка) в бакете", tab="sbackup",
+                          show={"sb_s3": [True]})
+    sb_s3_access_key: str = F("", label="Access key ID", tab="sbackup", show={"sb_s3": [True]})
+    sb_s3_secret_key: str = F("", label="Secret access key", tab="sbackup", ui="password", show={"sb_s3": [True]})
+    sb_s3_path_style: bool = F(True, label="Адресация path-style", tab="sbackup", show={"sb_s3": [True]}, adv=True)
+    sb_remote_keep: int = F(90, label="Хранить копий настроек во внешних хранилищах", tab="sbackup", ge=0, le=5000,
+                            help="Для основного (каталог settings/) и второго хранилища. 0 — не удалять")
 
     @field_validator("panel_allow")
     @classmethod

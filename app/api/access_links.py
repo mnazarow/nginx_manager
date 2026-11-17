@@ -108,8 +108,10 @@ async def iplists_status(request: Request, sid: int, user=Depends(viewer)):
 
 
 @router.post("/sites/{sid}/ip-lists/refresh")
-async def iplists_refresh(request: Request, sid: int, user=Depends(operator)):
-    """Скачать списки сайта сейчас и обновить файл доступа."""
+async def iplists_refresh(request: Request, sid: int, body: Dict[str, Any] = Body(default={}),
+                          user=Depends(operator)):
+    """Скачать списки сайта сейчас и обновить файл доступа ({accept: [url]} — принять отложенные изменения
+    списков, которые изменились больше порога подтверждения)."""
     from ..services import iplists
     app = _nm(request)
     _site(app, sid)
@@ -117,9 +119,10 @@ async def iplists_refresh(request: Request, sid: int, user=Depends(operator)):
     urls = [x["url"] for x in iplists.status(app.db, state, sid)] if state else []
     if not urls:
         raise HTTPException(400, "У сайта нет списков в применённой конфигурации — сохраните и примените сайт")
-    _, done = await asyncio.to_thread(iplists.refresh, app.db, state, urls)
+    accept = [str(u) for u in (body.get("accept") or []) if str(u) in urls]
+    _, done = await asyncio.to_thread(iplists.refresh, app.db, state, [] if accept else urls, None, accept)
     ok, out = await app.grants.sync()
-    audit(request, user, "iplists_refresh", str(sid), {"urls": urls})
+    audit(request, user, "iplists_refresh", str(sid), {"urls": urls, "accept": accept})
     return {"ok": ok, "output": "" if ok else out[-500:], "lists": iplists.status(app.db, state, sid),
             "errors": {u: d["error"] for u, d in done.items() if not d.get("ok")}}
 
@@ -134,11 +137,13 @@ async def iplists_check(request: Request, body: Dict[str, Any] = Body(...), user
     except Exception:
         raise HTTPException(400, "Адрес списка — https://…")
     try:
-        nets = await asyncio.to_thread(iplists.fetch, url)
+        src = IpListSource(url=url, min_prefix=int(body.get("min_prefix", 16)), sha256=str(body.get("sha256") or ""))
+        nets = await asyncio.to_thread(iplists.fetch, url, 20, src.sha256)
+        keep, dropped, _ = iplists.guard(nets, None, {"min_prefix": src.min_prefix})
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": str(e)[:300]}
-    return {"ok": True, "count": len(nets), "sample": nets[:20],
-            "v6": sum(1 for x in nets if ":" in x)}
+    return {"ok": True, "count": len(keep), "sample": keep[:20], "dropped": dropped,
+            "v6": sum(1 for x in keep if ":" in x)}
 
 
 # =============================================================================

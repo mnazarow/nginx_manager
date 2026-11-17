@@ -22,7 +22,7 @@ from ..utils import apr1, totp_secret, totp_verify, verify_password
 
 router = APIRouter(prefix="/api")
 MASK = "••••••••"
-PANEL_SECRETS = ("acme_eab_hmac", "s3_secret_key", "s3_encrypt_password")
+PANEL_SECRETS = ("acme_eab_hmac", "s3_secret_key", "s3_encrypt_password", "sb_password", "sb_s3_secret_key")
 
 
 def nm(request: Request):

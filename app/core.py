@@ -281,6 +281,25 @@ class App:
         await self.broadcast({"type": "applied", "version": res["version"], "user": username, "source": source})
         return res
 
+    def _list_events(self, done: Dict[str, Any], what: str) -> None:
+        for url, d in done.items():
+            if d.get("ok"):
+                continue
+            if d.get("pending") and d["pending"].get("at", 0) >= (d.get("tried") or 0):
+                self.db.event("warning", "access", f"{what} {url} изменился на {d['pending']['pct']}% адресов — "
+                                                   "изменения ждут подтверждения («Принять изменения»), действуют "
+                                                   "прежние адреса")
+            else:
+                self.db.event("warning", "access", f"{what} {url} не скачан: {d.get('error')} — действуют адреса из "
+                                                   "последней удачной загрузки")
+
+    async def trusted_lists_changed(self, reason: str) -> Optional[Dict[str, Any]]:
+        """Адреса в списках доверенных адресов изменились: блокировки, файл блокировок и работающая конфигурация."""
+        await asyncio.to_thread(self.bans.drop_trusted)
+        self.bans.dirty = True
+        await self.bans.sync(force=True)
+        return await self.apply_snapshot(reason, "trusted-lists")
+
     async def lists_after_apply(self) -> None:
         """Новые списки адресов по ссылке скачиваются сразу после применения, а файл доступа — с новым составом
         сайтов (списки убранных сайтов перестают действовать)."""
@@ -372,10 +391,14 @@ class App:
         if state is not None:
             from .services import iplists
             changed, done = await asyncio.to_thread(iplists.refresh, self.db, state)
-            for url, d in done.items():
-                if not d.get("ok"):
-                    self.db.event("warning", "access", f"Список адресов {url} не скачан: {d.get('error')} — "
-                                                       "действуют адреса из последней удачной загрузки")
+            self._list_events(done, "Список адресов")
+        p = self.panel()
+        from .services import iplists as _ipl
+        if p.trusted_lists or self.db.kv_get(_ipl.KV_TRUSTED):
+            changed, done = await asyncio.to_thread(_ipl.refresh_trusted, self.db, p)
+            self._list_events(done, "Список доверенных адресов")
+            if changed:
+                await self.trusted_lists_changed("Списки доверенных адресов обновлены")
         await self.grants.sync()
         last = self.nginx.last_applied()
         if not last or self.nginx.lock.locked():
@@ -717,7 +740,11 @@ class App:
                 last_cert = now
                 await self._guard("проверка сертификатов", asyncio.to_thread(self.certs.refresh_all))
                 await self._guard("продление сертификатов", self.certs.auto_renew(after=self.after_cert_issued))
+                await self._guard("перенесённые сертификаты", self.diag.auto_takeover())
             await self._guard("временный доступ", self.expire_access())
+            from .services import settings_job
+            if settings_job.due(self):
+                await self._guard("копия настроек по расписанию", asyncio.to_thread(settings_job.run, self))
             await self._guard("регулярный отчёт", self.maybe_send_report())
             await self._guard("сверка автопереключения бэкендов", self.reconcile_failover())
             lt = time.localtime(now)

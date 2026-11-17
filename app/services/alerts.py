@@ -30,6 +30,55 @@ def _post_json(url: str, payload: dict, headers: Optional[Dict[str, str]] = None
         return resp.status, resp.read(2000).decode("utf-8", "replace")
 
 
+def _smtp(channel: AlertChannel, msg: EmailMessage) -> None:
+    if channel.smtp_security == "ssl":
+        s = smtplib.SMTP_SSL(channel.smtp_host, channel.smtp_port, timeout=30, context=ssl.create_default_context())
+    else:
+        s = smtplib.SMTP(channel.smtp_host, channel.smtp_port, timeout=30)
+        if channel.smtp_security == "starttls":
+            s.starttls(context=ssl.create_default_context())
+    try:
+        if channel.smtp_user:
+            s.login(channel.smtp_user, channel.smtp_password)
+        s.send_message(msg)
+    finally:
+        s.quit()
+
+
+def send_file(channel: AlertChannel, title: str, text: str, filename: str, blob: bytes) -> None:
+    """Отправить файл: Telegram — документом (sendDocument), e-mail — вложением. Другие каналы файлы не принимают."""
+    host = socket.gethostname()
+    if channel.type == "telegram":
+        import secrets as _s
+        boundary = "nm" + _s.token_hex(12)
+        caption = f"<b>{_html(title)}</b>\n{_html(text)}\n<i>{_html(host)} · Nginx Manager</i>"[:1000]
+        parts = []
+        for k, v in (("chat_id", str(channel.telegram_chat_id)), ("caption", caption), ("parse_mode", "HTML")):
+            parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode())
+        safe = "".join(c for c in filename if c.isalnum() or c in "._-") or "file"
+        parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="document"; filename="{safe}"\r\n'
+                     "Content-Type: application/octet-stream\r\n\r\n".encode() + blob + b"\r\n")
+        parts.append(f"--{boundary}--\r\n".encode())
+        req = urllib.request.Request(f"{channel.telegram_api.rstrip('/')}/bot{channel.telegram_token}/sendDocument",
+                                     data=b"".join(parts), method="POST",
+                                     headers={"Content-Type": f"multipart/form-data; boundary={boundary}",
+                                              "User-Agent": "NginxManager"})
+        with urllib.request.urlopen(req, timeout=60) as resp:  # noqa: S310 — адрес API задаёт администратор
+            d = json.loads(resp.read(65536) or b"{}")
+        if not d.get("ok", True):
+            raise ValueError(d.get("description") or "Telegram не принял файл")
+    elif channel.type == "email":
+        msg = EmailMessage()
+        msg["Subject"] = f"[{host}] {title}"
+        msg["From"] = channel.email_from
+        msg["To"] = ", ".join(channel.email_to)
+        msg.set_content(f"{title}\n\n{text}\n\n--\n{host} · Nginx Manager")
+        msg.add_attachment(blob, maintype="application", subtype="octet-stream", filename=filename)
+        _smtp(channel, msg)
+    else:
+        raise ValueError("каналы этого типа не принимают файлы — выберите Telegram или e-mail")
+
+
 def send(channel: AlertChannel, title: str, text: str, severity: str = "warning",
          extra: Optional[Dict[str, Any]] = None) -> None:
     host = socket.gethostname()
@@ -56,19 +105,7 @@ def send(channel: AlertChannel, title: str, text: str, severity: str = "warning"
         msg["From"] = channel.email_from
         msg["To"] = ", ".join(channel.email_to)
         msg.set_content(f"{title}\n\n{text}\n\n--\n{host} · Nginx Manager")
-        if channel.smtp_security == "ssl":
-            s = smtplib.SMTP_SSL(channel.smtp_host, channel.smtp_port, timeout=15,
-                                 context=ssl.create_default_context())
-        else:
-            s = smtplib.SMTP(channel.smtp_host, channel.smtp_port, timeout=15)
-            if channel.smtp_security == "starttls":
-                s.starttls(context=ssl.create_default_context())
-        try:
-            if channel.smtp_user:
-                s.login(channel.smtp_user, channel.smtp_password)
-            s.send_message(msg)
-        finally:
-            s.quit()
+        _smtp(channel, msg)
 
 
 def _html(s: str) -> str:

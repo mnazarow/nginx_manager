@@ -201,44 +201,53 @@ export function linkDialog(sid, access, onDone) {
 const HRS = (x) => x < 1 ? `${Math.round(x * 60)} мин` : x < 48 ? `${x} ч` : `${Math.round(x / 24)} дн.`;
 
 /** Карточка «Ссылки для доступа»: действующие ссылки и адреса, которым доступ выдан по ссылке. */
-/** Списки адресов по ссылке: когда скачаны, сколько адресов, ошибки; «Обновить сейчас», проверка ссылки до применения. */
-export function iplistsCard(sid, site, { readonly }) {
-  const box = h('div', {});
-  const btn = readonly ? null : h('button', { class: 'btn sm', type: 'button', onclick: async () => {
-    btn.disabled = true;
-    try {
-      const r = await api(`/sites/${sid}/ip-lists/refresh`, { method: 'POST' });
-      const errs = Object.entries(r.errors || {});
-      toast(errs.length ? `Не скачан: ${errs.map(([u, e]) => u + ' — ' + e).join('; ')}` : r.ok ? 'Списки обновлены' : 'nginx не перечитал файл доступа', errs.length || !r.ok ? 'bad' : 'good');
-      draw(r.lists);
-    } catch { /* */ } finally { btn.disabled = false; }
-  } }, icon('refresh'), 'Обновить сейчас');
-  const el = card('Списки адресов по ссылке', box, { cls: 'mt', sub: 'скачиваются по расписанию; адреса действуют без новой версии конфигурации', actions: btn });
-  const check = async (url, out) => {
+/** Таблица состояния списков адресов по ссылке (сайта или доверенных адресов) и проверка ещё не применённых ссылок. */
+export function listsView(lists, drafts, { readonly, onAccept }) {
+  const check = async (x, out) => {
     mount(out, h('span', { class: 'muted' }, 'скачиваю…'));
-    const r = await api('/ip-lists/check', { method: 'POST', body: { url }, silent: true }).catch(e => ({ ok: false, error: e.message }));
-    mount(out, r.ok ? h('span', { class: 'good-text' }, `найдено ${fmtInt(r.count)} (IPv6: ${r.v6}): ${r.sample.slice(0, 6).join(', ')}${r.count > 6 ? '…' : ''}`)
+    const r = await api('/ip-lists/check', { method: 'POST', body: { url: x.url, min_prefix: x.min_prefix ?? 16, sha256: x.sha256 || '' }, silent: true }).catch(e => ({ ok: false, error: e.message }));
+    mount(out, r.ok ? h('span', { class: 'good-text' }, `найдено ${fmtInt(r.count)} (IPv6: ${r.v6})${r.dropped ? `, отброшено слишком широких: ${r.dropped}` : ''}: ${r.sample.slice(0, 6).join(', ')}${r.count > 6 ? '…' : ''}`)
       : h('span', { class: 'bad-text' }, r.error || 'ошибка'));
   };
-  const draw = (lists) => {
-    const applied = new Set(lists.map(x => x.url));
-    const draft = (site.ip_access.lists || []).filter(x => x.url && !applied.has(x.url));
-    mount(box,
-      lists.length ? table([
-        { title: 'Список', render: (x) => h('div', {}, x.comment || h('span', { class: 'muted' }, '—'), h('div', { class: 'small muted', style: { wordBreak: 'break-all' } }, x.url)) },
-        { title: 'Адресов', num: true, render: (x) => x.at ? fmtInt(x.count) : '—' },
-        { title: 'Загружен', render: (x) => h('div', { class: 'small' },
-          x.at ? fmtAgo(x.at) : h('span', { class: 'muted' }, x.tried ? 'ни разу' : 'ожидает загрузки'), h('div', { class: 'muted' }, `раз в ${x.hours} ч`),
-          x.ok === false ? h('div', { class: 'bad-text' }, `ошибка ${fmtAgo(x.tried)}: ${x.error}${x.at ? ' — действуют адреса прошлой загрузки' : ''}`) : null) },
-        { title: 'Например', render: (x) => h('span', { class: 'small mono' }, x.sample.slice(0, 4).join(', ') || '—') },
-      ], lists, {}) : h('div', { class: 'empty' }, 'В применённой конфигурации списков нет'),
-      draft.length ? h('div', { class: 'mt' }, h('div', { class: 'small muted mb' }, 'Ещё не применены — проверьте, что файл скачивается:'),
-        ...draft.map((x) => {
-          const out = h('span', { class: 'small' });
-          return h('div', { class: 'row small', style: { gap: '8px', alignItems: 'center', flexWrap: 'wrap' } },
-            h('code', { style: { wordBreak: 'break-all' } }, x.url), h('button', { class: 'btn sm', type: 'button', disabled: readonly, onclick: () => check(x.url, out) }, 'Проверить'), out);
-        })) : null);
+  const applied = new Set(lists.map(x => x.url));
+  const draft = drafts.filter(x => x.url && !applied.has(x.url));
+  return h('div', {},
+    lists.length ? table([
+      { title: 'Список', render: (x) => h('div', {}, x.comment || h('span', { class: 'muted' }, '—'), h('div', { class: 'small muted', style: { wordBreak: 'break-all' } }, x.url)) },
+      { title: 'Адресов', num: true, render: (x) => x.at ? fmtInt(x.count) : '—' },
+      { title: 'Загружен', render: (x) => h('div', { class: 'small' },
+        x.at ? fmtAgo(x.at) : h('span', { class: 'muted' }, x.tried ? 'ни разу' : 'ожидает загрузки'), h('div', { class: 'muted' }, `раз в ${x.hours} ч`),
+        x.dropped ? h('div', { class: 'warning-text' }, `отброшено слишком широких: ${x.dropped}`) : null,
+        x.ok === false && !x.pending ? h('div', { class: 'bad-text' }, `ошибка ${fmtAgo(x.tried)}: ${x.error}${x.at ? ' — действуют адреса прошлой загрузки' : ''}`) : null,
+        x.pending ? h('div', { class: 'warning-text' }, `изменилось ${x.pending.pct}% адресов (${fmtInt(x.pending.count)} в новой загрузке) — ждёт подтверждения`,
+          x.pending.added.length ? h('div', { class: 'muted' }, `новые: ${x.pending.added.join(', ')}${x.pending.added.length >= 10 ? '…' : ''}`) : null,
+          x.pending.removed.length ? h('div', { class: 'muted' }, `убраны: ${x.pending.removed.join(', ')}${x.pending.removed.length >= 10 ? '…' : ''}`) : null,
+          readonly ? null : h('button', { class: 'btn sm mt', type: 'button', onclick: () => onAccept(x.url) }, icon('check'), 'Принять изменения')) : null) },
+      { title: 'Например', render: (x) => h('span', { class: 'small mono' }, x.sample.slice(0, 4).join(', ') || '—') },
+    ], lists, {}) : h('div', { class: 'empty' }, 'В применённых настройках списков нет'),
+    draft.length ? h('div', { class: 'mt' }, h('div', { class: 'small muted mb' }, 'Ещё не применены — проверьте, что файл скачивается:'),
+      ...draft.map((x) => {
+        const out = h('span', { class: 'small' });
+        return h('div', { class: 'row small', style: { gap: '8px', alignItems: 'center', flexWrap: 'wrap' } },
+          h('code', { style: { wordBreak: 'break-all' } }, x.url), h('button', { class: 'btn sm', type: 'button', disabled: readonly, onclick: () => check(x, out) }, 'Проверить'), out);
+      })) : null);
+}
+
+/** Списки адресов по ссылке сайта: когда скачаны, сколько адресов, ошибки; «Обновить сейчас», «Принять изменения». */
+export function iplistsCard(sid, site, { readonly }) {
+  const box = h('div', {});
+  const refresh = async (body) => {
+    const r = await api(`/sites/${sid}/ip-lists/refresh`, { method: 'POST', body });
+    const errs = Object.entries(r.errors || {});
+    toast(errs.length ? `Не обновлено: ${errs.map(([u, e]) => u + ' — ' + e).join('; ')}` : r.ok ? (body.accept ? 'Изменения списка приняты' : 'Списки обновлены') : 'nginx не перечитал файл доступа', errs.length || !r.ok ? 'bad' : 'good');
+    draw(r.lists);
   };
+  const btn = readonly ? null : h('button', { class: 'btn sm', type: 'button', onclick: async () => {
+    btn.disabled = true;
+    try { await refresh({}); } catch { /* */ } finally { btn.disabled = false; }
+  } }, icon('refresh'), 'Обновить сейчас');
+  const el = card('Списки адресов по ссылке', box, { cls: 'mt', sub: 'скачиваются по расписанию; адреса действуют без новой версии конфигурации', actions: btn });
+  const draw = (lists) => mount(box, listsView(lists, site.ip_access.lists || [], { readonly, onAccept: (url) => refresh({ accept: [url] }).catch(() => {}) }));
   api(`/sites/${sid}/ip-lists`, { silent: true }).then(d => draw(d.lists)).catch(() => mount(box, h('div', { class: 'empty' }, 'Нет данных')));
   return el;
 }

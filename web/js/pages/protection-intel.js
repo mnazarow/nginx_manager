@@ -238,13 +238,42 @@ const ACTION_RU = { created: 'создан', updated: 'обновлён', skippe
 export async function compareDlg(p) {
   const body = h('div', {}, loading());
   const m = modal({ title: `Сравнение с «${p.name}»`, size: 'lg', body, footer: [h('button', { class: 'btn', onclick: () => m.close() }, 'Закрыть')] });
+  const adm = can('admin');
+  const report = (res, verb) => {
+    const s = res.sites || {};
+    const notes = (s.items || []).flatMap(it => (it.notes || []).map(n => `«${it.name}»: ${n}`));
+    toast(`${verb}: создано ${s.created || 0}, обновлено ${s.updated || 0}${s.skipped ? ', пропущено ' + s.skipped : ''}`
+      + (res.applied ? `, применено (версия ${res.applied})` : res.apply_error ? ` — не применено: ${res.apply_error}` : '')
+      + (notes.length ? '. ' + notes.slice(0, 3).join('; ') : ''), res.apply_error ? 'bad' : 'good');
+  };
+  const act = async (btn, fn) => {
+    btn.disabled = true;
+    try { await fn(); await draw(); } catch (e) { if (e.message !== 'отменено') toast(e.data?.detail || e.message, 'bad'); btn.disabled = false; }
+  };
+  const send = (x, overwrite) => {
+    const b = h('button', { class: 'btn sm', type: 'button', title: overwrite ? `Заменить сайт на «${p.name}» этим` : `Создать сайт на «${p.name}»`, onclick: () => act(b, async () => {
+      if (overwrite && !await confirmDlg(`Заменить сайт «${x.their_name || x.name}» на «${p.name}» настройками этого сервера (с сертификатом) и применить там конфигурацию?`, { ok: 'Отправить' })) throw new Error('отменено');
+      const r = await api(`/peers/${p.id}/transfer`, { method: 'POST', body: { sites: [x.id], certs: true, overwrite, apply: true } });
+      report(r, `Отправлено на «${p.name}»`);
+    }) }, icon('upload'), 'Отправить туда');
+    return b;
+  };
+  const pull = (x, overwrite) => {
+    const b = h('button', { class: 'btn sm', type: 'button', title: overwrite ? `Заменить сайт здесь сайтом с «${p.name}»` : `Создать сайт здесь из «${p.name}»`, onclick: () => act(b, async () => {
+      if (overwrite && !await confirmDlg(`Заменить сайт «${x.name}» здесь настройками с «${p.name}» (с сертификатом) и применить конфигурацию?`, { ok: 'Забрать' })) throw new Error('отменено');
+      const r = await api(`/peers/${p.id}/pull`, { method: 'POST', body: { keys: [x.key], overwrite, apply: true } });
+      report(r, 'Забрано сюда');
+    }) }, icon('download'), 'Забрать сюда');
+    return b;
+  };
+  const draw = async () => {
   const r = await api(`/peers/${p.id}/compare`, { method: 'POST', silent: true }).catch(e => ({ ok: false, error: e.message }));
   if (!r.ok) { mount(body, h('div', { class: 'alert bad' }, r.error)); return; }
   const objs = (title, o, unit) => {
     const rows = [
-      ...o.only_here.map(x => ({ x, what: h('span', { class: 'warning-text' }, 'только на этом сервере') })),
-      ...o.only_there.map(x => ({ x, what: h('span', { class: 'warning-text' }, `только на «${p.name}»`) })),
-      ...o.changed.map(x => ({ x, what: h('span', {}, x.fields.length ? `различаются: ${x.fields.join(', ')}` : '',
+      ...o.only_here.map(x => ({ x, kind: 'here', what: h('span', { class: 'warning-text' }, 'только на этом сервере') })),
+      ...o.only_there.map(x => ({ x, kind: 'there', what: h('span', { class: 'warning-text' }, `только на «${p.name}»`) })),
+      ...o.changed.map(x => ({ x, kind: 'changed', what: h('span', {}, x.fields.length ? `различаются: ${x.fields.join(', ')}` : '',
         x.enabled ? h('div', { class: 'small' }, `${x.enabled[0] ? 'включён' : 'выключен'} здесь, ${x.enabled[1] ? 'включён' : 'выключен'} там`) : null,
         x.cert ? h('div', { class: 'small warning-text' }, x.cert) : null,
         x.cert_days ? h('div', { class: 'small' }, `сертификат до ${fmtDate(x.cert_days[0])} здесь, до ${fmtDate(x.cert_days[1])} там`) : null) })),
@@ -254,6 +283,8 @@ export async function compareDlg(p) {
       rows.length ? table([
         { title: unit, render: (r_) => h('div', {}, h('b', {}, r_.x.name), r_.x.their_name && r_.x.their_name !== r_.x.name ? h('span', { class: 'small muted' }, ` (там «${r_.x.their_name}»)`) : null, h('div', { class: 'small muted', style: { wordBreak: 'break-all' } }, r_.x.key)) },
         { title: 'Расхождение', render: (r_) => r_.what },
+        ...(adm && unit.startsWith('Сайт') ? [{ title: '', srTitle: 'Действия', render: (r_) => h('div', { class: 'row', style: { gap: '6px', flexWrap: 'nowrap', justifyContent: 'flex-end' } },
+          r_.kind !== 'there' ? send(r_.x, r_.kind === 'changed') : null, r_.kind !== 'here' ? pull(r_.x, r_.kind === 'changed') : null) }] : []),
       ], rows) : null);
   };
   const list = (title, xs) => xs.length ? h('div', { class: 'small mb' }, h('b', {}, title + ': '), xs.join(', ')) : null;
@@ -264,7 +295,14 @@ export async function compareDlg(p) {
     r.streams.only_here.length + r.streams.only_there.length + r.streams.changed.length || r.streams.same ? objs('Потоки TCP/UDP', r.streams, 'Поток (порт)') : null,
     list('Общие настройки nginx различаются', r.global), list('Настройки защиты различаются', r.protection),
     list('Доверенные адреса только здесь', r.trusted.only_here), list(`Доверенные адреса только на «${p.name}»`, r.trusted.only_there),
-    r.sites.only_here.length && can('admin') ? h('button', { class: 'btn sm mt', onclick: () => { m.close(); transferDialog([p]); } }, icon('upload'), `Перенести сайты на «${p.name}»…`) : null);
+    adm && r.protection.length ? h('button', { class: 'btn sm mt', type: 'button', onclick: (e) => act(e.currentTarget, async () => {
+      if (!await confirmDlg(`Отправить настройки защиты от атак этого сервера на «${p.name}»? Там применится конфигурация с ними (CrowdSec и правила сайтов, которых здесь нет, останутся свои).`, { ok: 'Отправить' })) throw new Error('отменено');
+      const res = await api('/peers/push', { method: 'POST', body: { what: 'protection', peer: p.id } });
+      const x = Object.values(res.results || {})[0] || {};
+      toast(x.ok ? `Настройки защиты применены на «${p.name}»` : `Не применены: ${x.error || 'ошибка'}`, x.ok ? 'good' : 'bad');
+    }) }, icon('upload'), `Отправить настройки защиты на «${p.name}»`) : null);
+  };
+  await draw();
 }
 
 /** Окно «Перенести сайты»: сервер, сайты, сертификаты, замена одноимённых, применение на получателе. */

@@ -42,8 +42,10 @@ async def trusted_get(request: Request, user=Depends(viewer)):
     """Доверенные адреса, всегда доверенные (сервер, доступ к панели) и ваш адрес."""
     app = _nm(request)
     p = app.panel()
+    from ..services.iplists import trusted_status
     from ..services.trusted import by_peer
     return {"entries": [e.model_dump() for e in p.trusted_ips if not e.origin],
+            "lists": [x.model_dump() for x in p.trusted_lists], "lists_status": trusted_status(app.db, p),
             "always": LOOPBACK_NETS + list(p.panel_allow), "your_ip": app.auth.client_ip(request),
             "received": by_peer(app.db), "accept": p.peers_accept_trusted,
             "share": [{"id": x.id, "name": x.name, "trusted": x.trusted} for x in p.peers if x.enabled]}
@@ -52,7 +54,8 @@ async def trusted_get(request: Request, user=Depends(viewer)):
 @router.put("/trusted")
 async def trusted_put(request: Request, body: Dict[str, Any] = Body(...), apply: bool = Query(False),
                       user=Depends(admin)):
-    """Сохранить список: {entries: [{address, comment}]}. Блокировки адресов, вошедших в список, снимаются.
+    """Сохранить список: {entries: [{address, comment}], lists: [{url, comment, hours, …}] (необязательно)}.
+    Блокировки адресов, вошедших в список, снимаются.
     ?apply=1 — применить конфигурацию nginx (доверенные адреса в проверках защиты, ограничениях частоты, доступе по
     странам и на сайтах с доступом по IP)."""
     app = _nm(request)
@@ -63,7 +66,10 @@ async def trusted_put(request: Request, body: Dict[str, Any] = Body(...), apply:
     # полученные с других серверов записи здесь не редактируются (поле origin ставит только синхронизация)
     raw = [{k: v for k, v in e.items() if k != "origin"} for e in raw]
     # проверка — моделью настроек панели (ошибки с указанием строки: trusted_ips.N.address)
-    checked = PanelSettings.model_validate({**app.panel().model_dump(), "trusted_ips": raw})
+    upd: Dict[str, Any] = {"trusted_ips": raw}
+    if isinstance(body.get("lists"), list):
+        upd["trusted_lists"] = body["lists"][:50]
+    checked = PanelSettings.model_validate({**app.panel().model_dump(), **upd})
     entries, seen = [], set()
     for item in checked.trusted_ips:
         if item.address not in seen:
@@ -73,7 +79,7 @@ async def trusted_put(request: Request, body: Dict[str, Any] = Body(...), apply:
         raise HTTPException(400, "Нельзя сделать доверенными все адреса (0.0.0.0/0 или ::/0)")
     entries = [e for e in entries if e.active()]  # истёкшие временные записи не сохраняем
     old = {e.address for e in app.panel().trusted_ips}
-    app.save_panel(app.panel().model_copy(update={"trusted_ips": entries}))
+    app.save_panel(app.panel().model_copy(update={"trusted_ips": entries, "trusted_lists": checked.trusted_lists}))
     unbanned = await asyncio.to_thread(app.bans.drop_trusted)
     await app.bans.sync(force=True)
     new = {e.address for e in entries}
@@ -82,6 +88,24 @@ async def trusted_put(request: Request, body: Dict[str, Any] = Body(...), apply:
     app.peers.mark()  # другим серверам — со следующей отправкой блокировок
     res = await app.apply(user["username"], "Изменены доверенные адреса") if apply else None
     return {"ok": True, "count": len(entries), "unbanned": unbanned, "applied": res}
+
+
+@router.post("/trusted/lists/refresh")
+async def trusted_lists_refresh(request: Request, body: Dict[str, Any] = Body(default={}), user=Depends(admin)):
+    """Скачать списки доверенных адресов сейчас ({accept: [url]} — принять отложенные изменения); если адреса
+    изменились — переприменить последнюю применённую версию конфигурации."""
+    from ..services import iplists
+    app = _nm(request)
+    p = app.panel()
+    accept = [str(u) for u in (body.get("accept") or [])]
+    changed, done = await asyncio.to_thread(iplists.refresh_trusted, app.db, p,
+                                            None if accept else [x.url for x in p.trusted_lists], None, accept)
+    applied = None
+    if changed:
+        applied = await app.trusted_lists_changed("Списки доверенных адресов обновлены вручную")
+    audit(request, user, "trusted_lists_refresh", f"{len(done)} списков", {"accept": accept})
+    return {"changed": changed, "applied": (applied or {}).get("version"), "lists": iplists.trusted_status(app.db, p),
+            "errors": {u: d["error"] for u, d in done.items() if not d.get("ok")}}
 
 
 @router.get("/trusted/check")

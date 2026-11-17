@@ -258,6 +258,18 @@ def inspect(path: Path, password: str = "") -> Dict[str, Any]:
         if part is None:
             continue
         item: Dict[str, Any] = {"id": key, "title": title, "count": 0, "names": []}
+        if key == "sites":  # для восстановления отдельных сайтов
+            t = part.get("sites") or {"columns": [], "rows": []}
+            item["items"] = []
+            for r in t["rows"]:
+                row = dict(zip(t["columns"], r))
+                try:
+                    d = json.loads(row.get("data") or "{}")
+                except ValueError:
+                    d = {}
+                item["items"].append({"id": row.get("id"), "name": row.get("name"),
+                                      "domains": (d.get("domains") or [])[:6],
+                                      "https": bool((d.get("ssl") or {}).get("enabled"))})
         for table, _ in TABLES.get(key, []):
             t = part.get(table) or {"columns": [], "rows": []}
             item["count"] += len(t["rows"])
@@ -419,6 +431,98 @@ def restore(app, path: Path, sections: List[str], password: str = "", user: str 
     return {"sections": sections, "stats": stats, "notes": notes,
             "manifest": {k: manifest.get(k) for k in ("version", "created_at", "host")},
             "nginx": bool(NGINX_SECTIONS & set(sections)), "relogin": "users" in sections}
+
+
+def _cert_fp(blob: bytes) -> str:
+    return hashlib.sha256(blob.strip()).hexdigest()
+
+
+def _import_cert(app, row: Dict[str, Any], files: Dict[str, bytes], user: str, notes: List[str]) -> Optional[int]:
+    """Сертификат сайта из копии для восстановления отдельных сайтов: тот же файл здесь уже есть — он; иначе
+    создаётся новая запись (сертификат Let's Encrypt — с данными certbot, чтобы продолжилось продление)."""
+    from ..models import CertificateRequest
+    cid = int(row["id"])
+    cert, key = files.get(f"certs/{cid}/fullchain.pem"), files.get(f"certs/{cid}/privkey.pem")
+    if not cert or not key:
+        return None
+    fp = _cert_fp(cert)
+    for r in app.db.query("SELECT id, cert_path FROM certificates"):
+        try:
+            if r["cert_path"] and _cert_fp(Path(r["cert_path"]).read_bytes()) == fp:
+                return int(r["id"])
+        except OSError:
+            continue
+    data = json.loads(row.get("data") or "{}")
+    lineage = data.get("cert_name") if row.get("type") == "letsencrypt" else ""
+    if lineage and re.match(r"^[A-Za-z0-9._-]+$", lineage) and f"letsencrypt/renewal/{lineage}.conf" in files:
+        same = app.db.one("SELECT id FROM certificates WHERE type='letsencrypt' AND json_extract(data,'$.cert_name')=?",
+                          (lineage,))
+        if same:
+            return int(same["id"])  # цепочка certbot уже здесь (и, возможно, уже продлена) — берём её
+        if not (LE_DIR / "live" / lineage).exists():
+            pre = (f"letsencrypt/live/{lineage}/", f"letsencrypt/archive/{lineage}/",
+                   f"letsencrypt/renewal/{lineage}.conf", "letsencrypt/accounts/")
+            part = {k: v for k, v in files.items() if k.startswith(pre)
+                    and not (k.startswith("letsencrypt/accounts/") and (LE_DIR / k[len("letsencrypt/"):]).exists())}
+            _restore_files([], part, True)
+        live = LE_DIR / "live" / lineage
+        if (live / "fullchain.pem").exists():
+            now = time.time()
+            new = app.db.execute(
+                "INSERT INTO certificates(name, type, domains, cert_path, key_path, status, data, created_at, "
+                "updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                (row["name"], "letsencrypt", row.get("domains") or "[]", str(live / "fullchain.pem"),
+                 str(live / "privkey.pem"), "valid", json.dumps(data), now, now))
+            app.certs._update_from_file(new)
+            notes.append(f"Сертификат «{row['name']}» восстановлен с данными certbot (#{new})")
+            return int(new)
+    try:
+        new = app.certs.create(CertificateRequest(type="upload", name=str(row["name"])[:120],
+                                                  cert_pem=cert.decode(), key_pem=key.decode()), user or "restore")
+    except ValueError as e:
+        notes.append(f"Сертификат «{row['name']}» не восстановлен: {e}")
+        return None
+    notes.append(f"Сертификат «{row['name']}» восстановлен как загруженный (#{new})"
+                 + (" — продлеваться не будет: выпустите заново" if row.get("type") == "letsencrypt" else ""))
+    return int(new)
+
+
+def restore_sites(app, path: Path, ids: List[int], password: str = "", user: str = "") -> Dict[str, Any]:
+    """Восстановить отдельные сайты из копии, не трогая остальные: сайт с теми же доменами обновляется, иначе
+    создаётся; сертификаты сайтов берутся из копии (тот же файл здесь — используется он)."""
+    from . import transfer as TF
+    manifest, data, files = read(path, password)
+    t = (data.get("sites") or {}).get("sites")
+    if not t:
+        raise ValueError("В копии нет раздела «Сайты»")
+    rows = [dict(zip(t["columns"], r)) for r in t["rows"]]
+    want = {int(x) for x in ids}
+    chosen = [r for r in rows if int(r["id"]) in want]
+    if not chosen:
+        raise ValueError("Выберите сайты для восстановления")
+    ct = (data.get("certificates") or {}).get("certificates") or {"columns": [], "rows": []}
+    crow = {int(dict(zip(ct["columns"], r))["id"]): dict(zip(ct["columns"], r)) for r in ct["rows"]}
+    notes: List[str] = []
+    cert_map: Dict[str, int] = {}
+    sites = []
+    for r in chosen:
+        d = json.loads(r["data"])
+        cid = (d.get("ssl") or {}).get("certificate_id")
+        if cid and str(cid) not in cert_map and int(cid) in crow:
+            new = _import_cert(app, crow[int(cid)], files, user, notes)
+            if new:
+                cert_map[str(cid)] = new
+        sites.append({"src_id": r["id"], "name": r["name"], "enabled": bool(r.get("enabled", 1)), "data": d})
+    res = TF.receive_sites(app, {"id": "restore", "name": path.name}, sites, cert_map, True, user)
+    for it in res["items"]:
+        notes += [f"Сайт «{it['name']}»: {n}" for n in it.get("notes") or []]
+    _after(app, ["sites"], notes)
+    db = app.db
+    db.event("info", "backup", f"Из копии {path.name} восстановлены сайты: "
+             + ", ".join(f"«{it['name']}»" for it in res["items"][:10]), {"user": user, "notes": notes[:20]})
+    return {"sections": ["sites"], "sites": res, "stats": {"sites": len(chosen)}, "notes": notes,
+            "manifest": {k: manifest.get(k) for k in ("version", "created_at", "host")}, "nginx": True,
+            "relogin": False}
 
 
 def _after(app, sections: List[str], notes: List[str]) -> None:

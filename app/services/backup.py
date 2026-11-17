@@ -233,6 +233,10 @@ def auto_backup(app) -> Path:
                  + (f"; удалено старых копий: {len(removed)}" if removed else ""))
     if pnl.s3_enabled:
         offsite_upload(app, p)
+    st = p.with_name(p.name[:-3] + ".settings.tar.gz")
+    if pnl.sb_hours == 0 and (pnl.sb_s3 or pnl.sb_channels) and st.exists():
+        from .settings_job import run as sb_run  # копия настроек «вместе с ежедневной» — во второе хранилище и каналы
+        sb_run(app, force=True, source="daily", path=st)
     return p
 
 
@@ -342,9 +346,10 @@ def offsite_list(app) -> List[Dict[str, Any]]:
     p = app.panel()
     out = []
     for o in s3_client(p).list(p.s3_prefix):
-        if "/" in o["key"][len(p.s3_prefix):]:
-            continue
-        o["name"] = o["key"][len(p.s3_prefix):]
+        rel = o["key"][len(p.s3_prefix):]
+        if "/" in rel and not (rel.startswith("settings/") and rel.count("/") == 1):
+            continue  # каталог settings/ — копии настроек по расписанию
+        o["name"] = rel
         o["encrypted"] = o["name"].endswith(".enc")
         out.append(o)
     return sorted(out, key=lambda o: o["name"], reverse=True)
@@ -355,12 +360,15 @@ def offsite_download(app, name: str) -> str:
     import gzip
     import shutil
     p = app.panel()
+    sub = "settings/" if name.startswith("settings/") else ""
     name = Path(name).name
     if not name.startswith("nginx-manager-"):
         raise ValueError("Это не копия Nginx Manager")
     dest = settings.backups_dir / name
-    s3_client(p).get_to_file(p.s3_prefix + name, dest)
+    s3_client(p).get_to_file(p.s3_prefix + sub + name, dest)
     dest.chmod(0o600)
+    if ".settings.tar.gz" in dest.name:
+        return dest.name  # копия настроек — как есть: пароль спросит окно восстановления
     if dest.name.endswith(".enc"):
         if not p.s3_encrypt_password:
             raise ValueError("Копия зашифрована — укажите пароль шифрования в настройках, затем скачайте снова")
@@ -379,16 +387,21 @@ def offsite_download(app, name: str) -> str:
     return dest.name
 
 
-def offsite_check(app) -> Dict[str, Any]:
-    """Проверка доступа: записать, прочитать список и удалить маленький объект."""
+def offsite_check(app, second: bool = False) -> Dict[str, Any]:
+    """Проверка доступа: записать, прочитать список и удалить маленький объект (second — второе хранилище копий
+    настроек)."""
     import secrets
     p = app.panel()
-    cl = s3_client(p)
-    key = f"{p.s3_prefix}.nm-check-{secrets.token_hex(4)}"
+    if second:
+        from .settings_job import second_s3
+        cl, prefix = second_s3(p), p.sb_s3_prefix
+    else:
+        cl, prefix = s3_client(p), p.s3_prefix
+    key = f"{prefix}.nm-check-{secrets.token_hex(4)}"
     steps = []
     cl.put_bytes(key, b"nginx-manager check\n")
     steps.append("запись — ок")
-    found = any(o["key"] == key for o in cl.list(p.s3_prefix))
+    found = any(o["key"] == key for o in cl.list(prefix))
     steps.append("чтение списка — ок" if found else "чтение списка — объект не найден (хранилище с задержкой?)")
     cl.delete(key)
     steps.append("удаление — ок")

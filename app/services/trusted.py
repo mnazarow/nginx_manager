@@ -36,11 +36,16 @@ def received(db, now: Optional[float] = None) -> List[IpEntry]:
 
 
 def effective(db, panel) -> List[IpEntry]:
-    """Свои действующие + полученные (без повторов адресов; своя запись важнее)."""
+    """Свои действующие + из списков по ссылке + полученные (без повторов адресов; своя запись важнее)."""
+    from .iplists import trusted_entries
     own = active([e for e in panel.trusted_ips if not e.origin])
     out = list(own)
+    have = {e.address for e in own}
+    for net, comment in trusted_entries(db, panel):
+        if net not in have:
+            have.add(net)
+            out.append(IpEntry.model_construct(address=net, comment=comment, expires=None, origin=""))
     if getattr(panel, "peers_accept_trusted", True):
-        have = {e.address for e in own}
         for e in received(db):
             if e.address not in have:
                 have.add(e.address)

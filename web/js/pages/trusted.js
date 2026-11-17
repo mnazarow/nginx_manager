@@ -3,6 +3,7 @@
 import { api } from '../api.js';
 import { h, mount, icon, toast, card, badge, table, modal, fmtDate, fmtAgo } from '../ui.js';
 import { model, renderFields, errorsToMap } from '../forms.js';
+import { listsView } from './ipaccess.js';
 import { can, applyDialog, refreshState } from '../app.js';
 
 /** Разбор «по строке на адрес, комментарий после пробела или #». */
@@ -82,7 +83,7 @@ function receivedCard(d) {
 export async function render(root) {
   const d = await api('/trusted');
   const fields = model('panel').filter(f => f.tab === 'trusted');
-  const obj = { trusted_ips: d.entries };
+  const obj = { trusted_ips: d.entries, trusted_lists: d.lists || [] };
   let errors = {};
   let dirty = false;
   const formBox = h('div', {});
@@ -95,7 +96,7 @@ export async function render(root) {
   };
   const save = async (apply) => {
     try {
-      const r = await api('/trusted', { method: 'PUT', body: { entries: obj.trusted_ips } });
+      const r = await api('/trusted', { method: 'PUT', body: { entries: obj.trusted_ips, lists: obj.trusted_lists } });
       errors = {}; dirty = false;
       mount(status, badge('сохранено', 'good'));
       toast(`Доверенных адресов: ${r.count}` + (r.unbanned ? `; снято блокировок: ${r.unbanned}` : ''), 'good');
@@ -114,6 +115,21 @@ export async function render(root) {
     toast(`Добавлено: ${n}` + (items.length > n ? `, повторов: ${items.length - n}` : ''), 'good');
     dirty = true; mount(status, badge('есть несохранённые изменения', 'warn')); draw();
   });
+
+  // списки доверенных адресов по ссылке
+  const listsBox = h('div', {});
+  const listsRefresh = async (body) => {
+    const r = await api('/trusted/lists/refresh', { method: 'POST', body });
+    const errs = Object.entries(r.errors || {});
+    toast(errs.length ? `Не обновлено: ${errs.map(([u, e]) => u + ' — ' + e).join('; ')}` : r.changed ? `Списки обновлены${r.applied ? ', конфигурация применена (версия ' + r.applied + ')' : ''}` : 'Списки не изменились', errs.length ? 'bad' : 'good');
+    drawLists(r.lists);
+  };
+  const drawLists = (st) => mount(listsBox, listsView(st, obj.trusted_lists, { readonly: ro, onAccept: (url) => listsRefresh({ accept: [url] }).catch(() => {}) }));
+  const listsBtn = ro ? null : h('button', { class: 'btn sm', type: 'button', onclick: async () => {
+    listsBtn.disabled = true;
+    try { await listsRefresh({}); } catch { /* */ } finally { listsBtn.disabled = false; }
+  } }, icon('refresh'), 'Обновить сейчас');
+  drawLists(d.lists_status || []);
 
   // проверка адреса
   const ipIn = h('input', { type: 'text', placeholder: '203.0.113.10', value: d.your_ip || '', 'aria-label': 'Проверить адрес' });
@@ -139,7 +155,7 @@ export async function render(root) {
         ro ? null : h('button', { class: 'btn', onclick: () => save(false) }, 'Сохранить'),
         ro ? null : h('button', { class: 'btn primary', onclick: () => save(true) }, icon('check'), 'Сохранить и применить'))),
     h('div', { class: 'grid split' },
-      card('Список', h('div', {},
+      h('div', {}, card('Список', h('div', {},
         ro ? null : h('div', { class: 'row mb' },
           h('button', { class: 'btn sm', onclick: addMine, disabled: !d.your_ip }, icon('plus'), `Добавить мой адрес${d.your_ip ? ' (' + d.your_ip + ')' : ''}`),
           h('button', { class: 'btn sm', onclick: addBulk }, icon('list'), 'Добавить списком')),
@@ -147,6 +163,7 @@ export async function render(root) {
         h('div', { class: 'alert warn mt small' }, 'Доверенный адрес обходит всю защиту. Не добавляйте сети провайдеров и облаков целиком (/8, /16): атака с соседней машины пройдёт без проверок.'),
         shareNote(d)),
       { sub: 'изменения действуют после применения конфигурации' }),
+      (d.lists || []).length ? card('Списки доверенных адресов по ссылке', listsBox, { cls: 'mt', sub: 'скачиваются по расписанию; при изменении адресов конфигурация переприменяется сама', actions: listsBtn }) : null),
       h('div', {},
         card('Проверить адрес', h('div', {},
           h('div', { class: 'row' }, ipIn, h('button', { class: 'btn', onclick: check }, 'Проверить')), out),

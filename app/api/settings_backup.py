@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from typing import Any, Dict
 
@@ -59,12 +60,14 @@ async def settings_inspect(request: Request, body: Dict[str, Any] = Body(...), u
 
 @router.post("/backup/settings/restore")
 async def settings_restore(request: Request, body: Dict[str, Any] = Body(...), user=Depends(admin)):
-    """Восстановить разделы из копии: {name, password, sections, apply}. Перед этим сохраняются текущие настройки
-    (копия before-settings-restore); если nginx не принял конфигурацию — настройки возвращаются из неё."""
+    """Восстановить разделы из копии: {name, password, sections, apply} или отдельные сайты: {name, password,
+    sites: [номера сайтов в копии], apply}. Перед этим сохраняются текущие настройки (копия
+    before-settings-restore); если nginx не принял конфигурацию — настройки возвращаются из неё."""
     from ..nginx.manager import ApplyError
     app = _nm(request)
     p = _file(body.get("name", ""))
-    sections = [s for s in (body.get("sections") or []) if s in SB.SECTIONS]
+    only_sites = [int(x) for x in (body.get("sites") or []) if str(x).isdigit()]
+    sections = ["sites"] if only_sites else [s for s in (body.get("sections") or []) if s in SB.SECTIONS]
     if not sections:
         raise HTTPException(400, "Выберите разделы для восстановления")
     if app.nginx.lock.locked():
@@ -73,7 +76,10 @@ async def settings_restore(request: Request, body: Dict[str, Any] = Body(...), u
     try:
         await asyncio.to_thread(SB.read, p, password)  # пароль и целостность — до создания страховочной копии
         safety = await asyncio.to_thread(SB.create, app, "before-settings-restore")
-        res = await asyncio.to_thread(SB.restore, app, p, sections, password, user["username"])
+        if only_sites:
+            res = await asyncio.to_thread(SB.restore_sites, app, p, only_sites, password, user["username"])
+        else:
+            res = await asyncio.to_thread(SB.restore, app, p, sections, password, user["username"])
     except ValueError as e:
         raise HTTPException(400, str(e))
     res["safety"] = safety.name
@@ -86,11 +92,52 @@ async def settings_restore(request: Request, body: Dict[str, Any] = Body(...), u
             res["applied"] = r.get("version")
         except ApplyError as e:
             # nginx не принял — возвращаем прежние настройки этих разделов (работающий nginx не менялся)
-            await asyncio.to_thread(SB.restore, app, safety, sections, "", user["username"])
+            back = ["sites", "certificates"] if only_sites else sections
+            await asyncio.to_thread(SB.restore, app, safety, back, "", user["username"])
             await app.bans.sync(force=True)
             res.update(rolled_back=True, apply_error=str(e)[:1000], applied=None)
             app.db.event("error", "backup", f"Восстановление настроек из {p.name} отменено: nginx не принял "
                                             f"конфигурацию — {str(e)[:300]}")
-    audit(request, user, "settings_restored", p.name, {"sections": sections, "applied": res.get("applied"),
+    audit(request, user, "settings_restored", p.name, {"sections": sections, "sites": only_sites,
+                                                       "applied": res.get("applied"),
                                                        "rolled_back": res.get("rolled_back", False)})
     return res
+
+
+@router.get("/backup/settings/job")
+async def settings_job_status(request: Request, user=Depends(admin)):
+    """Копия настроек по расписанию: настройки (куда отправляется) и итог последнего запуска."""
+    from ..services import settings_job as SJ
+    app = _nm(request)
+    p = app.panel()
+    names = {r["id"]: json.loads(r["data"]).get("name") for r in app.db.query("SELECT id, data FROM alert_channels")}
+    return {"hours": p.sb_hours, "only_changed": p.sb_only_changed, "encrypted": bool(SJ.password(p)),
+            "targets": ([{"id": "s3", "name": f"основное хранилище {p.s3_bucket}"}] if p.s3_enabled and p.sb_main_s3
+                        else []) + ([{"id": "s3_second", "name": f"второе хранилище {p.sb_s3_bucket}"}]
+                                    if p.sb_s3 else [])
+            + [{"id": f"channel:{c}", "name": names.get(c) or f"канал #{c}"} for c in p.sb_channels],
+            "last": app.db.kv_get(SJ.KV_LAST) or None}
+
+
+@router.post("/backup/settings/job")
+async def settings_job_run(request: Request, user=Depends(admin)):
+    """Сделать копию настроек и отправить её во все выбранные места сейчас (без проверки «изменились ли»)."""
+    from ..services import settings_job as SJ
+    app = _nm(request)
+    res = await asyncio.to_thread(SJ.run, app, True, "manual")
+    audit(request, user, "settings_backup_sent", res.get("name", ""),
+          {"ok": res["ok"], "targets": {k: v.get("ok") for k, v in res.get("targets", {}).items()}})
+    return res
+
+
+@router.post("/backup/settings/s3-check")
+async def settings_s3_check(request: Request, user=Depends(admin)):
+    """Проверить второе хранилище копий настроек: запись, чтение списка, удаление маленького объекта."""
+    from ..services.backup import offsite_check
+    app = _nm(request)
+    if not app.panel().sb_s3:
+        raise HTTPException(400, "Второе хранилище не включено («Настройки панели → Копия настроек»)")
+    try:
+        return await asyncio.to_thread(offsite_check, app, True)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": str(e)[:500]}

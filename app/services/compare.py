@@ -38,13 +38,14 @@ def summary(app) -> Dict[str, Any]:
     state = app.last_applied_state() or app.nginx.load_state()
     certs = {c["id"]: c for c in app.certs.list()}
     sites: Dict[str, Any] = {}
-    for _, s in state.sites:
+    for sid, s in state.sites:
         d = s.model_dump(mode="json")
         ssl = dict(d.get("ssl") or {})
         cid = ssl.pop("certificate_id", None)
         d["ssl"] = ssl
         c = certs.get(cid) if ssl.get("enabled") else None
-        sites[site_key(s)] = {"name": s.name, "enabled": s.enabled, "sections": _sections(d, ("name", "notes")),
+        sites[site_key(s)] = {"id": sid, "name": s.name, "enabled": s.enabled,
+                              "sections": _sections(d, ("name", "notes")),
                               "cert": {"domains": sorted(c["domains"]), "not_after": c.get("not_after"),
                                        "status": c["status"]} if c else None}
     streams = {f"{s.listen_ip or '*'}:{s.listen_port}/{getattr(s, 'protocol', 'tcp')}":
@@ -82,7 +83,7 @@ def diff(mine: Dict[str, Any], theirs: Dict[str, Any]) -> Dict[str, Any]:
         for k in sorted(set(a) & set(b)):
             sa, sb = a[k]["sections"], b[k]["sections"]
             keys = sorted(x for x in set(sa) | set(sb) if sa.get(x) != sb.get(x))
-            item: Dict[str, Any] = {"key": k, "name": a[k]["name"], "their_name": b[k]["name"],
+            item: Dict[str, Any] = {"key": k, "id": a[k].get("id"), "name": a[k]["name"], "their_name": b[k]["name"],
                                     "fields": [SITE_GROUPS.get(x) or _label(model, x) for x in keys]}
             if a[k].get("enabled") != b[k].get("enabled"):
                 item["enabled"] = [a[k].get("enabled"), b[k].get("enabled")]
@@ -94,7 +95,7 @@ def diff(mine: Dict[str, Any], theirs: Dict[str, Any]) -> Dict[str, Any]:
                 item["cert_days"] = [ca["not_after"], cb["not_after"]]
             if item["fields"] or "enabled" in item or "cert" in item or "cert_days" in item:
                 changed.append(item)
-        return {"only_here": [{"key": k, "name": a[k]["name"]} for k in sorted(set(a) - set(b))],
+        return {"only_here": [{"key": k, "id": a[k].get("id"), "name": a[k]["name"]} for k in sorted(set(a) - set(b))],
                 "only_there": [{"key": k, "name": b[k]["name"]} for k in sorted(set(b) - set(a))],
                 "changed": changed, "same": sum(1 for k in set(a) & set(b)) - len(changed)}
 
