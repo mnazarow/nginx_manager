@@ -116,6 +116,17 @@ async def theme_run(browser, a, axe, theme, out):
                 await check(page, axe, f"{theme}: окно «Ссылка для доступа»", out)
             finally:
                 await page.keyboard.press("Escape")
+        btn = page.locator(".ipa-tools button", has_text="Добавить списком")
+        if await btn.count():
+            await btn.click()
+            try:
+                await page.wait_for_selector(".modal textarea", timeout=10000)
+                await page.set_input_files(".modal input[type=file]", files=[{
+                    "name": "ips.txt", "mimeType": "text/plain", "buffer": b"198.51.100.21\n203.0.113.0/28\n"}])
+                await page.wait_for_timeout(600)
+                await check(page, axe, f"{theme}: окно «Добавить списком» (из файла)", out)
+            finally:
+                await page.keyboard.press("Escape")
         print(f"{theme}: site ip_access", flush=True)
     # окно «Перенести сайты на другой сервер»
     await page.goto(f"{a.url}/#/bans?tab=peers")
@@ -127,6 +138,28 @@ async def theme_run(browser, a, axe, theme, out):
             await page.wait_for_selector(".modal .tr-list", timeout=10000)
             await page.wait_for_timeout(500)
             await check(page, axe, f"{theme}: окно «Перенести сайты»", out)
+        finally:
+            await page.keyboard.press("Escape")
+    # окно «Сравнение с сервером»
+    cmp_ = page.locator("table.t button", has_text="Сравнить")
+    if await cmp_.count():
+        await cmp_.first.click()
+        try:
+            await page.wait_for_selector(".modal h3.sub-h, .modal .alert.bad", timeout=20000)
+            await page.wait_for_timeout(500)
+            await check(page, axe, f"{theme}: окно «Сравнение с сервером»", out)
+        finally:
+            await page.keyboard.press("Escape")
+    # окно восстановления из копии всех настроек (проверка архива, выбор разделов)
+    await page.goto(f"{a.url}/#/backup")
+    await page.wait_for_timeout(1500)
+    rst = page.locator("table.t tbody tr", has_text=".settings.tar.gz").locator("button", has_text="Восстановить")
+    if await rst.count():
+        await rst.first.click()
+        try:
+            await page.wait_for_selector(".modal dl.kv, .modal #nm-rs-pass", timeout=15000)
+            await page.wait_for_timeout(500)
+            await check(page, axe, f"{theme}: окно восстановления настроек", out)
         finally:
             await page.keyboard.press("Escape")
     # каналы уведомлений и окно канала Telegram (кнопки действий, список разрешённых пользователей)

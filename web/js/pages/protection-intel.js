@@ -202,7 +202,10 @@ export async function peersCard() {
           p.prot_mapped || p.prot_dropped ? h('div', { class: 'muted small', title: 'Правила, привязанные к сайтам, сопоставляются по доменам: сайт с тем же доменом на получателе' },
             `правил сайтов: перенесено ${p.prot_mapped || 0}${p.prot_dropped ? `, нет таких сайтов — ${p.prot_dropped}` : ''}`) : null)
           : h('span', { class: 'muted small' }, 'при сохранении') },
-      { title: '', srTitle: 'Действия', render: (p) => can('admin') ? h('button', { class: 'btn sm', onclick: () => test(p) }, 'Проверить связь') : null },
+      { title: '', srTitle: 'Действия', render: (p) => h('div', { class: 'row', style: { gap: '6px', flexWrap: 'nowrap' } },
+        can('admin') ? h('button', { class: 'btn sm', onclick: () => test(p) }, 'Проверить связь') : null,
+        can('operator') ? h('button', { class: 'btn sm', title: p.compare ? `прошлое сравнение ${fmtAgo(p.compare.at)}: различий ${p.compare.total}` : 'Сравнить применённую конфигурацию с этим сервером', onclick: () => compareDlg(p) },
+          'Сравнить', p.compare ? h('span', { class: `badge ${p.compare.total ? 'warn' : 'good'}`, style: { marginLeft: '6px' } }, p.compare.total ? String(p.compare.total) : '✓') : null) : null) },
     ], d.peers) : empty('Серверов нет', 'Добавьте их в «Настройки панели → Другие серверы»', can('admin') ? h('a', { class: 'btn primary', href: '#/settings?tab=peers' }, 'Добавить сервер') : null, 'server'),
     { flush: !!d.peers.length, actions: can('admin') && d.peers.length ? [
       h('button', { class: 'btn', onclick: () => transferDialog(d.peers.filter(p => p.enabled)) }, icon('upload'), 'Перенести сайты…'),
@@ -230,6 +233,39 @@ export async function peersCard() {
 }
 
 const ACTION_RU = { created: 'создан', updated: 'обновлён', skipped: 'пропущен', error: 'ошибка' };
+
+/** Окно «Сравнение с сервером»: сайты и потоки только здесь / только там / с различиями, поля настроек, доверенные адреса. */
+export async function compareDlg(p) {
+  const body = h('div', {}, loading());
+  const m = modal({ title: `Сравнение с «${p.name}»`, size: 'lg', body, footer: [h('button', { class: 'btn', onclick: () => m.close() }, 'Закрыть')] });
+  const r = await api(`/peers/${p.id}/compare`, { method: 'POST', silent: true }).catch(e => ({ ok: false, error: e.message }));
+  if (!r.ok) { mount(body, h('div', { class: 'alert bad' }, r.error)); return; }
+  const objs = (title, o, unit) => {
+    const rows = [
+      ...o.only_here.map(x => ({ x, what: h('span', { class: 'warning-text' }, 'только на этом сервере') })),
+      ...o.only_there.map(x => ({ x, what: h('span', { class: 'warning-text' }, `только на «${p.name}»`) })),
+      ...o.changed.map(x => ({ x, what: h('span', {}, x.fields.length ? `различаются: ${x.fields.join(', ')}` : '',
+        x.enabled ? h('div', { class: 'small' }, `${x.enabled[0] ? 'включён' : 'выключен'} здесь, ${x.enabled[1] ? 'включён' : 'выключен'} там`) : null,
+        x.cert ? h('div', { class: 'small warning-text' }, x.cert) : null,
+        x.cert_days ? h('div', { class: 'small' }, `сертификат до ${fmtDate(x.cert_days[0])} здесь, до ${fmtDate(x.cert_days[1])} там`) : null) })),
+    ];
+    return h('div', { class: 'mb' },
+      h('h3', { class: 'sub-h', style: { margin: '10px 0 6px' } }, `${title}: одинаковых ${o.same}, различий ${rows.length}`),
+      rows.length ? table([
+        { title: unit, render: (r_) => h('div', {}, h('b', {}, r_.x.name), r_.x.their_name && r_.x.their_name !== r_.x.name ? h('span', { class: 'small muted' }, ` (там «${r_.x.their_name}»)`) : null, h('div', { class: 'small muted', style: { wordBreak: 'break-all' } }, r_.x.key)) },
+        { title: 'Расхождение', render: (r_) => r_.what },
+      ], rows) : null);
+  };
+  const list = (title, xs) => xs.length ? h('div', { class: 'small mb' }, h('b', {}, title + ': '), xs.join(', ')) : null;
+  mount(body,
+    h('div', { class: `alert ${r.total ? 'warn' : 'good'} mb` }, r.total ? `Различий: ${r.total}. Сравнивается применённая конфигурация; адреса бэкендов, пароли и ключи не передаются — только отпечатки разделов.` : 'Применённые конфигурации совпадают.'),
+    h('div', { class: 'small muted mb' }, `Здесь: версия конфигурации ${r.me.config_version || '—'}, Nginx Manager ${r.me.version}. «${p.name}»: версия конфигурации ${r.peer.config_version || '—'}${r.peer.applied_at ? ' от ' + fmtDate(r.peer.applied_at) : ''}, Nginx Manager ${r.peer.version}.`),
+    objs('Сайты', r.sites, 'Сайт (домены)'),
+    r.streams.only_here.length + r.streams.only_there.length + r.streams.changed.length || r.streams.same ? objs('Потоки TCP/UDP', r.streams, 'Поток (порт)') : null,
+    list('Общие настройки nginx различаются', r.global), list('Настройки защиты различаются', r.protection),
+    list('Доверенные адреса только здесь', r.trusted.only_here), list(`Доверенные адреса только на «${p.name}»`, r.trusted.only_there),
+    r.sites.only_here.length && can('admin') ? h('button', { class: 'btn sm mt', onclick: () => { m.close(); transferDialog([p]); } }, icon('upload'), `Перенести сайты на «${p.name}»…`) : null);
+}
 
 /** Окно «Перенести сайты»: сервер, сайты, сертификаты, замена одноимённых, применение на получателе. */
 export async function transferDialog(peers, preselect = []) {

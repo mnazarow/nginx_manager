@@ -104,9 +104,9 @@ tools/install_test.sh ubuntu:24.04 nginx-manager-2.3.0.tar.gz      # стара�
 
 ```bash
 # 1. Скопируйте архив на сервер и распакуйте
-scp nginx-manager-2.7.0.tar.gz root@server:/root/
+scp nginx-manager-2.8.0.tar.gz root@server:/root/
 ssh root@server
-tar xzf nginx-manager-2.7.0.tar.gz && cd nginx-manager-2.7.0
+tar xzf nginx-manager-2.8.0.tar.gz && cd nginx-manager-2.8.0
 
 # 2. Запустите установку
 sudo ./install.sh
@@ -250,10 +250,10 @@ sudo ./install.sh --wheels /root/nginx-manager/wheels
 ## Обновление
 
 ```bash
-tar xzf nginx-manager-2.7.0.tar.gz
-sudo ./nginx-manager-2.7.0/update.sh --yes
+tar xzf nginx-manager-2.8.0.tar.gz
+sudo ./nginx-manager-2.8.0/update.sh --yes
 # или из архива напрямую:
-sudo /opt/nginx-manager/update.sh --archive /root/nginx-manager-2.7.0.tar.gz
+sudo /opt/nginx-manager/update.sh --archive /root/nginx-manager-2.8.0.tar.gz
 ```
 
 Порядок работы `update.sh`:

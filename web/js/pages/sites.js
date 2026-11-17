@@ -5,7 +5,7 @@ import { h, mount, icon, badge, toast, modal, confirmDlg, promptDlg, table, tabs
 import { model, defaults, renderFields, errorsToMap, SCHEMA } from '../forms.js';
 import { ctx, can, refreshState, applyDialog, applyErrorView } from '../app.js';
 import { certDialog } from './certs.js';
-import { ipAccessTools, ipDenialsCard, linksCard } from './ipaccess.js';
+import { ipAccessTools, ipDenialsCard, linksCard, iplistsCard } from './ipaccess.js';
 
 export async function render(root) {
   if (ctx.params.edit || ctx.params.new !== undefined) return editor(root, ctx.params.edit ? +ctx.params.edit : null);
@@ -248,7 +248,9 @@ async function editor(root, id) {
     renderFields(formBox, fields, site, { ...fctx, tab, advanced, errors });
     if (tab === 'ip_access' && id && site.ip_access?.enabled) {
       links = linksCard(id, { readonly: !can('operator') });
-      formBox.append(links, ipDenialsCard(id, site, { onChange: fctx.onChange, redraw: drawForm, readonly: !can('operator') }));
+      formBox.append(links);
+      if ((site.ip_access.lists || []).length) formBox.append(iplistsCard(id, site, { readonly: !can('operator') }));
+      formBox.append(ipDenialsCard(id, site, { onChange: fctx.onChange, redraw: drawForm, readonly: !can('operator') }));
     }
     window.scrollTo(0, y);
   }

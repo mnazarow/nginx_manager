@@ -627,6 +627,21 @@ class IpEntry(Model):
     def _c(cls, v): return V.no_ctrl(v.strip())
 
 
+class IpListSource(Model):
+    url: str = F("", label="Адрес списка", ph="https://example.com/office-ips.txt")
+    comment: str = F("", label="Комментарий", ph="Офисы (от провайдера)", max_length=120)
+    hours: int = F(24, label="Обновлять раз в", unit="ч", ge=1, le=720)
+
+    @field_validator("url")
+    @classmethod
+    def _u(cls, v):
+        v = (v or "").strip()
+        u = urllib.parse.urlparse(v)
+        if u.scheme not in ("https", "http") or not u.netloc or any(c in v for c in " \"'\n"):
+            raise V.ValidationError("Адрес списка — https://…")
+        return v
+
+
 class IpAccessSettings(Model):
     enabled: bool = F(False, label="Доступ только с разрешённых адресов", directive="geo + map",
                       help="Сайт открывается только с перечисленных IP-адресов и подсетей",
@@ -638,6 +653,12 @@ class IpAccessSettings(Model):
                           "локация /admin с «Доступ только с IP» или «Открытые для всех пути».")
     entries: List[IpEntry] = F(factory=list, label="Разрешённые адреса и подсети", ui="table",
                                show={"enabled": [True]}, help="IPv4 и IPv6, отдельные адреса и подсети CIDR")
+    lists: List[IpListSource] = F(factory=list, label="Списки адресов по ссылке", ui="table", show={"enabled": [True]},
+                                  help="Файл со списком адресов и подсетей по ссылке (по строке, комментарии через #; "
+                                       "подходят и JSON и текст — адреса находятся сами). Панель скачивает его "
+                                       "по расписанию; адреса действуют без новой версии конфигурации",
+                                  rec="Диапазоны офиса от провайдера, адреса CI/CD, мониторинга, платёжного шлюза — "
+                                      "списки, которые меняются без вашего участия")
     allow_trusted: bool = F(True, label="Пускать доверенные адреса", show={"enabled": [True]},
                             help="Адреса из раздела «Доверенные адреса» открывают сайт без отдельного добавления")
     allow_private: bool = F(False, label="Пускать локальные сети", show={"enabled": [True]},
@@ -2287,13 +2308,16 @@ class PanelSettings(Model):
     event_channels: List[int] = F(factory=list, label="Каналы", tab="events", ui="channels",
                                   help="Пусто — уведомления о событиях выключены (события остаются в журнале «События»)")
     event_sources: List[Literal["certs", "config", "watchdog", "health", "auth", "panel", "backup", "geoip", "bans",
-                                "insights", "reports", "protection"]] = F(
-        factory=lambda: ["certs", "config", "watchdog", "auth", "panel", "backup", "geoip", "protection"],
+                                "insights", "reports", "protection", "access"]] = F(
+        factory=lambda: ["certs", "config", "watchdog", "auth", "panel", "backup", "geoip", "protection", "access"],
         label="Источники", tab="events",
         labels={"certs": "Сертификаты", "config": "Применение конфигурации", "watchdog": "Сторож nginx",
                 "health": "Бэкенды", "auth": "Вход в панель", "panel": "Сервис панели", "backup": "Резервные копии",
                 "geoip": "GeoIP", "bans": "Блокировки IP", "insights": "Анализ", "reports": "Отчёты",
-                "protection": "Защита от атак"})
+                "protection": "Защита от атак", "access": "Доступ по IP (ссылки)"},
+        help="Использование ссылки для доступа с отметкой «Сообщить, когда воспользуются» отправляется в каналы "
+             "всегда — при любом выборе здесь и «Минимальном уровне»; в Telegram — с кнопкой «Закрыть доступ». "
+             "«Доступ по IP» здесь — остальные события раздела (истёк временный доступ, не скачан список адресов)")
     event_min_level: Literal["error", "warning", "info"] = F(
         "warning", label="Минимальный уровень", tab="events",
         labels={"error": "Только ошибки", "warning": "Ошибки и предупреждения", "info": "Все события"})

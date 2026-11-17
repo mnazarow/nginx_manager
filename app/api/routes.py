@@ -1905,9 +1905,14 @@ async def backup_upload(request: Request, filename: str = Query(...), user=Depen
     from ..services.backup import inspect_db
     base = Path(filename).name
     low = base.lower()
-    if not (low.endswith(".db") or low.endswith(".db.gz") or low.endswith(".json")):
-        raise HTTPException(400, "Можно загрузить базу (.db, .db.gz) или экспорт настроек (.json). Зашифрованную "
-                                 "копию (.enc) сначала расшифруйте — команда есть в документации")
+    settings_ext = next((e for e in (".settings.tar.gz.enc", ".settings.tar.gz", ".tar.gz.enc", ".tar.gz")
+                         if low.endswith(e)), "")
+    if not (low.endswith(".db") or low.endswith(".db.gz") or low.endswith(".json") or settings_ext):
+        raise HTTPException(400, "Можно загрузить копию настроек (.settings.tar.gz, зашифрованную .enc), базу (.db, "
+                                 ".db.gz) или экспорт настроек (.json). Зашифрованную копию базы (.db.gz.enc) "
+                                 "сначала расшифруйте — команда есть в документации")
+    if settings_ext:
+        return await _upload_settings(request, user, base, settings_ext)
     ext = ".json" if low.endswith(".json") else ".db.gz" if low.endswith(".gz") else ".db"
     stem = re.sub(r"[^A-Za-z0-9._-]+", "_", base)
     if stem.startswith("nginx-manager-"):  # копия этой или другой панели — имя сохраняется
@@ -1970,6 +1975,42 @@ async def backup_upload(request: Request, filename: str = Query(...), user=Depen
         tmp.unlink(missing_ok=True)
     audit(request, user, "backup_uploaded", dest.name, {"size": size})
     return {"name": dest.name, "size": dest.stat().st_size, "info": info}
+
+
+async def _upload_settings(request: Request, user, base: str, ext: str):
+    """Копия настроек: сохраняется как есть (сжатая, возможно зашифрованная) под именем …settings.tar.gz[.enc]."""
+    from ..services import settings_backup as SB
+    enc = ext.endswith(".enc")
+    orig = re.sub(r"[^a-z0-9]+", "-", base.lower()[:-len(ext)]).strip("-")[:40]
+    name = base if base.startswith("nginx-manager-") and SB.is_settings_file(base) else \
+        f"nginx-manager-{time.strftime('%Y%m%d-%H%M%S')}-uploaded{'-' + orig if orig else ''}.settings.tar.gz" + \
+        (".enc" if enc else "")
+    dest = settings.backups_dir / re.sub(r"[^A-Za-z0-9._-]+", "_", name)
+    if dest.exists():
+        raise HTTPException(409, f"Копия {dest.name} уже есть на сервере")
+    tmp = dest.with_name(dest.name + ".part")
+    size = 0
+    try:
+        with open(tmp, "wb") as f:
+            async for chunk in request.stream():
+                size += len(chunk)
+                if size > (1 << 30):
+                    raise HTTPException(413, "Файл больше 1 ГБ")
+                f.write(chunk)
+        tmp.chmod(0o600)
+        if not size:
+            raise HTTPException(400, "Пустой файл")
+        tmp.rename(dest)
+        if not enc:  # незашифрованную проверяем сразу; зашифрованную — при восстановлении, с паролем
+            try:
+                await asyncio.to_thread(SB.read, dest, "")
+            except ValueError as e:
+                dest.unlink(missing_ok=True)
+                raise HTTPException(400, str(e))
+    finally:
+        tmp.unlink(missing_ok=True)
+    audit(request, user, "backup_uploaded", dest.name, {"size": size})
+    return {"name": dest.name, "size": size, "settings": True, "encrypted": enc}
 
 
 @router.get("/backup/download/{name}")
@@ -2155,3 +2196,4 @@ from . import protection as _protection  # noqa: E402,F401 — регистри�
 from . import sync as _sync  # noqa: E402,F401 — регистрирует маршруты нескольких серверов
 from . import trusted as _trusted  # noqa: E402,F401 — регистрирует маршруты раздела «Доверенные адреса»
 from . import access_links as _access_links  # noqa: E402,F401 — регистрирует маршруты ссылок временного доступа
+from . import settings_backup as _settings_backup  # noqa: E402,F401 — регистрирует маршруты копии всех настроек

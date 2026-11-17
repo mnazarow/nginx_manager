@@ -21,6 +21,9 @@
     nmctl os                          срок поддержки ОС (обновления безопасности), --json
     nmctl peers                       другие серверы: связь, блокировки, доверенные адреса, синхронизация сайтов
     nmctl transfer --to web-2 --sites 1,3   перенести сайты с сертификатами на другой сервер (--all, --tag)
+    nmctl settings backup [-o DIR]    копия всех настроек (пароль — NM_BACKUP_PASSWORD или --password-file)
+    nmctl settings inspect ФАЙЛ       что в копии настроек
+    nmctl settings restore ФАЙЛ [--sections sites,certificates] [--no-apply]   восстановить настройки
 """
 from __future__ import annotations
 
@@ -590,6 +593,86 @@ def cmd_transfer(a) -> int:
     return 0 if not s.get("skipped") and not c.get("errors") else 2
 
 
+def _backup_password(a) -> str:
+    if getattr(a, "password_file", ""):
+        return Path(a.password_file).read_text().strip()
+    return os.environ.get("NM_BACKUP_PASSWORD") or os.environ.get("NM_BACKUP_PASS", "")
+
+
+class _CliApp:
+    """Минимальное «приложение» для восстановления настроек из консоли (без фоновых задач панели)."""
+
+    def __init__(self, db):
+        from .models import PanelSettings
+        from .services.certs import CertificateService
+        self.db = db
+        self._panel = None
+        self.certs = CertificateService(db, lambda: PanelSettings.model_validate(db.kv_get("panel_settings", {})))
+        self.protection = type("P", (), {"_settings": None})()
+        self.bans = type("B", (), {"dirty": False})()
+
+    def touch(self):
+        pass
+
+    def refresh_runtime_maps(self):
+        pass
+
+
+def cmd_settings(a) -> int:
+    """Копия всех настроек: backup | inspect | restore."""
+    from .services import settings_backup as SB
+    db = _db()
+    password = _backup_password(a)
+    if a.action == "backup":
+        app = _CliApp(db)
+        p = SB.create(app, "cli", None, password, dest_dir=Path(a.output) if a.output else None)
+        print(f"{C['ok']}✓{C['r']} {p} ({p.stat().st_size // 1024} КБ" + (", зашифрована)" if password else ")"))
+        if not password:
+            print(f"{C['warn']}!{C['r']} без пароля: в файле открыто лежат ключи сертификатов и пароли интеграций "
+                  "(задайте NM_BACKUP_PASSWORD или --password-file)")
+        return 0
+    if not a.file:
+        raise ValueError("Укажите файл копии")
+    path = Path(a.file)
+    if path.name.endswith(".enc") and not password and sys.stdin.isatty():
+        password = getpass.getpass("Пароль копии: ")
+    if a.action == "inspect":
+        info = SB.inspect(path, password)
+        mf = info["manifest"]
+        print(f"Копия {path.name}: версия {mf['version']}, сервер {mf['host']}, "
+              f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(mf['created_at']))}")
+        for sec in info["sections"]:
+            print(f"  {sec['id']:<13} {sec['count']:>5}  {sec['title']}")
+        for w in info["warnings"]:
+            print(f"  {C['warn']}!{C['r']} {w}")
+        return 0
+    sections = [x for x in a.sections.split(",") if x] if a.sections else list(SB.SECTIONS)
+    app = _CliApp(db)
+    safety = SB.create(app, "before-settings-restore")
+    res = SB.restore(app, path, sections, password, "nmctl")
+    print(f"{C['ok']}✓{C['r']} восстановлено: {', '.join(res['sections'])}; прежние настройки — {safety.name}")
+    for n in res["notes"]:
+        print(f"  {C['warn']}!{C['r']} {n}")
+    rc = 0
+    if res["nginx"] and not a.no_apply:
+        from .nginx.manager import ApplyError
+        try:
+            m = _manager(db)
+            r = m.apply_sync(m.load_state(), "cli", f"Восстановление настроек из {path.name}", "restore")
+            print(f"{C['ok']}✓{C['r']} конфигурация применена (версия {r['version']})")
+        except ApplyError as e:
+            SB.restore(app, safety, sections, "", "nmctl")
+            print(f"{C['fail']}✗{C['r']} nginx не принял конфигурацию — настройки возвращены: {e}")
+            rc = 1
+    from .utils import has_systemd, run
+    if has_systemd():
+        run(["systemctl", "restart", "nginx-manager"], timeout=60)
+        print("панель перезапущена, чтобы перечитать настройки")
+    else:
+        print("перезапустите панель, чтобы она перечитала настройки")
+    return rc
+
+
 def main(argv=None) -> int:
     import os
     os.umask(0o022)
@@ -636,6 +719,15 @@ def main(argv=None) -> int:
     p = sub.add_parser("os", help="срок поддержки ОС")
     p.add_argument("--json", action="store_true")
     sub.add_parser("peers", help="другие серверы: связь и обмен")
+    p = sub.add_parser("settings", help="копия всех настроек и восстановление")
+    p.add_argument("action", choices=["backup", "inspect", "restore"])
+    p.add_argument("file", nargs="?", default="")
+    p.add_argument("-o", "--output", default="", help="каталог для копии (по умолчанию — каталог копий панели)")
+    p.add_argument("--password-file", default="", help="файл с паролем копии (или переменная NM_BACKUP_PASSWORD)")
+    p.add_argument("--sections", default="", help="разделы через запятую: " + ", ".join(
+        ["sites", "streams", "certificates", "dns", "global", "panel", "protection", "alerts", "users", "bans",
+         "secrets"]))
+    p.add_argument("--no-apply", action="store_true", help="не применять конфигурацию nginx")
     p = sub.add_parser("transfer", help="перенести сайты с сертификатами на другой сервер")
     p.add_argument("--to", required=True, help="сервер: название (или его начало) либо ID из «Другие серверы»")
     p.add_argument("--sites", default="", help="номера сайтов через запятую")
@@ -652,7 +744,8 @@ def main(argv=None) -> int:
            "allowlist": cmd_allowlist, "backup": cmd_backup, "restore": cmd_restore, "export": cmd_export,
            "import": cmd_import,
            "versions": cmd_versions, "rollback": cmd_rollback, "sites": cmd_sites, "vulns": cmd_vulns,
-           "deps": cmd_deps, "os": cmd_os, "peers": cmd_peers, "transfer": cmd_transfer}[a.cmd]
+           "deps": cmd_deps, "os": cmd_os, "peers": cmd_peers, "transfer": cmd_transfer,
+           "settings": cmd_settings}[a.cmd]
     from .nginx.manager import ApplyError
     try:
         return cmd(a)

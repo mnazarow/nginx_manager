@@ -87,7 +87,7 @@ def test_inspect_copy_and_refusals(data_dir):
         assert info["data_until"] and info["users"][0]["role"] == "admin"
         # осмотр копии не оставляет рядом служебных файлов SQLite и они не попадают в список
         assert not list(settings.backups_dir.glob("*-wal")) and not list(settings.backups_dir.glob("*-shm"))
-        assert all(b["kind"] in ("db", "json") for b in c.get("/api/backup/list").json())
+        assert all(b["kind"] in ("db", "json", "settings") for b in c.get("/api/backup/list").json())
         assert c.get("/api/backup/inspect/nope.db").status_code == 404
     src = settings.backups_dir / name
     for patch, msg in ((["UPDATE users SET role='viewer'"], "нет ни одного активного администратора"),

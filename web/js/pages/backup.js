@@ -4,7 +4,8 @@ import { h, mount, icon, toast, table, badge, fmtBytes, fmtDate, fmtAgo, confirm
 import { refreshState } from '../app.js';
 
 const ROLE = { admin: 'администратор', operator: 'оператор', viewer: 'наблюдатель' };
-const KIND = { db: 'база данных SQLite', json: 'настройки JSON', gz: 'база, сжатая gzip', enc: 'зашифрованная копия' };
+const KIND = { db: 'база данных SQLite', json: 'настройки JSON', gz: 'база, сжатая gzip', enc: 'зашифрованная копия',
+  settings: 'копия всех настроек', 'settings-enc': 'копия всех настроек, зашифрована' };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function healthz() {
@@ -72,8 +73,8 @@ async function restoreDlg(name) {
 }
 
 /** Загрузка файла копии на сервер (потоком, без чтения в память браузера). */
-function uploadBackup(onDone) {
-  const inp = h('input', { type: 'file', accept: '.db,.gz,.json', style: { display: 'none' } });
+function uploadBackup(onDone, onSettings) {
+  const inp = h('input', { type: 'file', accept: '.db,.gz,.json,.enc', style: { display: 'none' } });
   inp.addEventListener('change', async () => {
     const f = inp.files[0]; inp.remove(); if (!f) return;
     toast(`Загрузка ${f.name} (${fmtBytes(f.size)})…`, 'info');
@@ -82,10 +83,105 @@ function uploadBackup(onDone) {
     if (!res) { toast('Нет связи с сервером панели', 'bad'); return; }
     const d = await res.json().catch(() => ({}));
     if (!res.ok) { toast(d.detail || `Ошибка ${res.status}`, 'bad', 'Копия не загружена'); return; }
+    if (d.settings) { onDone(); if (onSettings) onSettings(d.name, d.encrypted); return; }
     toast(`Загружено: ${d.name}` + (d.info ? '. Кнопка «Восстановить» — в списке копий.' : '. Импортируйте его через «Импорт настроек».'), 'good');
     onDone();
   });
   document.body.appendChild(inp); inp.click();
+}
+
+/** Карточка «Копия всех настроек»: пароль (по желанию) и создание с загрузкой файла. */
+function settingsCard(onDone) {
+  const pass = h('input', { type: 'password', id: 'nm-sb-pass', autocomplete: 'new-password', placeholder: 'не короче 8 символов' });
+  const note = h('div', { class: 'small warning-text' }, 'Без пароля в файле открыто лежат закрытые ключи сертификатов, токены и пароли интеграций — храните его надёжно.');
+  pass.addEventListener('input', () => { note.style.display = pass.value ? 'none' : ''; });
+  const btn = h('button', { class: 'btn primary', onclick: async () => {
+    btn.disabled = true;
+    try {
+      const r = await api('/backup/settings', { method: 'POST', body: { password: pass.value } });
+      const a = h('a', { href: `/api/backup/download/${encodeURIComponent(r.name)}`, download: r.name, style: { display: 'none' } });
+      document.body.append(a); a.click(); a.remove();
+      toast(`Создана копия ${r.name} (${fmtBytes(r.size)})${r.encrypted ? ', зашифрована' : ''} — файл скачивается`, 'good');
+      pass.value = ''; note.style.display = '';
+      if (onDone) onDone();
+    } catch (e) { toast(e.data?.detail || e.message, 'bad'); } finally { btn.disabled = false; }
+  } }, icon('download'), 'Создать и скачать');
+  return card('Копия всех настроек', h('div', { class: 'col' },
+    h('div', { class: 'small ink2' }, 'Один файл со всеми настройками: сайты и потоки, сертификаты с ключами и данными certbot, учётные записи DNS, настройки nginx, панели и защиты от атак, оповещения, пользователи с 2FA и API-токены, ручные блокировки. Без статистики и журналов — файл небольшой.'),
+    h('div', { class: 'field' }, h('label', { for: 'nm-sb-pass' }, 'Пароль для шифрования (рекомендуется)'), pass), note, btn));
+}
+
+/** Окно восстановления настроек из копии: пароль (если зашифрована), проверка, выбор разделов, восстановление. */
+export async function restoreSettingsDlg(name, encrypted, onDone) {
+  const pass = h('input', { type: 'password', id: 'nm-rs-pass', autocomplete: 'off', placeholder: 'Пароль копии' });
+  const body = h('div', { class: 'col' });
+  const foot = h('div', { class: 'row' });
+  let info = null;
+  const checks = {};
+  const applyCb = h('input', { type: 'checkbox', checked: true });
+  const go = h('button', { class: 'btn danger solid', disabled: true, onclick: async () => {
+    const sections = Object.keys(checks).filter(k => checks[k].checked);
+    if (!sections.length) { toast('Выберите разделы', 'bad'); return; }
+    if (!await confirmDlg(`Заменить ${sections.length === Object.keys(checks).length ? 'все настройки' : 'выбранные разделы'} содержимым копии ${name}?\nТекущие настройки будут сохранены в копию before-settings-restore.`, { danger: true, ok: 'Восстановить' })) return;
+    go.disabled = true;
+    try {
+      const r = await api('/backup/settings/restore', { method: 'POST', body: { name, password: pass.value, sections, apply: applyCb.checked } });
+      m.close();
+      resultDlg(r);
+      if (onDone) onDone();
+    } catch (e) { toast(e.data?.detail || e.message, 'bad', 'Не восстановлено'); go.disabled = false; }
+  } }, icon('history'), 'Восстановить');
+  const show = () => {
+    const dl = h('dl', { class: 'kv' });
+    const mf = info.manifest;
+    dl.append(h('dt', {}, 'Создана'), h('dd', {}, `${fmtDate(mf.created_at, { year: true })}${mf.host ? ' на сервере ' + mf.host : ''}`),
+      h('dt', {}, 'Версия панели'), h('dd', {}, mf.version || '—'),
+      h('dt', {}, 'Файлы сертификатов'), h('dd', {}, `${info.files.certs}` + (info.files.letsencrypt ? `, данные certbot — ${info.files.letsencrypt} файлов` : '')),
+      h('dt', {}, 'Размер'), h('dd', {}, fmtBytes(info.size)));
+    mount(body,
+      h('div', { class: 'alert good' }, 'Копия проверена: архив цел, контрольные суммы совпадают.'), dl,
+      info.warnings.length ? h('div', { class: 'alert warn' }, info.warnings.map(w => h('div', {}, w))) : null,
+      h('div', { class: 'row', style: { justifyContent: 'space-between' } }, h('b', {}, 'Что восстановить'),
+        h('button', { class: 'btn sm ghost', type: 'button', onclick: () => Object.values(checks).forEach(c => { c.checked = true; }) }, 'Все разделы')),
+      h('div', { class: 'col', style: { gap: '6px' } }, info.sections.map(sec => {
+        const cb = h('input', { type: 'checkbox', checked: true });
+        checks[sec.id] = cb;
+        return h('label', { class: 'check', style: { display: 'flex', gap: '8px', alignItems: 'baseline' } }, cb,
+          h('span', {}, sec.title, h('span', { class: 'muted small' }, ` — ${sec.count}`),
+            sec.names.length ? h('div', { class: 'small muted' }, sec.names.slice(0, 8).join(', ') + (sec.count > 8 ? ' …' : '')) : null,
+            sec.id === 'users' ? h('div', { class: 'small warning-text' }, 'Все выйдут из панели и войдут с паролями и 2FA из копии') : null));
+      })),
+      h('label', { class: 'check', style: { display: 'flex', gap: '8px', alignItems: 'baseline' } }, applyCb,
+        h('span', {}, 'Сразу применить конфигурацию nginx', h('div', { class: 'small muted' }, 'С проверкой nginx -t; если nginx её не примет — настройки вернутся к текущим автоматически'))),
+      h('div', { class: 'alert info small' }, 'Каждый выбранный раздел заменяется целиком. Статистика, журналы и история версий не меняются. Перед восстановлением текущие настройки сохраняются в копию before-settings-restore — к ним можно вернуться так же.'));
+    go.disabled = false;
+  };
+  const check = async () => {
+    try {
+      info = await api('/backup/settings/inspect', { method: 'POST', body: { name, password: pass.value }, silent: true });
+      show();
+    } catch (e) { mount(body, encrypted ? passRow() : null, h('div', { class: 'alert bad' }, e.data?.detail || e.message)); }
+  };
+  const passRow = () => h('div', { class: 'col' },
+    h('div', { class: 'field' }, h('label', { for: 'nm-rs-pass' }, 'Пароль копии'), h('div', { class: 'row nowrap' }, pass,
+      h('button', { class: 'btn', type: 'button', onclick: check }, 'Проверить'))),
+    h('div', { class: 'small muted' }, 'Копия зашифрована паролем, заданным при её создании (или паролем шифрования S3).'));
+  pass.addEventListener('keydown', (e) => { if (e.key === 'Enter') check(); });
+  mount(foot, h('button', { class: 'btn', onclick: () => m.close() }, 'Отмена'), go);
+  const m = modal({ title: `Восстановить настройки из ${name}`, size: 'lg', body, footer: [foot] });
+  if (encrypted) mount(body, passRow()); else { mount(body, loading('Проверка копии…')); check(); }
+}
+
+function resultDlg(r) {
+  const ok = !r.rolled_back;
+  const m = modal({ title: ok ? 'Настройки восстановлены' : 'Восстановление отменено', size: 'lg', body: h('div', { class: 'col' },
+    ok ? h('div', { class: 'alert good' }, `Восстановлено разделов: ${r.sections.length}. ` + (r.applied ? `Конфигурация nginx применена (версия ${r.applied}).` : r.nginx ? 'Конфигурация не применялась — примените её кнопкой «Применить» вверху.' : ''))
+      : h('div', { class: 'alert bad' }, h('b', {}, 'nginx не принял конфигурацию из копии — настройки возвращены к прежним. '), h('pre', { class: 'code small', style: { whiteSpace: 'pre-wrap', maxHeight: '240px' } }, r.apply_error || '')),
+    r.notes.length ? h('div', { class: 'alert warn' }, r.notes.map(n => h('div', {}, n))) : null,
+    h('div', { class: 'small muted' }, `Прежние настройки сохранены в ${r.safety}.`),
+    r.relogin && ok ? h('div', { class: 'alert info' }, 'Пользователи восстановлены из копии — войдите заново.') : null),
+  footer: [h('button', { class: 'btn primary', onclick: () => { if (r.relogin && ok) location.reload(); else { refreshState(); m.close(); } } }, 'Готово')],
+  onClose: () => { if (r.relogin && ok) location.reload(); } });
 }
 
 export async function render(root) {
@@ -108,6 +204,7 @@ export async function render(root) {
       { title: 'Файл', render: (b) => h('code', {}, b.name) }, { title: 'Тип', render: (b) => KIND[b.kind] || b.kind },
       { title: 'Размер', num: true, render: (b) => fmtBytes(b.size) }, { title: 'Создан', render: (b) => fmtDate(b.mtime, { year: true }) },
       { title: '', render: (b) => h('div', { class: 'row nowrap', style: { justifyContent: 'flex-end', gap: '4px' } },
+        b.kind === 'settings' || b.kind === 'settings-enc' ? h('button', { class: 'btn sm', title: 'Проверить копию и восстановить настройки (целиком или по разделам)', onclick: () => restoreSettingsDlg(b.name, b.kind === 'settings-enc', load) }, icon('history'), 'Восстановить') : null,
         b.kind === 'db' ? h('button', { class: 'btn sm', title: 'Проверить копию и восстановить из неё базу панели', onclick: () => restoreDlg(b.name) }, icon('history'), 'Восстановить') : null,
         h('a', { class: 'btn sm', href: `/api/backup/download/${encodeURIComponent(b.name)}` }, icon('download'), 'Скачать'),
         h('button', { class: 'btn sm danger', 'aria-label': `Удалить ${b.name}`, title: 'Удалить', onclick: async () => { if (await confirmDlg(`Удалить ${b.name}?`, { danger: true, ok: 'Удалить' })) { await api(`/backup/${encodeURIComponent(b.name)}`, { method: 'DELETE' }); load(); } } }, icon('trash'))) },
@@ -156,22 +253,12 @@ export async function render(root) {
     h('div', { class: 'page-head' }, h('div', {}, h('h1', {}, 'Резервные копии и импорт'),
       h('p', {}, 'Автоматическая копия создаётся ежедневно (настраивается в «Настройки панели → Резервные копии»). Копии хранятся в /var/lib/nginx-manager/backups' + (panel.s3_enabled ? ` и выгружаются в хранилище ${panel.s3_bucket}.` : '.')))),
     h('div', { class: 'grid g3' },
-      card('Экспорт настроек', h('div', { class: 'col' }, h('div', { class: 'small ink2' }, 'JSON-файл со всеми сайтами, потоками, глобальными настройками, правилами оповещений и загруженными сертификатами. Подходит для переноса на другой сервер.'),
-        h('label', { class: 'switch small' }, users, h('span', { class: 'track' }), 'Включить пользователей (хеши паролей)'),
-        h('button', { class: 'btn', onclick: async () => {
-          const r = await api('/backup/export', { query: { users: users.checked ? 1 : '' }, raw: true });
-          downloadText(`nginx-manager-export-${new Date().toISOString().slice(0, 10)}.json`, await r.text());
-        } }, icon('download'), 'Скачать экспорт'))),
-      card('Импорт настроек', h('div', { class: 'col' }, h('div', { class: 'small ink2' }, 'Загрузите файл экспорта. Перед импортом автоматически создаётся резервная копия. После импорта примените конфигурацию.'),
-        h('button', { class: 'btn', onclick: async () => {
-          const f = await pickFile('.json'); if (!f) return;
-          let data; try { data = JSON.parse(f.text); } catch { toast('Файл не является JSON', 'bad'); return; }
-          if (!await confirmDlg(`Импортировать «${f.name}»?\nТекущие сайты, потоки и правила будут ЗАМЕНЕНЫ содержимым файла.`, { danger: true, ok: 'Импортировать' })) return;
-          const r = await api('/backup/import', { method: 'POST', body: data, query: { mode: 'replace' } });
-          toast(`Импортировано: сайтов ${r.stats.sites}, потоков ${r.stats.streams}, сертификатов ${r.stats.certificates}, правил ${r.stats.rules}`, 'good');
-          refreshState(); load();
-        } }, icon('upload'), 'Выбрать файл…'))),
-      card('Резервная копия сейчас', h('div', { class: 'col' }, h('div', { class: 'small ink2' }, 'Полная копия базы данных (включая статистику) и экспорт настроек' + (panel.s3_enabled ? ', сразу выгружается в хранилище.' : '.') + ' Восстановить базу из копии — кнопка «Восстановить» в списке ниже.'),
+      settingsCard(load),
+      card('Восстановить настройки', h('div', { class: 'col' },
+        h('div', { class: 'small ink2' }, 'Из копии всех настроек этого или другого сервера — целиком или по разделам (только сайты, только сертификаты…). Перед восстановлением текущие настройки сохраняются автоматически; если nginx не примет конфигурацию — они вернутся сами.'),
+        h('button', { class: 'btn', onclick: () => uploadBackup(load, (n, enc) => restoreSettingsDlg(n, enc, load)) }, icon('upload'), 'Загрузить копию…'),
+        h('div', { class: 'small muted' }, 'Копия уже на сервере — кнопка «Восстановить» в списке ниже.'))),
+      card('Полная копия базы', h('div', { class: 'col' }, h('div', { class: 'small ink2' }, 'Копия базы данных целиком (со статистикой, журналами и историей версий) и копия всех настроек' + (panel.s3_enabled ? ', сразу выгружается в хранилище.' : '.') + ' Восстановить базу из копии — кнопка «Восстановить» в списке ниже.'),
         h('button', { class: 'btn primary', onclick: async (e) => {
           e.target.disabled = true;
           try {
@@ -180,9 +267,24 @@ export async function render(root) {
             else toast(`Создана копия ${r.name}` + (r.offsite ? ' и выгружена в хранилище' : ''), 'good');
             load(); loadS3();
           } finally { e.target.disabled = false; }
-        } }, icon('backup'), 'Создать копию')))),
+        } }, icon('backup'), 'Создать копию'))),
+      card('Экспорт в JSON', h('div', { class: 'col' }, h('div', { class: 'small ink2' }, 'Прежний формат: JSON с сайтами, потоками, настройками nginx и панели, оповещениями и загруженными сертификатами (без защиты от атак и сертификатов Let’s Encrypt). Для переноса удобнее копия всех настроек.'),
+        h('label', { class: 'switch small' }, users, h('span', { class: 'track' }), 'Включить пользователей (хеши паролей)'),
+        h('button', { class: 'btn', onclick: async () => {
+          const r = await api('/backup/export', { query: { users: users.checked ? 1 : '' }, raw: true });
+          downloadText(`nginx-manager-export-${new Date().toISOString().slice(0, 10)}.json`, await r.text());
+        } }, icon('download'), 'Скачать экспорт'))),
+      card('Импорт из JSON', h('div', { class: 'col' }, h('div', { class: 'small ink2' }, 'Загрузите файл экспорта. Перед импортом автоматически создаётся резервная копия. После импорта примените конфигурацию.'),
+        h('button', { class: 'btn', onclick: async () => {
+          const f = await pickFile('.json'); if (!f) return;
+          let data; try { data = JSON.parse(f.text); } catch { toast('Файл не является JSON', 'bad'); return; }
+          if (!await confirmDlg(`Импортировать «${f.name}»?\nТекущие сайты, потоки и правила будут ЗАМЕНЕНЫ содержимым файла.`, { danger: true, ok: 'Импортировать' })) return;
+          const r = await api('/backup/import', { method: 'POST', body: data, query: { mode: 'replace' } });
+          toast(`Импортировано: сайтов ${r.stats.sites}, потоков ${r.stats.streams}, сертификатов ${r.stats.certificates}, правил ${r.stats.rules}`, 'good');
+          refreshState(); load();
+        } }, icon('upload'), 'Выбрать файл…')))),
     h('div', { class: 'card mt' }, h('div', { class: 'card-head' }, h('h2', {}, 'Сохранённые копии на сервере'),
-      h('button', { class: 'btn sm', title: 'Загрузить на сервер копию базы (.db, .db.gz) или экспорт настроек (.json), например с другого сервера', onclick: () => uploadBackup(load) }, icon('upload'), 'Загрузить копию…')),
+      h('button', { class: 'btn sm', title: 'Загрузить на сервер копию настроек (.settings.tar.gz, .enc), копию базы (.db, .db.gz) или экспорт (.json), например с другого сервера', onclick: () => uploadBackup(load, (n, enc) => restoreSettingsDlg(n, enc, load)) }, icon('upload'), 'Загрузить копию…')),
     restoreBox, h('div', { class: 'card-body flush' }, box)),
     h('div', { class: 'card mt' }, h('div', { class: 'card-head' }, h('h2', {}, 'Внешнее хранилище (S3)'), s3actions), h('div', { class: 'card-body' }, s3box)));
   await load();

@@ -274,8 +274,24 @@ class App:
         res = await self.nginx.apply(state, username, comment, source)
         self.touch()
         self.refresh_runtime_maps()
+        st = state or self.last_applied_state()
+        if st is not None and any(s.ip_access.enabled and s.ip_access.lists for _, s in st.sites):
+            from .utils import spawn
+            spawn(self.lists_after_apply(), name="iplists")
         await self.broadcast({"type": "applied", "version": res["version"], "user": username, "source": source})
         return res
+
+    async def lists_after_apply(self) -> None:
+        """Новые списки адресов по ссылке скачиваются сразу после применения, а файл доступа — с новым составом
+        сайтов (списки убранных сайтов перестают действовать)."""
+        from .services import iplists
+        try:
+            state = self.last_applied_state()
+            if state is not None:
+                await asyncio.to_thread(iplists.refresh, self.db, state)
+            await self.grants.sync()
+        except Exception:  # noqa: BLE001
+            log.exception("списки адресов: не удалось обновить после применения")
 
     def failover_overrides(self) -> Dict[str, List[str]]:
         """Бэкенды, которые сейчас нужно держать выключенными (проверки с автопереключением сочли их недоступными)."""
@@ -350,7 +366,16 @@ class App:
             self.touch()
             self.db.event("info", "access", f"Истёк временный доступ: {', '.join(gone[:10])}"
                           + (f" и ещё {len(gone) - 10}" if len(gone) > 10 else ""))
-        # доступ по ссылке: истёкшие адреса убираются из ip-grants.conf (без новой версии конфигурации)
+        # доступ по ссылке: истёкшие адреса убираются из ip-grants.conf (без новой версии конфигурации); списки
+        # адресов по ссылке скачиваются по своему расписанию
+        state = self.last_applied_state()
+        if state is not None:
+            from .services import iplists
+            changed, done = await asyncio.to_thread(iplists.refresh, self.db, state)
+            for url, d in done.items():
+                if not d.get("ok"):
+                    self.db.event("warning", "access", f"Список адресов {url} не скачан: {d.get('error')} — "
+                                                       "действуют адреса из последней удачной загрузки")
         await self.grants.sync()
         last = self.nginx.last_applied()
         if not last or self.nginx.lock.locked():

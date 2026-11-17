@@ -409,6 +409,10 @@ SCHEMA: List[str] = [
     );
     CREATE INDEX IF NOT EXISTS ipaccess_grants_site ON ipaccess_grants(site, expires_at);
     """,
+    # ---- v13: уведомление об использовании ссылки для доступа ---------------------------------------------------
+    """
+    ALTER TABLE ipaccess_links ADD COLUMN notify INTEGER NOT NULL DEFAULT 1;
+    """,
 ]
 
 

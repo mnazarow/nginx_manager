@@ -169,11 +169,12 @@ export function linkDialog(sid, access, onDone) {
   const valid = h('select', { id: 'nm-link-valid' }, OPT([[1, '1 час'], [24, 'сутки'], [72, '3 дня'], [168, 'неделю'], [720, '30 дней']], 24));
   const uses = h('select', { id: 'nm-link-uses' }, OPT([[1, 'один раз'], [3, '3 раза'], [10, '10 раз'], [50, '50 раз']], 1));
   const comment = h('input', { id: 'nm-link-cmt', type: 'text', maxlength: 120, placeholder: 'Кому: подрядчик, клиент, сотрудник в командировке' });
+  const notify = h('input', { type: 'checkbox', checked: true });
   const out = h('div', {});
   const btn = h('button', { class: 'btn primary', onclick: async () => {
     btn.disabled = true;
     try {
-      const r = await api(`/sites/${sid}/access-links`, { method: 'POST', body: { hours: +hours.value, valid_hours: +valid.value, uses: +uses.value, comment: comment.value.trim() } });
+      const r = await api(`/sites/${sid}/access-links`, { method: 'POST', body: { hours: +hours.value, valid_hours: +valid.value, uses: +uses.value, comment: comment.value.trim(), notify: notify.checked } });
       let qr = null;
       try { qr = qrBlock(r.url, 4, 'QR-код ссылки'); qr.style.alignSelf = 'flex-start'; } catch { /* без QR */ }
       mount(out, h('div', { class: 'alert good mt col' },
@@ -191,6 +192,8 @@ export function linkDialog(sid, access, onDone) {
       h('div', { class: 'field' }, h('label', { for: 'nm-link-valid' }, 'Ссылка действует'), valid),
       h('div', { class: 'field' }, h('label', { for: 'nm-link-uses' }, 'Воспользоваться можно'), uses)),
     h('div', { class: 'field' }, h('label', { for: 'nm-link-cmt' }, 'Комментарий'), comment),
+    h('label', { class: 'check', style: { display: 'flex', gap: '8px', alignItems: 'baseline' } }, notify,
+      h('span', {}, 'Сообщить, когда воспользуются', h('div', { class: 'small muted' }, 'В каналы уведомлений о событиях («Настройки панели → Уведомления о событиях»; если каналы не выбраны — только в журнал событий); в Telegram — с кнопкой «Закрыть доступ»'))),
     out),
   footer: [h('button', { class: 'btn', onclick: () => m.close() }, 'Закрыть'), btn] });
 }
@@ -198,6 +201,48 @@ export function linkDialog(sid, access, onDone) {
 const HRS = (x) => x < 1 ? `${Math.round(x * 60)} мин` : x < 48 ? `${x} ч` : `${Math.round(x / 24)} дн.`;
 
 /** Карточка «Ссылки для доступа»: действующие ссылки и адреса, которым доступ выдан по ссылке. */
+/** Списки адресов по ссылке: когда скачаны, сколько адресов, ошибки; «Обновить сейчас», проверка ссылки до применения. */
+export function iplistsCard(sid, site, { readonly }) {
+  const box = h('div', {});
+  const btn = readonly ? null : h('button', { class: 'btn sm', type: 'button', onclick: async () => {
+    btn.disabled = true;
+    try {
+      const r = await api(`/sites/${sid}/ip-lists/refresh`, { method: 'POST' });
+      const errs = Object.entries(r.errors || {});
+      toast(errs.length ? `Не скачан: ${errs.map(([u, e]) => u + ' — ' + e).join('; ')}` : r.ok ? 'Списки обновлены' : 'nginx не перечитал файл доступа', errs.length || !r.ok ? 'bad' : 'good');
+      draw(r.lists);
+    } catch { /* */ } finally { btn.disabled = false; }
+  } }, icon('refresh'), 'Обновить сейчас');
+  const el = card('Списки адресов по ссылке', box, { cls: 'mt', sub: 'скачиваются по расписанию; адреса действуют без новой версии конфигурации', actions: btn });
+  const check = async (url, out) => {
+    mount(out, h('span', { class: 'muted' }, 'скачиваю…'));
+    const r = await api('/ip-lists/check', { method: 'POST', body: { url }, silent: true }).catch(e => ({ ok: false, error: e.message }));
+    mount(out, r.ok ? h('span', { class: 'good-text' }, `найдено ${fmtInt(r.count)} (IPv6: ${r.v6}): ${r.sample.slice(0, 6).join(', ')}${r.count > 6 ? '…' : ''}`)
+      : h('span', { class: 'bad-text' }, r.error || 'ошибка'));
+  };
+  const draw = (lists) => {
+    const applied = new Set(lists.map(x => x.url));
+    const draft = (site.ip_access.lists || []).filter(x => x.url && !applied.has(x.url));
+    mount(box,
+      lists.length ? table([
+        { title: 'Список', render: (x) => h('div', {}, x.comment || h('span', { class: 'muted' }, '—'), h('div', { class: 'small muted', style: { wordBreak: 'break-all' } }, x.url)) },
+        { title: 'Адресов', num: true, render: (x) => x.at ? fmtInt(x.count) : '—' },
+        { title: 'Загружен', render: (x) => h('div', { class: 'small' },
+          x.at ? fmtAgo(x.at) : h('span', { class: 'muted' }, x.tried ? 'ни разу' : 'ожидает загрузки'), h('div', { class: 'muted' }, `раз в ${x.hours} ч`),
+          x.ok === false ? h('div', { class: 'bad-text' }, `ошибка ${fmtAgo(x.tried)}: ${x.error}${x.at ? ' — действуют адреса прошлой загрузки' : ''}`) : null) },
+        { title: 'Например', render: (x) => h('span', { class: 'small mono' }, x.sample.slice(0, 4).join(', ') || '—') },
+      ], lists, {}) : h('div', { class: 'empty' }, 'В применённой конфигурации списков нет'),
+      draft.length ? h('div', { class: 'mt' }, h('div', { class: 'small muted mb' }, 'Ещё не применены — проверьте, что файл скачивается:'),
+        ...draft.map((x) => {
+          const out = h('span', { class: 'small' });
+          return h('div', { class: 'row small', style: { gap: '8px', alignItems: 'center', flexWrap: 'wrap' } },
+            h('code', { style: { wordBreak: 'break-all' } }, x.url), h('button', { class: 'btn sm', type: 'button', disabled: readonly, onclick: () => check(x.url, out) }, 'Проверить'), out);
+        })) : null);
+  };
+  api(`/sites/${sid}/ip-lists`, { silent: true }).then(d => draw(d.lists)).catch(() => mount(box, h('div', { class: 'empty' }, 'Нет данных')));
+  return el;
+}
+
 export function linksCard(sid, { readonly }) {
   const box = h('div', {});
   const el = card('Ссылки для доступа', box, { cls: 'mt', sub: 'посетитель сам открывает доступ для своего адреса; действует сразу, без применения конфигурации' });

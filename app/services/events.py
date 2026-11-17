@@ -23,6 +23,7 @@ SOURCES = {
     "health": "Бэкенды (недоступен / восстановлен)", "auth": "Вход в панель", "panel": "Сервис панели",
     "backup": "Резервные копии", "geoip": "GeoIP и доступ по странам", "bans": "Блокировки IP",
     "insights": "Встроенный анализ", "reports": "Регулярные отчёты", "protection": "Защита от атак",
+    "access": "Доступ по IP (ссылки, временный доступ, списки адресов)",
 }
 LEVELS = {"info": 0, "warning": 1, "error": 2}
 LEVEL_TITLE = {"info": "Событие", "warning": "Внимание", "error": "Ошибка"}
@@ -52,6 +53,8 @@ class EventNotifier:
             p = self.app.panel()
             if not p.event_channels or source not in p.event_sources or source == "alerts":
                 return
+            if isinstance(details, dict) and details.get("notified"):
+                return  # уже отправлено напрямую (использование ссылки для доступа)
             if LEVELS.get(level, 0) < LEVELS.get(p.event_min_level, 1):
                 return
             now = time.time()
@@ -102,7 +105,10 @@ class EventNotifier:
             if limit:
                 level, source, message, details, repeats = "warning", "panel", limit, None, 0
         self.sent.append(now)
-        title = f"{LEVEL_TITLE.get(level, 'Событие')}: {SOURCES.get(source, source).lower()}"
+        src = SOURCES.get(source, source)
+        first = src.split(" ", 1)[0]
+        src = src if any(ch.isupper() for ch in first[1:]) else src[:1].lower() + src[1:]  # «IP», «GeoIP» — как есть
+        title = f"{LEVEL_TITLE.get(level, 'Событие')}: {src}"
         text = message + (f"\n\nТакое же событие повторялось ещё {repeats} раз за последние "
                           f"{p.event_repeat_minutes} мин." if repeats else "")
         extra = {"event": {"level": level, "source": source, "message": message, "details": details,
@@ -115,7 +121,7 @@ class EventNotifier:
                                         self.app.protection.settings().abuseipdb_report != "off"):
                     acts = [a for a in acts if a != "r"]
                 extra["telegram_markup"] = tgbot.keyboard(tgbot.secret(self.app.db), ip, acts,
-                                                          self.app.tgbot.profile_url(ip))
+                                                          "" if "g" in acts else self.app.tgbot.profile_url(ip))
         except Exception:  # noqa: BLE001 — без кнопок уведомление всё равно уходит
             log.exception("кнопки Telegram")
         results = []

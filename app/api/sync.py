@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any, Dict
 
 from fastapi import Body, Depends, HTTPException, Request
@@ -126,11 +127,12 @@ async def peers_status(request: Request, user=Depends(viewer)):
     """Другие серверы: настройки (без токенов), состояние отправки, полученные блокировки."""
     app = _nm(request)
     st = app.peers.status()
+    cmp = app.db.kv_get("peers_compare", {}) or {}
     out = []
     for peer in app.panel().peers:
         out.append({"id": peer.id, "name": peer.name, "url": peer.url, "enabled": peer.enabled, "bans": peer.bans,
                     "protection": peer.protection, "trusted": peer.trusted, "sites": peer.sites,
-                    "sites_tag": peer.sites_tag, **(st.get(peer.id) or {})})
+                    "sites_tag": peer.sites_tag, "compare": cmp.get(peer.id), **(st.get(peer.id) or {})})
     incoming = app.db.kv_get("peers_incoming", {}) or {}
     counts = {r["source"]: r["n"] for r in app.db.query("SELECT source, COUNT(*) AS n FROM bans WHERE source LIKE "
                                                          "'sync:%' GROUP BY source")}
@@ -143,6 +145,29 @@ async def peers_status(request: Request, user=Depends(viewer)):
     return {"peers": out, "incoming": inc, "me": app.peers.origin(), "accept_trusted": app.panel().peers_accept_trusted,
             "transfers": app.db.kv_get("transfers_in", []) or [], "mirrors": mirrors,
             "last_version": (app.nginx.last_applied() or {}).get("id")}
+
+
+@router.get("/sync/summary")
+async def sync_summary(request: Request, user=Depends(operator)):
+    """Сводка применённой конфигурации для сравнения с другим сервером: только хеши разделов, без содержимого."""
+    from ..services.compare import summary
+    return await asyncio.to_thread(summary, _nm(request))
+
+
+@router.post("/peers/{pid}/compare")
+async def peers_compare(request: Request, pid: str, user=Depends(operator)):
+    """Сравнить применённую конфигурацию этого сервера с другим: какие сайты, потоки и настройки различаются."""
+    from ..services.compare import compare
+    app = _nm(request)
+    peer = next((x for x in app.panel().peers if x.id == pid), None)
+    if not peer:
+        raise HTTPException(404, "Сервер не найден")
+    res = await asyncio.to_thread(compare, app, peer)
+    if res.get("ok"):
+        st = app.db.kv_get("peers_compare", {}) or {}
+        st[pid] = {"at": time.time(), "total": res["total"]}
+        app.db.kv_set("peers_compare", st)
+    return res
 
 
 @router.post("/peers/{pid}/test")

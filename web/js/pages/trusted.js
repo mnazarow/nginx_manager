@@ -13,11 +13,42 @@ export function parseList(text) {
   });
 }
 
-/** Окно «Добавить списком»: вызывает onAdd(entries). */
+const ADDR_RE = /(?<![\w:.])((?:\d{1,3}\.){3}\d{1,3}(?:\/\d{1,2})?|[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){2,7}(?:\/\d{1,3})?)(?![\w:.])/gi;
+
+/** Адреса и подсети из произвольного файла (текст, CSV, JSON, выгрузка из другой системы): по строке «адрес # имя файла». */
+export function extractAddresses(text, note) {
+  const seen = new Set();
+  const out = [];
+  for (const raw of text.split('\n')) {
+    const line = raw.split('#')[0];
+    for (const m of line.matchAll(ADDR_RE)) {
+      const a = m[1];
+      if (!a.includes('.') && (a.match(/:/g) || []).length < 2) continue;
+      if (/^0\.0\.0\.0\/0$|^::\/0$/.test(a) || seen.has(a)) continue;
+      seen.add(a);
+      out.push(`${a} # ${note}`);
+    }
+  }
+  return out;
+}
+
+/** Окно «Добавить списком»: вызывает onAdd(entries). Кнопка «Из файла…» подставляет адреса из файла. */
 export function bulkDialog(onAdd) {
   const ta = h('textarea', { rows: 10, placeholder: '203.0.113.10 офис\n198.51.100.0/24 # VPN\n2001:db8::/48 мониторинг', 'aria-label': 'Адреса по строке' });
+  const note = h('span', { class: 'small muted' });
+  const file = h('input', { type: 'file', accept: '.txt,.csv,.json,.conf,.list,text/*,application/json', hidden: true, 'aria-label': 'Файл со списком адресов', onchange: async () => {
+    const f = file.files[0];
+    if (!f) return;
+    if (f.size > 4 << 20) { toast('Файл больше 4 МБ', 'bad'); return; }
+    const lines = extractAddresses(await f.text(), f.name.slice(0, 80));
+    if (!lines.length) { mount(note, h('span', { class: 'bad-text' }, `В «${f.name}» не найдено IP-адресов`)); return; }
+    ta.value = (ta.value.trim() ? ta.value.trim() + '\n' : '') + lines.join('\n');
+    mount(note, `Из «${f.name}»: ${lines.length} — проверьте список и нажмите «Добавить»`);
+    file.value = '';
+  } });
   const m = modal({ title: 'Добавить списком', body: h('div', { class: 'col' },
-    h('p', { class: 'small muted' }, 'По строке на адрес или подсеть; после адреса через пробел или # — комментарий. Повторы пропускаются.'), ta),
+    h('p', { class: 'small muted' }, 'По строке на адрес или подсеть; после адреса через пробел или # — комментарий. Повторы пропускаются. «Из файла…» находит адреса в любом текстовом файле: список, CSV, JSON, выгрузка из другой системы.'), ta,
+    h('div', { class: 'row', style: { gap: '8px', alignItems: 'center' } }, h('button', { class: 'btn sm', type: 'button', onclick: () => file.click() }, icon('upload'), 'Из файла…'), file, note)),
   footer: [h('button', { class: 'btn', onclick: () => m.close() }, 'Отмена'),
     h('button', { class: 'btn primary', onclick: () => { const items = parseList(ta.value); if (items.length) onAdd(items); m.close(); } }, icon('plus'), 'Добавить')] });
 }

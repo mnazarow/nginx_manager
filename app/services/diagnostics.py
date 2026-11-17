@@ -566,6 +566,9 @@ class Diagnostics:
                                                             f"({', '.join(c['domains'][:4])})"))
             if c["data"].get("self_signed"):
                 res.append(R(f"cert_ss_{c['id']}", g, name, INFO, "Самоподписанный: браузеры покажут предупреждение"))
+            r = self.transfer_check(c)
+            if r:
+                res.append(r)
         for sid, s in state.sites:
             if not (s.enabled and s.ssl.enabled):
                 continue
@@ -775,6 +778,33 @@ class Diagnostics:
         res.append(R("sys_db", g, "База данных панели", WARN if db_size > 5 * 1024 ** 3 else OK,
                      f"{db_size / 1024 ** 2:.0f} МБ"))
         return res
+
+    def transfer_check(self, c: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Сертификат, перенесённый с другого сервера: продлевается там. Если тот сервер давно не выходит на связь,
+        а срок подходит к концу, — предложить выпустить сертификат здесь."""
+        t = (c.get("data") or {}).get("transfer") or {}
+        if not t.get("origin") or c["days_left"] is None or c["status"] != "valid":
+            return None
+        oid, oname = t["origin"], t.get("origin_name") or t["origin"]
+        seen = [float(t.get("at") or 0)]
+        seen.append(float(((self.app.db.kv_get("peers_incoming", {}) or {}).get(oid) or {}).get("at") or 0))
+        seen.append(float(((self.app.db.kv_get("synced_sites", {}) or {}).get(oid) or {}).get("at") or 0))
+        silent = (time.time() - max(seen)) / 86400
+        days = c["days_left"]
+        name = f"Сертификат «{c['name']}»"
+        fix = dict(fix="cert_issue_here", fix_label="Выпустить сертификат здесь", fix_args={"id": c["id"]})
+        if silent >= 1 and days < 20:
+            return R(f"cert_tr_{c['id']}", "SSL", name, FAIL if days < 7 else WARN,
+                     f"перенесён с сервера «{oname}», который не выходит на связь {silent:.0f} дн.; до истечения "
+                     f"{days:.0f} дн.", hint="Продлённый сертификат приходит с сервера-источника. Если он выключен "
+                                              "или недоступен надолго, выпустите сертификат на этом сервере — сайты "
+                                              "переключатся на него автоматически после выпуска.", **fix)
+        if days < 10:
+            return R(f"cert_tr_{c['id']}", "SSL", name, WARN,
+                     f"перенесён с сервера «{oname}», но продлённый оттуда не пришёл; до истечения {days:.0f} дн.",
+                     hint=f"Проверьте продление на сервере «{oname}» (раздел «Сертификаты») или выпустите "
+                          "сертификат здесь.", **fix)
+        return None
 
     async def c_limits(self) -> List[Dict[str, Any]]:
         g = "Производительность"
@@ -1204,6 +1234,8 @@ class Diagnostics:
         if action == "selinux_net":
             code, out = await asyncio.to_thread(run, ["setsebool", "-P", "httpd_can_network_connect", "1"], 120)
             return {"ok": code == 0, "output": out}
+        if action == "cert_issue_here":
+            return await self.issue_here(int(args["id"]), username)
         if action == "renew_cert":
             await self.app.certs.renew(int(args["id"]), after=self.app.after_cert_issued)
             return {"ok": True, "output": "Продление запущено — следите за статусом на странице «Сертификаты»"}
@@ -1265,6 +1297,48 @@ class Diagnostics:
             code, out = await asyncio.to_thread(run, ["timedatectl", "set-ntp", "true"])
             return {"ok": code == 0, "output": out}
         raise ValueError(f"Неизвестное действие: {action}")
+
+    async def issue_here(self, old: int, username: str) -> Dict[str, Any]:
+        """Выпустить по ACME сертификат с теми же доменами, что у перенесённого; после выпуска сайты переключаются
+        на новый, конфигурация применяется (у получателя синхронизации — до следующей синхронизации источника)."""
+        import json as _json
+        from ..models import CertificateRequest
+        c = self.app.db.one("SELECT * FROM certificates WHERE id=?", (old,))
+        if not c:
+            return {"ok": False, "output": "Сертификат не найден"}
+        domains = _json.loads(c["domains"] or "[]")
+        wildcard = any(d.startswith("*.") for d in domains)
+        dns = self.app.db.one("SELECT id FROM dns_accounts ORDER BY id") if wildcard else None
+        if wildcard and not dns:
+            return {"ok": False, "output": "Для wildcard-сертификата нужна DNS-проверка — добавьте учётную запись DNS "
+                                           "(Сертификаты → Учётные записи DNS) и повторите"}
+        req = CertificateRequest(type="letsencrypt", name=f"{c['name'].split(' (с сервера')[0]} (выпущен здесь)",
+                                 domains=domains, challenge="dns" if wildcard else "http",
+                                 dns_account_id=dns["id"] if dns else 0)
+
+        async def after(cid: int) -> None:
+            rows = self.app.db.query("SELECT id, data FROM sites")
+            n = 0
+            for r in rows:
+                d = _json.loads(r["data"])
+                if (d.get("ssl") or {}).get("certificate_id") == old:
+                    d["ssl"]["certificate_id"] = cid
+                    self.app.db.execute("UPDATE sites SET data=? WHERE id=?", (_json.dumps(d, ensure_ascii=False),
+                                                                                r["id"]))
+                    n += 1
+            self.app.db.event("info", "certs", f"Сертификат для {', '.join(domains[:3])} выпущен здесь вместо "
+                                               f"перенесённого; сайтов переключено: {n}")
+            if n:
+                try:
+                    await self.app.apply(username, "Переход на сертификат, выпущенный здесь")
+                except Exception as e:  # noqa: BLE001
+                    self.app.db.event("error", "certs", f"Сайты переключены, но конфигурация не применена: {e}")
+        try:
+            cid = await self.app.certs.issue_letsencrypt(req, username, after=after)
+        except ValueError as e:
+            return {"ok": False, "output": str(e)}
+        return {"ok": True, "output": f"Выпуск запущен (сертификат #{cid}) — после выпуска сайты переключатся на "
+                                      "него сами; следите на странице «Сертификаты»"}
 
     async def _pkg_install(self, pkgs: List[str]) -> Dict[str, Any]:
         if which("apt-get"):

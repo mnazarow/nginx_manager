@@ -29,7 +29,8 @@ from ..config import VERSION
 
 log = logging.getLogger("nm.tgbot")
 
-ACTIONS = {"b": "Заблокировать на сутки", "u": "Разблокировать", "r": "Пожаловаться в AbuseIPDB"}
+ACTIONS = {"b": "Заблокировать на сутки", "u": "Разблокировать", "r": "Пожаловаться в AbuseIPDB",
+           "g": "Закрыть доступ"}  # g — доступ к сайту, открытый по ссылке (параметр — номер выдачи)
 COMMANDS = ("help", "start", "status", "top", "ip", "ban", "unban")
 HELP = ("Команды Nginx Manager:\n"
         "/status — состояние: nginx, атаки за час, блокировки, «Под атакой», проблемы\n"
@@ -64,6 +65,8 @@ def parse_callback(key: bytes, data: str) -> Optional[Tuple[str, str]]:
     ip = ":".join(parts[2:-1])  # в IPv6 есть двоеточия
     if not hmac.compare_digest(sig, sign(key, act, ip)):
         return None
+    if act == "g":
+        return (act, ip) if ip.isdigit() else None
     try:
         ipaddress.ip_network(ip, strict=False)
     except ValueError:
@@ -83,6 +86,8 @@ def actions_for(source: str, message: str, details: Any) -> Tuple[str, List[str]
     """Адрес и кнопки для уведомления о событии (адрес берётся из подробностей события)."""
     if not isinstance(details, dict):
         return "", []
+    if source == "access" and str(details.get("grant") or "").isdigit():
+        return str(details["grant"]), ["g"]  # доступ по ссылке: кнопка «Закрыть доступ»
     ip = str(details.get("ip") or details.get("net") or "")
     if not ip:
         return "", []
@@ -179,13 +184,24 @@ class TelegramActions:
                 spawn_sync(self.app)
                 self.db.event("info", "bans", f"Разблокирован {ip} из Telegram ({who})")
                 msg = f"{ip} разблокирован"
+            elif act == "g":
+                g = self.db.one("SELECT * FROM ipaccess_grants WHERE id=?", (int(ip),))
+                if not g or g["expires_at"] <= time.time():
+                    return "Этот доступ уже закрыт"
+                self.db.execute("UPDATE ipaccess_grants SET expires_at=? WHERE id=?", (time.time() - 1, g["id"]))
+                loop = getattr(self.app.events, "loop", None)
+                if loop and not loop.is_closed():
+                    loop.call_soon_threadsafe(lambda: loop.create_task(self.app.grants.sync()))
+                self.db.event("info", "access", f"Доступ для {g['ip']} (сайт #{g['site']}) закрыт из Telegram ({who})")
+                msg = f"Доступ для {g['ip']} закрыт"
             else:
                 r = self.app.protection.intel.report(ip, who)
                 msg = f"Жалоба на {ip} отправлена (категории {', '.join(map(str, r['categories']))})"
         except Exception as e:  # noqa: BLE001
             return f"Не выполнено: {e}"[:190]
         self.db.execute("INSERT INTO audit_log(ts, username, ip, action, target, details) VALUES(?,?,?,?,?,?)",
-                        (time.time(), who, "", {"b": "ip_banned", "u": "ip_unbanned", "r": "abuseipdb_report"}[act],
+                        (time.time(), who, "", {"b": "ip_banned", "u": "ip_unbanned", "r": "abuseipdb_report",
+                                                "g": "access_grant_revoked"}[act],
                          ip, json.dumps({"via": "telegram", "chat": chat}, ensure_ascii=False)))
         return msg
 

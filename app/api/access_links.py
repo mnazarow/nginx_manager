@@ -46,7 +46,7 @@ async def links_list(request: Request, sid: int, user=Depends(viewer)):
     app = _nm(request)
     _site(app, sid)
     now = time.time()
-    links = app.db.query("SELECT id, comment, hours, uses_left, uses_total, expires_at, created_by, created_at "
+    links = app.db.query("SELECT id, comment, hours, uses_left, uses_total, expires_at, created_by, created_at, notify "
                          "FROM ipaccess_links WHERE site=? AND (expires_at>? OR created_at>?) ORDER BY id DESC "
                          "LIMIT 100", (sid, now, now - 7 * 86400))
     for x in links:
@@ -64,7 +64,8 @@ async def links_create(request: Request, sid: int, body: Dict[str, Any] = Body(.
         raise HTTPException(400, "Сначала включите «Доступ только с разрешённых адресов» и примените конфигурацию")
     try:
         lid, token = AL.create(app.db, sid, float(body.get("hours", 8)), float(body.get("valid_hours", 24)),
-                               int(body.get("uses", 1)), str(body.get("comment") or ""), user["username"])
+                               int(body.get("uses", 1)), str(body.get("comment") or ""), user["username"],
+                               bool(body.get("notify", True)))
     except (TypeError, ValueError) as e:
         raise HTTPException(400, str(e))
     audit(request, user, "access_link_created", site["name"], {"id": lid, "hours": body.get("hours"),
@@ -94,6 +95,50 @@ async def grants_revoke(request: Request, sid: int, gid: int, user=Depends(opera
     ok, out = await app.grants.sync()
     audit(request, user, "access_grant_revoked", g["ip"], {"site": sid})
     return {"ok": ok, "output": "" if ok else out[-500:]}
+
+
+@router.get("/sites/{sid}/ip-lists")
+async def iplists_status(request: Request, sid: int, user=Depends(viewer)):
+    """Списки адресов по ссылке сайта (из применённой версии): когда скачаны, сколько адресов, ошибка."""
+    from ..services import iplists
+    app = _nm(request)
+    _site(app, sid)
+    state = app.last_applied_state()
+    return {"lists": iplists.status(app.db, state, sid) if state else []}
+
+
+@router.post("/sites/{sid}/ip-lists/refresh")
+async def iplists_refresh(request: Request, sid: int, user=Depends(operator)):
+    """Скачать списки сайта сейчас и обновить файл доступа."""
+    from ..services import iplists
+    app = _nm(request)
+    _site(app, sid)
+    state = app.last_applied_state()
+    urls = [x["url"] for x in iplists.status(app.db, state, sid)] if state else []
+    if not urls:
+        raise HTTPException(400, "У сайта нет списков в применённой конфигурации — сохраните и примените сайт")
+    _, done = await asyncio.to_thread(iplists.refresh, app.db, state, urls)
+    ok, out = await app.grants.sync()
+    audit(request, user, "iplists_refresh", str(sid), {"urls": urls})
+    return {"ok": ok, "output": "" if ok else out[-500:], "lists": iplists.status(app.db, state, sid),
+            "errors": {u: d["error"] for u, d in done.items() if not d.get("ok")}}
+
+
+@router.post("/ip-lists/check")
+async def iplists_check(request: Request, body: Dict[str, Any] = Body(...), user=Depends(operator)):
+    """Проверить ссылку на список до сохранения: скачать и показать, что в нём найдено."""
+    from ..models import IpListSource
+    from ..services import iplists
+    try:
+        url = IpListSource(url=str(body.get("url") or "")).url
+    except Exception:
+        raise HTTPException(400, "Адрес списка — https://…")
+    try:
+        nets = await asyncio.to_thread(iplists.fetch, url)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": str(e)[:300]}
+    return {"ok": True, "count": len(nets), "sample": nets[:20],
+            "v6": sum(1 for x in nets if ":" in x)}
 
 
 # =============================================================================
@@ -168,11 +213,20 @@ async def access_grant(request: Request, token: str):
     g = await asyncio.to_thread(AL.grant, nm.db, link, ip, request.headers.get("user-agent", ""))
     ok, out = await nm.grants.sync()
     name = (nm.db.one("SELECT name FROM sites WHERE id=?", (site,)) or {}).get("name", site)
-    nm.db.event("info" if ok else "error", "access",
-                f"Доступ по ссылке: {ip} — сайт «{name}» до {AL.when(g['expires_at'])}"
-                + (f" (ссылка «{link['comment']}»)" if link["comment"] else "")
-                + ("" if ok else " — nginx не перечитал файл доступа"),
-                {"ip": ip, "site": site, "link": link["id"], "ua": request.headers.get("user-agent", "")[:200]})
+    msg = (f"Доступ по ссылке: {ip} — сайт «{name}» до {AL.when(g['expires_at'])}"
+           + (f" (ссылка «{link['comment']}»)" if link["comment"] else "")
+           + ("" if ok else " — nginx не перечитал файл доступа"))
+    details = {"ip": ip, "site": site, "link": link["id"], "grant": g["id"],
+               "ua": request.headers.get("user-agent", "")[:200]}
+    p = nm.panel()
+    if ok and link.get("notify", 1) and p.event_channels and not nm.alerts.silence_for(None):
+        # сразу в каналы уведомлений о событиях — при любом «минимальном уровне» и выборе источников (уведомление
+        # включено у самой ссылки); в Telegram — с кнопкой «Закрыть доступ»
+        details["notified"] = True
+        asyncio.get_running_loop().create_task(
+            nm.events.deliver("info", "access", msg + f"\nБраузер: {details['ua'][:120] or '—'}", details,
+                              force_channels=list(p.event_channels)))
+    nm.db.event("info" if ok else "error", "access", msg, details)
     if not ok:
         return _page("Не получилось", "<h1>Не получилось открыть доступ</h1><p>Сервер не смог применить изменение. "
                      "Сообщите администратору сайта.</p>", 503)

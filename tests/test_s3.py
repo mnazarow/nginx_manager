@@ -106,7 +106,7 @@ def test_offsite_cycle(moto, monkeypatch, tmp_path):
         assert res["ok"], res
         time.sleep(1.1)  # отметка времени в имени — с точностью до секунды
     names = [o["name"] for o in backup.offsite_list(app)]
-    assert len(names) == 4 and all(n.endswith(".enc") for n in names), names   # 2 копии × (json + db.gz)
+    assert len(names) == 6 and all(n.endswith(".enc") for n in names), names   # 2 копии × (json + db.gz + settings)
     assert not any(made[0].name.split(".")[0] in n for n in names)              # старейшая удалена
     assert app.db.kv_get("offsite_last")["ok"]
     # скачать: файл расшифровывается и распаковывается в каталог копий
@@ -120,6 +120,11 @@ def test_offsite_cycle(moto, monkeypatch, tmp_path):
     original = (settings.backups_dir / js_name[:-4]).read_text()
     os.unlink(settings.backups_dir / js_name[:-4])
     assert (settings.backups_dir / backup.offsite_download(app, js_name)).read_text() == original
+    # копия всех настроек скачивается как есть (архив tar.gz, без распаковки)
+    st_name = next(n for n in names if ".settings.tar.gz" in n)
+    os.unlink(settings.backups_dir / st_name[:-4])
+    got = backup.offsite_download(app, st_name)
+    assert got == st_name[:-4] and (settings.backups_dir / got).read_bytes()[:2] == b"\x1f\x8b"
     # неверный пароль — понятная ошибка, мусор не остаётся
     app.save_panel(p.model_copy(update={"s3_encrypt_password": "не тот"}))
     with pytest.raises(ValueError, match="расшифровать"):

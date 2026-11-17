@@ -45,7 +45,8 @@ SCROLL = {"protection-intel": ("#/protection?tab=threats", "Обмен данн�
 SCENES = {"protection-ip", "protection-rule", "protection-ratelimit", "protection-vuln", "protection-ip-network",
           "alerts-channels", "protection-vuln-installed", "protection-tech-wp", "trusted", "site-ip-access",
           "site-ip-denials", "ip-temp-access", "peers-transfer", "ip-link", "site-ip-links",
-          *SCROLL, "geo-site", "sites-bulk", "backup-s3", "backup-restore"}  # снимки с действиями: --only geo-site,sites-bulk или --extras
+          *SCROLL, "geo-site", "sites-bulk", "backup-s3", "backup-restore", "backup-settings-restore",
+          "site-ip-lists", "ip-bulk-file", "peers-compare"}  # снимки с действиями: --only geo-site,sites-bulk или --extras
 
 
 async def main(a):
@@ -234,6 +235,27 @@ async def scenes(page, a, only):
             await page.wait_for_timeout(600)
             await page.screenshot(path=f"{a.out}/site-ip-links.png")
             print("site-ip-links: ok")
+        if not only or "site-ip-lists" in only:
+            # карточка «Списки адресов по ссылке»: когда скачаны, сколько адресов
+            await page.evaluate("""() => { const h = [...document.querySelectorAll('.card h2')]
+                .find(x => x.textContent.includes('Списки адресов по ссылке')); h.scrollIntoView({block: 'start'});
+                window.scrollBy(0, -80); }""")
+            await page.wait_for_timeout(600)
+            await page.screenshot(path=f"{a.out}/site-ip-lists.png")
+            print("site-ip-lists: ok")
+        if not only or "ip-bulk-file" in only:
+            # «Добавить списком» → «Из файла…»: адреса найдены в выгрузке CSV
+            await page.evaluate("window.scrollTo(0, 0)")
+            await page.locator(".ipa-tools button", has_text="Добавить списком").click()
+            await page.wait_for_selector(".modal textarea", timeout=10000)
+            await page.set_input_files(".modal input[type=file]", files=[{
+                "name": "vpn-export.csv", "mimeType": "text/csv",
+                "buffer": "user,ip,since\nivanov,198.51.100.21,2026-10-01\npetrova,198.51.100.34,2026-10-12\n"
+                          "office-gw,203.0.113.0/28,2026-09-30\nsidorov,2001:db8:5::17,2026-11-02\n".encode()}])
+            await page.wait_for_timeout(600)
+            await page.screenshot(path=f"{a.out}/ip-bulk-file.png")
+            await page.keyboard.press("Escape")
+            print("ip-bulk-file: ok")
         if not only or "ip-link" in only:
             # окно «Ссылка для доступа» после создания ссылки (адрес и QR-код)
             await page.evaluate("window.scrollTo(0, 0)")
@@ -271,6 +293,16 @@ async def scenes(page, a, only):
         await page.screenshot(path=f"{a.out}/peers-transfer.png")
         await page.keyboard.press("Escape")
         print("peers-transfer: ok")
+    if not only or "peers-compare" in only:
+        # окно «Сравнение с сервером»: расхождения применённой конфигурации
+        await page.goto(f"{a.url}/#/bans?tab=peers")
+        await page.wait_for_timeout(2500)
+        await page.locator("table.t button", has_text="Сравнить").first.click()
+        await page.wait_for_selector(".modal h3.sub-h", timeout=20000)
+        await page.wait_for_timeout(600)
+        await page.screenshot(path=f"{a.out}/peers-compare.png")
+        await page.keyboard.press("Escape")
+        print("peers-compare: ok")
     if not only or "protection-tech-wp" in only:
         # окно уязвимостей плагина WordPress из карточки «Технологии ваших сайтов»
         await page.goto(f"{a.url}/#/protection?tab=vulns")
@@ -316,6 +348,18 @@ async def scenes(page, a, only):
         await page.screenshot(path=f"{a.out}/backup-restore.png")
         await page.keyboard.press("Escape")
         print("backup-restore: ok")
+    if not only or "backup-settings-restore" in only:
+        # окно восстановления из копии всех настроек: проверка архива и выбор разделов
+        await page.goto(f"{a.url}/#/backup")
+        await page.wait_for_timeout(2000)
+        btn = page.locator("table.t tbody tr", has_text="-all.settings.tar.gz").locator("button", has_text="Восстановить").first
+        await btn.click()
+        await page.wait_for_selector(".modal dl.kv", timeout=15000)
+        await page.locator(".modal label.check", has_text="Пользователи").locator("input").uncheck()
+        await page.wait_for_timeout(400)
+        await page.screenshot(path=f"{a.out}/backup-settings-restore.png")
+        await page.keyboard.press("Escape")
+        print("backup-settings-restore: ok")
 
 
 async def extras(page, a):

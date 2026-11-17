@@ -193,6 +193,12 @@ def db_backup(app, label: str = "manual") -> Path:
     js = settings.backups_dir / f"nginx-manager-{ts}-{label}.json"
     js.write_text(json.dumps(export_config(app, include_users=True), ensure_ascii=False, indent=1))
     js.chmod(0o600)
+    # копия всех настроек (с файлами сертификатов и данными certbot) — той же отметкой времени
+    try:
+        from .settings_backup import create
+        create(app, label, ts=ts)
+    except Exception as e:  # noqa: BLE001 — копия базы важнее
+        app.db.event("warning", "backup", f"Копия настроек не создана: {e}")
     return dest
 
 
@@ -214,6 +220,7 @@ def prune_backups(keep_auto: int, keep_update: int) -> List[str]:
             old.unlink(missing_ok=True)
             if old.suffix == ".db":
                 old.with_suffix(".json").unlink(missing_ok=True)
+                old.with_name(old.name[:-3] + ".settings.tar.gz").unlink(missing_ok=True)
             removed.append(old.name)
     return removed
 
@@ -277,6 +284,9 @@ def offsite_upload(app, db_path: Path) -> Dict[str, Any]:
         js = db_path.with_suffix(".json")
         if js.exists():
             files.append(js)
+        st = db_path.with_name(db_path.name[:-3] + ".settings.tar.gz")
+        if st.exists():
+            files.append(st)
         if p.s3_include_db:
             gz = db_path.with_name(db_path.name + ".gz")
             with open(db_path, "rb") as fi, gzip.open(gz, "wb", compresslevel=6) as fo:
@@ -359,7 +369,7 @@ def offsite_download(app, name: str) -> str:
         finally:
             dest.unlink(missing_ok=True)
         dest = plain
-    if dest.name.endswith(".gz"):
+    if dest.name.endswith(".gz") and not dest.name.endswith(".settings.tar.gz"):  # копия настроек — как есть
         out = dest.with_name(dest.name[:-3])
         with gzip.open(dest, "rb") as fi, open(out, "wb") as fo:
             shutil.copyfileobj(fi, fo, 1 << 20)
@@ -391,7 +401,8 @@ def list_backups() -> List[Dict[str, Any]]:
         if p.suffix not in (".db", ".json", ".gz", ".enc"):  # служебные файлы SQLite (-wal, -shm) и временные
             continue
         st = p.stat()
-        out.append({"name": p.name, "size": st.st_size, "mtime": st.st_mtime, "kind": p.suffix[1:]})
+        kind = ("settings-enc" if p.suffix == ".enc" else "settings") if ".settings.tar.gz" in p.name else p.suffix[1:]
+        out.append({"name": p.name, "size": st.st_size, "mtime": st.st_mtime, "kind": kind})
     return out
 
 

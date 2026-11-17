@@ -28,7 +28,8 @@ def _hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
-def create(db, site: int, hours: float, valid_hours: float, uses: int, comment: str, user: str) -> Tuple[int, str]:
+def create(db, site: int, hours: float, valid_hours: float, uses: int, comment: str, user: str,
+           notify: bool = True) -> Tuple[int, str]:
     if not (0.25 <= hours <= 24 * 90):
         raise ValueError("Срок доступа: от 15 минут до 90 дней")
     if not (0.25 <= valid_hours <= 24 * 90):
@@ -42,9 +43,9 @@ def create(db, site: int, hours: float, valid_hours: float, uses: int, comment: 
     token = secrets.token_urlsafe(24)
     now = time.time()
     lid = db.execute("INSERT INTO ipaccess_links(site, token_hash, comment, hours, uses_left, uses_total, expires_at, "
-                     "created_by, created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                     "created_by, created_at, notify) VALUES(?,?,?,?,?,?,?,?,?,?)",
                      (site, _hash(token), comment.strip()[:120], float(hours), int(uses), int(uses),
-                      now + valid_hours * 3600, user, now))
+                      now + valid_hours * 3600, user, now, int(bool(notify))))
     return lid, token
 
 
@@ -93,14 +94,16 @@ def active_grants(db, site: Optional[int] = None) -> List[Dict[str, Any]]:
     return db.query(q + " ORDER BY expires_at DESC", tuple(args))
 
 
-def render(db) -> str:
-    """Содержимое ip-grants.conf: «адрес ,5,7,;» — по строке на адрес, номера сайтов через запятую."""
-    by: Dict[str, List[int]] = {}
+def render(db, lists: Optional[Dict[str, set]] = None) -> str:
+    """Содержимое ip-grants.conf: «адрес ,5,7,;» — доступ по ссылке и списки адресов по ссылке (lists:
+    {сеть: {номера сайтов}}); каждой сети добавляются сайты объемлющих сетей (geo берёт самую точную)."""
+    from .iplists import merge
+    by: Dict[str, set] = {k: set(v) for k, v in (lists or {}).items()}
     for g in active_grants(db):
-        by.setdefault(g["ip"], [])
-        if g["site"] not in by[g["ip"]]:
-            by[g["ip"]].append(g["site"])
-    lines = ["# Nginx Manager: доступ к сайтам по ссылке (раздел сайта «Доступ по IP»); файл обновляет панель"]
+        by.setdefault(g["ip"], set()).add(g["site"])
+    by = merge(by) if lists else by
+    lines = ["# Nginx Manager: доступ к сайтам по ссылке и списки адресов (раздел сайта «Доступ по IP»); файл "
+             "обновляет панель"]
     for ip in sorted(by):
         lines.append(f'{ip} ",{",".join(str(x) for x in sorted(by[ip]))},";')
     return "\n".join(lines) + "\n"
@@ -120,9 +123,14 @@ class GrantSync:
         self.last = None
         self.lock: Optional[asyncio.Lock] = None
 
+    def lists(self) -> Dict[str, set]:
+        from .iplists import site_nets
+        state = self.app.last_applied_state()
+        return site_nets(self.app.db, state) if state else {}
+
     async def sync(self, force: bool = False) -> Tuple[bool, str]:
         from ..config import settings
-        content = render(self.app.db)
+        content = render(self.app.db, await asyncio.to_thread(self.lists))
         if content == self.last and not force:
             return True, ""
         if self.lock is None:
