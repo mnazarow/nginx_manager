@@ -18,6 +18,9 @@
     nmctl vulns update                обновить базу уязвимостей (и правила OWASP CRS, если источник — GitHub)
     nmctl vulns search ТЕКСТ          поиск по базе уязвимостей; nmctl vulns show CVE — карточка
     nmctl deps                        системные пакеты и модули nginx для включённых функций (--packages apt|dnf)
+    nmctl os                          срок поддержки ОС (обновления безопасности), --json
+    nmctl peers                       другие серверы: связь, блокировки, доверенные адреса, синхронизация сайтов
+    nmctl transfer --to web-2 --sites 1,3   перенести сайты с сертификатами на другой сервер (--all, --tag)
 """
 from __future__ import annotations
 
@@ -487,6 +490,106 @@ def cmd_deps(a) -> int:
     return 0 if all(x["ok"] for x in items) else 2
 
 
+def cmd_os(a) -> int:
+    """Срок поддержки ОС: 0 — поддерживается, 1 — поддержка закончилась, 2 — заканчивается в ближайшие полгода."""
+    from .services import osinfo
+    r = osinfo.check()
+    if a.json:
+        print(json.dumps(r, ensure_ascii=False, indent=1))
+    else:
+        st = {"ok": "ok", "soon": "warn", "eol": "fail"}.get(r["level"], "info")
+        print(f"  {C[st]}{ICON[st]}{C['r']} {r['message']}")
+    return {"eol": 1, "soon": 2}.get(r["level"], 0)
+
+
+def _peer(db, name: str):
+    from .models import PanelSettings
+    peers = PanelSettings.model_validate(db.kv_get("panel_settings", {})).peers
+    m = [p for p in peers if p.id == name or p.name == name] or \
+        [p for p in peers if p.name.lower().startswith(name.lower())]
+    if len(m) != 1:
+        raise ValueError(f"Сервер «{name}» не найден" if not m else
+                         f"«{name}» подходит к нескольким серверам: {', '.join(p.name for p in m)}")
+    return m[0]
+
+
+def cmd_peers(a) -> int:
+    """Другие серверы: проверка связи и состояние обмена."""
+    from .models import PanelSettings
+    from .services.peers import _err, call, instance_id
+    db = _db()
+    ps = PanelSettings.model_validate(db.kv_get("panel_settings", {}))
+    st = db.kv_get("peers_status", {}) or {}
+    print(f"{C['b']}Этот сервер:{C['r']} {ps.peer_name or os.uname().nodename} ({instance_id(db)})")
+    if not ps.peers:
+        print("  Других серверов нет — добавьте их в «Настройки панели → Другие серверы»")
+        return 0
+    bad = 0
+    for p in ps.peers:
+        x = st.get(p.id) or {}
+        try:
+            code, d = call(p, "GET", "/sync/hello", None, ps.peers_verify_tls, timeout=10)
+            link = f"{C['ok']}✓{C['r']} {d.get('name')} {d.get('version')}, токен «{d.get('role')}»" if code == 200 \
+                else f"{C['fail']}✗{C['r']} {_err(code, d)}"
+            bad += code != 200
+        except Exception as e:  # noqa: BLE001
+            link, bad = f"{C['fail']}✗{C['r']} нет связи: {e}", bad + 1
+        what = [w for w, on in (("блокировки", p.bans), ("доверенные", p.trusted), ("защита", p.protection),
+                                ("сайты" + (f" [{p.sites_tag}]" if p.sites_tag else ""), p.sites)) if on]
+        print(f"  {C['b']}{p.name}{C['r']} {p.url}{'' if p.enabled else ' (выключен)'}\n    связь: {link}\n"
+              f"    обмен: {', '.join(what) or '—'}")
+        if p.sites and x.get("sites_at"):
+            print(f"    сайты: версия {x.get('sites_version')}, {x.get('sites_sent', 0)} сайтов"
+                  + (f" — {x['sites_error'] or x.get('sites_note')}" if x.get("sites_error") or x.get("sites_note")
+                     else ""))
+    return 1 if bad else 0
+
+
+def cmd_transfer(a) -> int:
+    """Перенести сайты с сертификатами на другой сервер (как «Перенести сайты…» в панели)."""
+    from .models import PanelSettings
+    from .services import transfer as TF
+    from .services.peers import _err, call, instance_id
+    db = _db()
+    peer = _peer(db, a.to)
+    ps = PanelSettings.model_validate(db.kv_get("panel_settings", {}))
+    rows = db.query("SELECT id, data FROM sites ORDER BY id")
+    if a.all:
+        ids = [r["id"] for r in rows]
+    elif a.tag:
+        ids = [r["id"] for r in rows if a.tag in (json.loads(r["data"]).get("tags") or [])]
+    else:
+        ids = [int(x) for x in a.sites.replace(" ", "").split(",") if x]
+    if not ids:
+        raise ValueError("Не выбраны сайты: --sites 1,3, --tag метка или --all")
+    payload = TF.build(db, ids, not a.no_certs)
+    origin = {"id": instance_id(db), "name": ps.peer_name or os.uname().nodename}
+    print(f"Перенос на «{peer.name}»: сайтов {len(payload['sites'])}, сертификатов {len(payload['certs'])}…")
+    code, d = call(peer, "POST", "/sync/sites", {"origin": origin, **payload, "overwrite": a.overwrite,
+                                                 "apply": not a.no_apply}, ps.peers_verify_tls, timeout=180)
+    if code == 404:
+        raise ValueError("на сервере старая версия Nginx Manager (перенос сайтов — с версии 2.6)")
+    if code != 200:
+        raise ValueError(_err(code, d))
+    if payload["certs"]:
+        TF.remember(db, peer.id, payload["certs"])
+    s = d.get("sites") or {}
+    words = {"created": "создан", "updated": "обновлён", "skipped": "пропущен", "error": "ошибка"}
+    for it in s.get("items", []):
+        st = {"created": "ok", "updated": "ok", "skipped": "warn"}.get(it["action"], "fail")
+        print(f"  {C[st]}{ICON[st]}{C['r']} {it['name']} — {words.get(it['action'], it['action'])}"
+              + (f": {'; '.join(it['notes'])}" if it.get("notes") else ""))
+    c = d.get("certs") or {}
+    print(f"Сертификаты: новых {c.get('created', 0)}, обновлено {c.get('updated', 0)}"
+          + (f"; ошибки: {'; '.join(c['errors'])}" if c.get("errors") else ""))
+    if d.get("applied"):
+        print(f"{C['ok']}✓{C['r']} конфигурация применена на «{d.get('name')}» (версия {d['applied']})")
+    elif d.get("apply_error"):
+        print(f"{C['warn']}!{C['r']} не применено: {d['apply_error']}")
+    db.event("info", "peers", f"Сайты отправлены на сервер «{peer.name}» из консоли (nmctl): {len(ids)}")
+    return 0 if not s.get("skipped") and not c.get("errors") else 2
+
+
 def main(argv=None) -> int:
     import os
     os.umask(0o022)
@@ -530,6 +633,17 @@ def main(argv=None) -> int:
     p.add_argument("--packages", default="", choices=["", "apt", "dnf", "yum"],
                    help="вывести недостающие пакеты для пакетного менеджера (по одному в строке)")
     p.add_argument("--json", action="store_true")
+    p = sub.add_parser("os", help="срок поддержки ОС")
+    p.add_argument("--json", action="store_true")
+    sub.add_parser("peers", help="другие серверы: связь и обмен")
+    p = sub.add_parser("transfer", help="перенести сайты с сертификатами на другой сервер")
+    p.add_argument("--to", required=True, help="сервер: название (или его начало) либо ID из «Другие серверы»")
+    p.add_argument("--sites", default="", help="номера сайтов через запятую")
+    p.add_argument("--tag", default="", help="все сайты с этой меткой")
+    p.add_argument("--all", action="store_true", help="все сайты")
+    p.add_argument("--no-certs", action="store_true", help="без сертификатов")
+    p.add_argument("--overwrite", action="store_true", help="заменить сайты с теми же доменами")
+    p.add_argument("--no-apply", action="store_true", help="не применять конфигурацию на получателе")
     a = ap.parse_args(argv)
     if not a.cmd:
         ap.print_help()
@@ -538,7 +652,7 @@ def main(argv=None) -> int:
            "allowlist": cmd_allowlist, "backup": cmd_backup, "restore": cmd_restore, "export": cmd_export,
            "import": cmd_import,
            "versions": cmd_versions, "rollback": cmd_rollback, "sites": cmd_sites, "vulns": cmd_vulns,
-           "deps": cmd_deps}[a.cmd]
+           "deps": cmd_deps, "os": cmd_os, "peers": cmd_peers, "transfer": cmd_transfer}[a.cmd]
     from .nginx.manager import ApplyError
     try:
         return cmd(a)

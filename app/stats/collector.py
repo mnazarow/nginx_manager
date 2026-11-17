@@ -304,6 +304,7 @@ class Aggregator:
         self.geo_hits: Counter = Counter()  # (сайт, страна) -> отклонено по странам с запуска панели
         # отказы «Доступа по IP»: (минута, сайт, адрес) -> [число, последний путь, страна]; пишутся в ipdeny_minute
         self.ipdeny: Dict[tuple, list] = {}
+        self.ipdeny_total: Counter = Counter()  # сайт -> отказов «Доступа по IP» с запуска панели (для /metrics)
 
     # ------------------------------------------------------------------
     def _sec(self, ts: int) -> Optional[Dict[str, Sec]]:
@@ -349,6 +350,7 @@ class Aggregator:
         geo_blocked = r.get("geo_blocked", False) and not r["banned"]
         # отказ «Доступа по IP» (с паролем — только запросы без входа: ответ 401)
         if r.get("ip_denied") and not r["banned"] and (not r.get("ip_pw") or status == 401):
+            self.ipdeny_total[site] += 1
             k = (min_ts, site, r["ip"])
             cur = self.ipdeny.get(k)
             if cur is None:

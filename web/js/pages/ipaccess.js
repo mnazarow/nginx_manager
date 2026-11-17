@@ -1,6 +1,6 @@
 // Раздел сайта «Доступ по IP»: свой адрес, добавление списком, проверка адреса по черновику настроек.
 import { api } from '../api.js';
-import { h, mount, icon, toast, card, table, modal, segmented, fmtInt, fmtAgo, fmtDate, countryName } from '../ui.js';
+import { h, mount, icon, toast, card, table, modal, segmented, fmtInt, fmtAgo, fmtDate, countryName, copyBtn, confirmDlg, qrBlock } from '../ui.js';
 import { timeChart, setData, seriesColor } from '../charts.js';
 import { expiresSelect } from '../forms.js';
 import { bulkDialog } from './trusted.js';
@@ -45,7 +45,7 @@ async function trustedInfo() {
 }
 
 /** Панель над полями раздела: добавить свой адрес, списком, проверить адрес. */
-export function ipAccessTools(site, { onChange, redraw, readonly }) {
+export function ipAccessTools(site, { onChange, redraw, readonly, sid, onLink }) {
   const box = h('div', { class: 'ipa-tools mb' });
   const a = site.ip_access;
   trustedInfo().then((t) => {
@@ -81,6 +81,7 @@ export function ipAccessTools(site, { onChange, redraw, readonly }) {
         readonly ? null : h('button', { class: 'btn sm', type: 'button', disabled: !mine, onclick: () => add([{ address: mine, comment: 'мой адрес' }]) }, icon('plus'), `Добавить мой адрес${mine ? ' (' + mine + ')' : ''}`),
         readonly ? null : h('button', { class: 'btn sm', type: 'button', onclick: () => bulkDialog(add) }, icon('list'), 'Добавить списком'),
         readonly ? null : h('button', { class: 'btn sm', type: 'button', onclick: () => tempDialog(mine, add) }, icon('history'), 'Временный доступ…'),
+        readonly || !sid ? null : h('button', { class: 'btn sm', type: 'button', title: 'Ссылка, по которой посетитель сам откроет доступ для своего адреса', onclick: () => linkDialog(sid, a, onLink) }, icon('copy'), 'Ссылка для доступа…'),
         h('span', { class: 'small muted', style: { marginLeft: 'auto' } }, 'Проверить адрес:'), ipIn_,
         h('button', { class: 'btn sm', type: 'button', onclick: check }, 'Проверить'), out));
     ipIn_.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); check(); } });
@@ -157,4 +158,81 @@ export function ipDenialsCard(sid, site, { onChange, redraw, readonly }) {
   load();
   return card('Журнал отказов', h('div', {}, sum, chartBox, h('div', { class: 'mt' }, list)),
     { cls: 'mt', sub: 'кто стучался на сайт с неразрешённых адресов (по журналу доступа nginx; хранится столько же, сколько журнал атак)', actions: seg });
+}
+
+const OPT = (pairs, val) => pairs.map(([v, t]) => h('option', { value: v, selected: v === val }, t));
+
+/** Окно «Ссылка для доступа»: посетитель откроет её и сам добавит свой адрес на заданный срок. */
+export function linkDialog(sid, access, onDone) {
+  if (!access.enabled) { toast('Сначала включите «Доступ только с разрешённых адресов», сохраните и примените сайт', 'bad'); return; }
+  const hours = h('select', { id: 'nm-link-hours' }, OPT([[1, '1 час'], [4, '4 часа'], [8, '8 часов'], [24, 'сутки'], [72, '3 дня'], [168, 'неделю']], 8));
+  const valid = h('select', { id: 'nm-link-valid' }, OPT([[1, '1 час'], [24, 'сутки'], [72, '3 дня'], [168, 'неделю'], [720, '30 дней']], 24));
+  const uses = h('select', { id: 'nm-link-uses' }, OPT([[1, 'один раз'], [3, '3 раза'], [10, '10 раз'], [50, '50 раз']], 1));
+  const comment = h('input', { id: 'nm-link-cmt', type: 'text', maxlength: 120, placeholder: 'Кому: подрядчик, клиент, сотрудник в командировке' });
+  const out = h('div', {});
+  const btn = h('button', { class: 'btn primary', onclick: async () => {
+    btn.disabled = true;
+    try {
+      const r = await api(`/sites/${sid}/access-links`, { method: 'POST', body: { hours: +hours.value, valid_hours: +valid.value, uses: +uses.value, comment: comment.value.trim() } });
+      let qr = null;
+      try { qr = qrBlock(r.url, 4, 'QR-код ссылки'); qr.style.alignSelf = 'flex-start'; } catch { /* без QR */ }
+      mount(out, h('div', { class: 'alert good mt col' },
+        h('b', {}, 'Ссылка создана — отправьте её получателю. Повторно её показать нельзя (в панели хранится только отпечаток).'),
+        h('div', { class: 'row nowrap' }, h('input', { type: 'text', value: r.url, readOnly: true, class: 'code', 'aria-label': 'Ссылка' }), copyBtn(r.url, 'Копировать')),
+        qr));
+      btn.style.display = 'none';
+      if (onDone) onDone();
+    } catch (e) { toast(e.data?.detail || e.message, 'bad'); btn.disabled = false; }
+  } }, icon('plus'), 'Создать ссылку');
+  const m = modal({ title: 'Ссылка для доступа', body: h('div', { class: 'col' },
+    h('p', { class: 'small muted' }, 'Получатель откроет ссылку, увидит свой IP-адрес и нажмёт «Открыть доступ» — адрес будет пускаться на выбранный срок без применения конфигурации. Программы предпросмотра ссылок в мессенджерах доступ не «съедят»: он выдаётся только по кнопке.'),
+    h('div', { class: 'grid g3' },
+      h('div', { class: 'field' }, h('label', { for: 'nm-link-hours' }, 'Доступ на'), hours),
+      h('div', { class: 'field' }, h('label', { for: 'nm-link-valid' }, 'Ссылка действует'), valid),
+      h('div', { class: 'field' }, h('label', { for: 'nm-link-uses' }, 'Воспользоваться можно'), uses)),
+    h('div', { class: 'field' }, h('label', { for: 'nm-link-cmt' }, 'Комментарий'), comment),
+    out),
+  footer: [h('button', { class: 'btn', onclick: () => m.close() }, 'Закрыть'), btn] });
+}
+
+const HRS = (x) => x < 1 ? `${Math.round(x * 60)} мин` : x < 48 ? `${x} ч` : `${Math.round(x / 24)} дн.`;
+
+/** Карточка «Ссылки для доступа»: действующие ссылки и адреса, которым доступ выдан по ссылке. */
+export function linksCard(sid, { readonly }) {
+  const box = h('div', {});
+  const el = card('Ссылки для доступа', box, { cls: 'mt', sub: 'посетитель сам открывает доступ для своего адреса; действует сразу, без применения конфигурации' });
+  const load = async () => {
+    let d;
+    try { d = await api(`/sites/${sid}/access-links`, { silent: true }); } catch { mount(box, h('div', { class: 'empty' }, 'Нет данных')); return; }
+    const del = async (l) => {
+      if (!await confirmDlg(`Отозвать ссылку${l.comment ? ' «' + l.comment + '»' : ''}? Доступ, уже открытый по ней, останется до своего срока.`, { ok: 'Отозвать', danger: true })) return;
+      await api(`/sites/${sid}/access-links/${l.id}`, { method: 'DELETE' }); load();
+    };
+    const revoke = async (g) => {
+      if (!await confirmDlg(`Закрыть доступ для ${g.ip} сейчас?`, { ok: 'Закрыть доступ', danger: true })) return;
+      const r = await api(`/sites/${sid}/access-grants/${g.id}`, { method: 'DELETE' });
+      toast(r.ok ? `Доступ для ${g.ip} закрыт` : 'nginx не перечитал файл доступа', r.ok ? 'good' : 'bad'); load();
+    };
+    const links = d.links.filter(l => l.state === 'ok');
+    mount(box,
+      h('h3', { class: 'sub-h', style: { margin: '0 0 6px' } }, `Открыт доступ (${d.grants.length})`),
+      table([
+        { title: 'Адрес', render: (g) => h('div', {}, h('code', {}, g.ip), g.comment ? h('div', { class: 'small muted' }, g.comment) : null) },
+        { title: 'До', render: (g) => h('span', { class: 'small', style: { whiteSpace: 'nowrap' } }, fmtDate(g.expires_at)) },
+        { title: 'Открыт', render: (g) => h('span', { class: 'small', title: g.ua || '', style: { whiteSpace: 'nowrap' } }, fmtAgo(g.created_at)) },
+        { title: '', srTitle: 'Действия', render: (g) => readonly ? null : h('button', { class: 'btn sm', type: 'button', 'aria-label': `Закрыть доступ для ${g.ip}`, onclick: () => revoke(g) }, 'Закрыть') },
+      ], d.grants, { empty: 'Пока никто не открывал доступ по ссылке' }),
+      h('h3', { class: 'sub-h', style: { margin: '16px 0 6px' } }, `Действующие ссылки (${links.length})`),
+      table([
+        { title: 'Комментарий', render: (l) => h('span', {}, l.comment || h('span', { class: 'muted' }, '—'), h('div', { class: 'small muted' }, `создал ${l.created_by || '—'} ${fmtAgo(l.created_at)}`)) },
+        { title: 'Доступ на', render: (l) => HRS(l.hours) },
+        { title: 'Осталось', num: true, render: (l) => `${l.uses_left} из ${l.uses_total}` },
+        { title: 'Действует до', render: (l) => h('span', { class: 'small', style: { whiteSpace: 'nowrap' } }, fmtDate(l.expires_at)) },
+        { title: '', srTitle: 'Действия', render: (l) => readonly ? null : h('button', { class: 'btn sm ghost', type: 'button', 'aria-label': `Отозвать ссылку ${l.comment || l.id}`, onclick: () => del(l) }, 'Отозвать') },
+      ], links, { empty: 'Ссылок нет — создайте кнопкой «Ссылка для доступа…»' }),
+      d.ready ? null : h('div', { class: 'alert warn mt small' }, 'Примените конфигурацию: ссылки заработают после применения.'));
+  };
+  el.reload = load;
+  load();
+  return el;
 }

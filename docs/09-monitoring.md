@@ -194,6 +194,7 @@ scrape_configs:
 | `nm_http_cache_responses_total` | counter | `site_id`, `site`, `cache_status` | HIT, MISS, EXPIRED, STALE… |
 | `nm_http_banned_requests_total` | counter | `site_id`, `site` | Отклонено запросов с заблокированных IP |
 | `nm_http_geo_blocked_requests_total` | counter | `site_id`, `site` | Отклонено запросов правилами доступа по странам ([17](17-bans.md#доступ-по-странам)) |
+| `nm_http_ipaccess_denied_requests_total` | counter | `site_id`, `site` | Отказано «Доступом по IP» сайта; в режиме с паролем — запросы без входа ([05](05-sites.md#журнал-отказов)) |
 | `nm_backend_up` | gauge | `owner`, `name`, `backend`, `backup` | 1/0 по активной проверке бэкенда, NaN — ещё не проверялся |
 | `nm_backend_check_latency_seconds` | gauge | то же | Время ответа на последнюю проверку |
 | `nm_certificate_expiry_days` | gauge | `id`, `name`, `domain`, `used` | Дней до истечения сертификата |

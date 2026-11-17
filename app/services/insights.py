@@ -688,6 +688,27 @@ S: List[Scenario] = [
              ["Посмотрите страны отклонённых запросов (Блокировки IP → Страны)", "Если это сканеры — ничего делать не "
               "нужно; если люди — добавьте страны или исключения по IP", "За CDN настройте «Реальный IP клиента»"],
              [L_BANS, L_SITES], ("17-bans.md", "доступ-по-странам")),
+    Scenario("ipaccess_near_allowed", "security", "Отказы с адресов рядом с разрешёнными",
+             "сайт с «Доступом по IP» отказывает адресу из той же сети (/24 для IPv4, /48 для IPv6), что и "
+             "разрешённый адрес, — не меньше 3 отказов",
+             "Скорее всего, это свой человек, у которого сменился адрес: провайдер выдал другой адрес из пула, офис "
+             "перешёл на резервный канал, VPN сменил точку выхода. Сайт для него закрыт.",
+             ["Динамический адрес у офиса или сотрудника", "Резервный канал или другой узел VPN",
+              "Сосед по сети провайдера (тогда всё в порядке)"],
+             ["Откройте «Журнал отказов» в разделе сайта «Доступ по IP» и сверьте адрес с сотрудником",
+              "Свой — «Разрешить» (или «8 ч»), а для динамических адресов — разрешите подсеть провайдера или "
+              "отправьте ссылку для доступа", "Чужой — ничего делать не нужно"],
+             [L_SITES], ("05-sites.md", "журнал-отказов")),
+    Scenario("ipaccess_denied_high", "security", "Много отказов «Доступа по IP»",
+             "≥ 300 отказов сайта с «Доступом по IP» за период",
+             "Закрытый сайт активно перебирают сканеры. Опасности нет — их не пускают, — но они создают нагрузку и "
+             "засоряют журналы.",
+             ["Адрес сайта попал в базы сканеров (сертификаты публикуются в журналах Certificate Transparency)",
+              "Перебор паролей или поиск уязвимостей ботами"],
+             ["Отвечайте «444 — закрыть соединение» или «404 — скрыть сайт» вместо 403: сканеры быстрее теряют "
+              "интерес", "Включите автоблокировку сканеров (Блокировки IP) — самые настойчивые адреса уйдут в "
+              "блокировку", "Для внутренних сервисов подумайте о VPN вместо открытого порта"],
+             [L_SITES, L_BANS], ("05-sites.md", "журнал-отказов")),
 
     # ------------------------------------------------------------------ сервер
     Scenario("nginx_down", "server", "Nginx не запущен",
@@ -936,6 +957,7 @@ class Analyzer:
             self._traffic_rules(add, s_id, cur, start, end, span, sites, recent)
         self._site_config_rules(add, sites if site == "*" else {k: v for k, v in sites.items() if k == site}, start,
                                 end)
+        self._ipaccess_rules(add, sites if site == "*" else {k: v for k, v in sites.items() if k == site}, start, end)
         if recent:
             self._live_rules(add, site, sites)
         # журнал ошибок nginx — по всему серверу или сайту
@@ -1104,6 +1126,50 @@ class Analyzer:
             if stale / cache_n >= 0.05:
                 add("cache_stale", "info", s_id, f"{N(stale)} устаревших ответов ({P(stale / cache_n * 100, 0)} кэша)",
                     None, stale / cache_n * 100)
+
+    def _ipaccess_rules(self, add, sites: Dict[str, Any], start: float, end: float) -> None:
+        """Отказы «Доступа по IP» (таблица ipdeny_minute): адреса рядом с разрешёнными и сканеры."""
+        import ipaddress
+        for sid, s in sites.items():
+            a = s.ip_access
+            if not a.enabled:
+                continue
+            rows = self.app.db.query("SELECT ip, SUM(n) AS n, MAX(ts) AS last FROM ipdeny_minute WHERE site=? AND "
+                                     "ts>=? AND ts<? GROUP BY ip ORDER BY n DESC LIMIT 500",
+                                     (sid, int(start) // 60 * 60, end))
+            if not rows:
+                continue
+            total = sum(r["n"] for r in rows)
+            nets = []
+            for e in a.entries:
+                try:
+                    net = ipaddress.ip_network(e.address, strict=False)
+                except ValueError:
+                    continue
+                wide = ipaddress.ip_network(f"{net.network_address}/{24 if net.version == 4 else 48}", strict=False)
+                if net.prefixlen >= wide.prefixlen:
+                    nets.append((wide, e))
+            near = []
+            for r in rows:
+                if r["n"] < 3:
+                    continue
+                try:
+                    ip = ipaddress.ip_address(r["ip"])
+                except ValueError:
+                    continue
+                hit = next((e for w, e in nets if ip.version == w.version and ip in w), None)
+                if hit:
+                    uri = (self.app.db.one("SELECT uri FROM ipdeny_minute WHERE site=? AND ip=? AND ts=?",
+                                           (sid, r["ip"], r["last"])) or {}).get("uri", "")
+                    near.append([r["ip"], r["n"], hit.address + (f" ({hit.comment})" if hit.comment else ""), uri])
+            if near:
+                add("ipaccess_near_allowed", "warn", sid,
+                    f"{N(len(near))} адр. рядом с разрешёнными: {near[0][0]} — {N(near[0][1])} отказов (рядом с "
+                    f"{near[0][2]})",
+                    {"columns": ["Адрес", "Отказов", "Рядом с", "Последний путь"], "rows": near[:20]}, len(near))
+            if total >= 300:
+                add("ipaccess_denied_high", "info", sid, f"{N(total)} отказов с {N(len(rows))} адресов",
+                    {"columns": ["Адрес", "Отказов"], "rows": [[r["ip"], r["n"]] for r in rows[:10]]}, total)
 
     def _site_config_rules(self, add, sites: Dict[str, Any], start: float, end: float) -> None:
         for sid, s in sites.items():

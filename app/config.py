@@ -139,6 +139,11 @@ class Settings:
         return self.managed_dir / "bans.conf"
 
     @property
+    def grants_file(self) -> Path:
+        """Доступ к сайтам по ссылке: адреса посетителей → номера сайтов для geo $nm_ipgrant (вне версий)."""
+        return self.managed_dir / "ip-grants.conf"
+
+    @property
     def threats_file(self) -> Path:
         """Списки угроз для geo $nm_threat (раздел «Защита»); обновляется панелью по расписанию."""
         return self.managed_dir / "threats.conf"
@@ -207,6 +212,9 @@ class Settings:
             if self.managed_dir.is_dir() and not self.threats_file.exists():
                 self.threats_file.write_text("# Nginx Manager: списки угроз (раздел «Защита»)\n")
                 os.chmod(self.threats_file, 0o644)
+            if self.managed_dir.is_dir() and not self.grants_file.exists():
+                self.grants_file.write_text("# Nginx Manager: доступ к сайтам по ссылке (раздел сайта «Доступ по IP»)\n")
+                os.chmod(self.grants_file, 0o644)
             for f, what in ((self.bots_file, "проверка роботов"), (self.bots_ua_file, "проверка роботов"),
                             (self.vuln_file, "пути эксплойтов известных уязвимостей")):
                 if self.managed_dir.is_dir() and not f.exists():

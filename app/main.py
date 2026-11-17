@@ -61,8 +61,10 @@ def create_app() -> FastAPI:
                   docs_url="/api/docs-ui", redoc_url=None, openapi_url="/api/openapi.json")
     from .api.routes import router
     from .protection.challenge import router as challenge_router
+    from .api.access_links import public as access_router
     app.include_router(router)
     app.include_router(challenge_router)
+    app.include_router(access_router)
 
     @app.exception_handler(ValidationError)
     async def _pyd(request: Request, exc: ValidationError):

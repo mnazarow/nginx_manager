@@ -96,9 +96,10 @@ def live():
     (TMP / "bans.conf").write_text("127.0.0.16/28 1;\n127.0.0.9 0;\n127.0.0.18 0;\n")  # как BanService.render_file
     attack = TMP / "attack.conf"
     attack.write_text('default "";\n')
+    (TMP / "grants.conf").write_text('127.0.0.71 ",1,";\n127.0.0.72 ",9,";\n')  # доступ по ссылке (сайт 1 и чужой)
     p = Paths(str(TMP / "stage"), str(TMP / "stage"), "/var/acme", str(TMP / "logs"), str(TMP / "cache"), stub, panel,
               str(TMP), bans_file=str(TMP / "bans.conf"), attack_file=str(attack), challenge_secret="s",
-              challenge_key="k")
+              challenge_key="k", grants_file=str(TMP / "grants.conf"))
     files = Generator(state, caps, p).render()
     alt = {"80": str(free_port()), "443": str(free_port())}
     for rel, content in files.items():
@@ -126,6 +127,10 @@ def test_live_ip_access(live):
     assert st("/", "127.0.0.1") == 200            # сам сервер
     assert st("/", "127.0.0.9") == 200            # доверенный адрес
     assert st("/", "127.0.0.70") == 403           # остальные
+    assert st("/", "127.0.0.71") == 200           # доступ по ссылке к этому сайту (ip-grants.conf)
+    assert st("/", "127.0.0.72") == 403           # доступ по ссылке к другому сайту
+    # страница ссылки открыта всем и уходит в панель (здесь панели нет — 502), остальное по-прежнему закрыто
+    assert st("/.nm-access/abc", "127.0.0.70") == 502 and st("/.nm-accessx", "127.0.0.70") == 403
     assert st("/hook/pay", "127.0.0.70") == 200   # открытый путь
     assert st("/hookx", "127.0.0.70") == 403
     assert st("/.well-known/acme-challenge/t", "127.0.0.70") != 403  # проверка Let's Encrypt открыта

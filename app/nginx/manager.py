@@ -197,7 +197,7 @@ class NginxManager:
                      acme_webroot=str(settings.acme_webroot), log_dir=str(settings.log_dir),
                      cache_dir=str(settings.cache_dir), stub_status_port=settings.stub_status_port,
                      panel_port=settings.bind_port, data_dir=str(settings.data_dir),
-                     bans_file=str(settings.bans_file),
+                     bans_file=str(settings.bans_file), grants_file=str(settings.grants_file),
                      geo_file=str(settings.geo_file) if self.geo_db() else "",
                      threats_file=str(settings.threats_file), attack_file=str(settings.attack_file),
                      bots_file=str(settings.bots_file), bots_ua_file=str(settings.bots_ua_file),

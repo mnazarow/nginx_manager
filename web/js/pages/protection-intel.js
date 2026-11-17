@@ -192,6 +192,11 @@ export async function peersCard() {
         : p.bans_at ? h('span', { class: 'small' }, `${fmtInt(p.bans_sent || 0)} отправлено ${fmtAgo(p.bans_at)}`) : h('span', { class: 'muted small' }, 'ещё не отправлялись') },
       { title: 'Доверенные адреса', render: (p) => !p.trusted ? h('span', { class: 'muted small' }, 'не отправляются') : p.trusted_skipped ? h('span', { class: 'warning-text small' }, `не приняты: ${p.trusted_skipped}`)
         : p.trusted_old ? h('span', { class: 'warning-text small' }, 'старая версия на сервере — не применяются') : p.bans_at ? h('span', { class: 'small' }, `${fmtInt(p.trusted_sent || 0)} отправлено`) : h('span', { class: 'muted small' }, '—') },
+      { title: 'Сайты', render: (p) => !p.sites ? h('span', { class: 'muted small' }, 'по кнопке') : p.sites_error ? h('span', { class: 'bad-text small', title: p.sites_error }, p.sites_error.slice(0, 90))
+        : p.sites_at ? h('span', { class: 'small', title: p.sites_result ? `создано ${p.sites_result.created}, обновлено ${p.sites_result.updated}, удалено ${p.sites_result.deleted}, без изменений ${p.sites_result.unchanged}` : '' },
+          `версия ${p.sites_version || '—'} — ${fmtAgo(p.sites_at)}`, h('div', { class: 'muted small' }, `${fmtInt(p.sites_sent || 0)} сайтов${p.sites_tag ? ' с меткой «' + p.sites_tag + '»' : ''}${p.sites_applied ? ', применено' : ''}`),
+          p.sites_note ? h('div', { class: 'warning-text small', title: p.sites_note }, 'не применено: ' + p.sites_note.slice(0, 80)) : null)
+          : h('span', { class: 'muted small' }, 'ожидает') },
       { title: 'Настройки защиты', render: (p) => !p.protection ? h('span', { class: 'muted small' }, 'вручную') : p.prot_error ? h('span', { class: 'bad-text small' }, p.prot_error)
         : p.prot_at ? h('span', { class: 'small' }, `применены ${fmtAgo(p.prot_at)}`,
           p.prot_mapped || p.prot_dropped ? h('div', { class: 'muted small', title: 'Правила, привязанные к сайтам, сопоставляются по доменам: сайт с тем же доменом на получателе' },
@@ -201,6 +206,7 @@ export async function peersCard() {
     ], d.peers) : empty('Серверов нет', 'Добавьте их в «Настройки панели → Другие серверы»', can('admin') ? h('a', { class: 'btn primary', href: '#/settings?tab=peers' }, 'Добавить сервер') : null, 'server'),
     { flush: !!d.peers.length, actions: can('admin') && d.peers.length ? [
       h('button', { class: 'btn', onclick: () => transferDialog(d.peers.filter(p => p.enabled)) }, icon('upload'), 'Перенести сайты…'),
+      d.peers.some(p => p.sites) ? h('button', { class: 'btn', title: 'Отправить сайты последней применённой версии ещё раз', onclick: () => push('sites') }, icon('refresh'), 'Синхронизировать сайты') : null,
       h('button', { class: 'btn', onclick: () => push('bans') }, icon('refresh'), 'Отправить блокировки'),
       h('button', { class: 'btn', onclick: async () => { if (await confirmDlg('Отправить настройки защиты от атак на все серверы? На каждом применится конфигурация с этими настройками (свои правила, привязанные к сайтам, и CrowdSec там останутся свои).', { ok: 'Отправить' })) push('protection'); } }, 'Отправить настройки защиты')] : null }),
     card('Получено от других серверов', d.incoming.length ? table([
@@ -209,6 +215,11 @@ export async function peersCard() {
       { title: 'Доверенных адресов', num: true, render: (x) => d.accept_trusted ? fmtInt(x.trusted || 0) : h('span', { class: 'muted small', title: 'Приём выключен в настройках панели' }, 'не принимаются') },
       { title: 'Последняя сверка', render: (x) => h('span', { class: 'small' }, `${fmtAgo(x.at)} (+${x.added}, −${x.removed})`) },
     ], d.incoming) : empty('Пока ничего', 'Блокировки появятся, когда другой сервер отправит их сюда', null, 'server'), { flush: !!d.incoming.length, cls: 'mt' }),
+    (d.mirrors || []).length ? card('Синхронизация сайтов сюда', table([
+      { title: 'С сервера', render: (x) => h('b', {}, x.name) },
+      { title: 'Сайтов', num: true, render: (x) => fmtInt(x.sites) },
+      { title: 'Последняя синхронизация', render: (x) => h('span', { class: 'small' }, x.at ? fmtAgo(x.at) : '—') },
+    ], d.mirrors), { flush: true, cls: 'mt', sub: 'эти сайты обновляются с другого сервера — менять их нужно там' }) : null,
     (d.transfers || []).length ? card('Перенесённые сюда сайты', table([
       { title: 'Когда', render: (x) => h('span', { class: 'small', title: fmtDate(x.at) }, fmtAgo(x.at)) },
       { title: 'С сервера', render: (x) => h('b', {}, x.name) },

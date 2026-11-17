@@ -292,7 +292,10 @@ async def list_sites(request: Request, user=Depends(viewer)):
     for t in app.health.targets.values():
         health.setdefault(t.owner, []).append({"addr": f"{t.address}:{t.port}", "state": t.state,
                                                "latency_ms": round(t.last_latency * 1000, 1), "error": t.last_error})
-    return [_site_row(app, r, live, health) for r in app.db.query("SELECT * FROM sites ORDER BY name COLLATE NOCASE")]
+    from ..services.transfer import mirrored
+    mir = mirrored(app.db)
+    return [{**_site_row(app, r, live, health), "synced_from": mir.get(r["id"], "")}
+            for r in app.db.query("SELECT * FROM sites ORDER BY name COLLATE NOCASE")]
 
 
 @router.get("/sites/{sid}")
@@ -309,7 +312,9 @@ async def get_site(sid: int, request: Request, user=Depends(viewer)):
     for u in (data.get("security") or {}).get("basic_auth_users", []):
         u["password"] = ""
         u["password_hash"] = ""  # хранится только на сервере; при сохранении без пароля берётся прежний
-    return {"id": r["id"], "data": data, "created_at": r["created_at"], "updated_at": r["updated_at"]}
+    from ..services.transfer import mirrored
+    return {"id": r["id"], "data": data, "created_at": r["created_at"], "updated_at": r["updated_at"],
+            "synced_from": mirrored(nm(request).db).get(r["id"], "")}
 
 
 def app_nginx_masked(files: Dict[str, str]) -> Dict[str, str]:
@@ -2149,3 +2154,4 @@ async def ws(websocket: WebSocket):
 from . import protection as _protection  # noqa: E402,F401 — регистрирует маршруты раздела «Защита»
 from . import sync as _sync  # noqa: E402,F401 — регистрирует маршруты нескольких серверов
 from . import trusted as _trusted  # noqa: E402,F401 — регистрирует маршруты раздела «Доверенные адреса»
+from . import access_links as _access_links  # noqa: E402,F401 — регистрирует маршруты ссылок временного доступа

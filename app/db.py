@@ -396,6 +396,19 @@ SCHEMA: List[str] = [
     );
     CREATE INDEX IF NOT EXISTS ipdeny_site_ts ON ipdeny_minute(site, ts);
     """,
+    # ---- v12: доступ к сайту по ссылке (ссылки и выданный по ним доступ) ---------------------------------------
+    """
+    CREATE TABLE IF NOT EXISTS ipaccess_links (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, site INTEGER NOT NULL, token_hash TEXT NOT NULL UNIQUE,
+        comment TEXT NOT NULL DEFAULT '', hours REAL NOT NULL, uses_left INTEGER NOT NULL, uses_total INTEGER NOT NULL,
+        expires_at REAL NOT NULL, created_by TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS ipaccess_grants (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, site INTEGER NOT NULL, ip TEXT NOT NULL, link_id INTEGER,
+        comment TEXT NOT NULL DEFAULT '', ua TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL, expires_at REAL NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS ipaccess_grants_site ON ipaccess_grants(site, expires_at);
+    """,
 ]
 
 

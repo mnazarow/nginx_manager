@@ -5,7 +5,7 @@ import { h, mount, icon, badge, toast, modal, confirmDlg, promptDlg, table, tabs
 import { model, defaults, renderFields, errorsToMap, SCHEMA } from '../forms.js';
 import { ctx, can, refreshState, applyDialog, applyErrorView } from '../app.js';
 import { certDialog } from './certs.js';
-import { ipAccessTools, ipDenialsCard } from './ipaccess.js';
+import { ipAccessTools, ipDenialsCard, linksCard } from './ipaccess.js';
 
 export async function render(root) {
   if (ctx.params.edit || ctx.params.new !== undefined) return editor(root, ctx.params.edit ? +ctx.params.edit : null);
@@ -84,7 +84,8 @@ async function list(root) {
         s.maintenance ? badge('обслуживание', 'warn') : null, s.cache ? badge('кэш', 'outline') : null,
         s.geo && s.geo.mode !== 'off' ? h('span', { title: (s.geo.mode === 'deny' ? 'Запрещены: ' : 'Только: ') + s.geo.countries.map(c => `${c} ${countryName(c)}`).join(', ') },
           badge(s.geo.mode === 'deny' ? 'запрет стран' : 'только страны', 'outline')) : null,
-        s.ip_access ? h('span', { title: `Доступ только с разрешённых адресов (${s.ip_access.count}); остальным — ${s.ip_access.deny === 'password' ? 'пароль' : s.ip_access.deny}` }, badge('только с IP', 'outline')) : null) },
+        s.ip_access ? h('span', { title: `Доступ только с разрешённых адресов (${s.ip_access.count}); остальным — ${s.ip_access.deny === 'password' ? 'пароль' : s.ip_access.deny}` }, badge('только с IP', 'outline')) : null,
+        s.synced_from ? h('span', { title: `Сайт обновляется синхронизацией с сервера «${s.synced_from}»: правки здесь будут перезаписаны` }, badge(`с ${s.synced_from}`, 'info')) : null) },
       { title: 'Бэкенды', render: (s) => s.type !== 'proxy' ? h('span', { class: 'muted' }, '—') : h('div', { class: 'col', style: { gap: '2px' } },
         (s.health.length ? s.health : s.backends.map(b => ({ addr: b, state: 'unknown' }))).slice(0, 4).map(t => h('div', { class: 'row nowrap small', style: { gap: '6px' }, title: t.error || '' },
           h('span', { class: 'dot ' + (t.state === 'up' ? 'good' : t.state === 'down' ? 'bad' : '') }), h('code', {}, t.addr),
@@ -242,9 +243,13 @@ async function editor(root, id) {
     drawTabs();
     const y = window.scrollY;
     mount(formBox);
-    if (tab === 'ip_access') formBox.append(ipAccessTools(site, { onChange: fctx.onChange, redraw: drawForm, readonly: !can('operator') }));
+    let links = null;
+    if (tab === 'ip_access') formBox.append(ipAccessTools(site, { onChange: fctx.onChange, redraw: drawForm, readonly: !can('operator'), sid: id, onLink: () => links && links.reload() }));
     renderFields(formBox, fields, site, { ...fctx, tab, advanced, errors });
-    if (tab === 'ip_access' && id && site.ip_access?.enabled) formBox.append(ipDenialsCard(id, site, { onChange: fctx.onChange, redraw: drawForm, readonly: !can('operator') }));
+    if (tab === 'ip_access' && id && site.ip_access?.enabled) {
+      links = linksCard(id, { readonly: !can('operator') });
+      formBox.append(links, ipDenialsCard(id, site, { onChange: fctx.onChange, redraw: drawForm, readonly: !can('operator') }));
+    }
     window.scrollTo(0, y);
   }
 
@@ -293,6 +298,7 @@ async function editor(root, id) {
         ro ? null : h('button', { class: 'btn', onclick: test, title: 'Проверить черновик через nginx -t, ничего не сохраняя' }, icon('check'), 'Проверить'),
         ro ? null : h('button', { class: 'btn', onclick: () => save(false) }, 'Сохранить'),
         ro ? null : h('button', { class: 'btn primary', onclick: () => save(true) }, 'Сохранить и применить'))),
+    siteRes?.synced_from ? h('div', { class: 'alert info mb' }, `Сайт получен синхронизацией с сервера «${siteRes.synced_from}» и обновляется оттуда после каждого применения конфигурации на том сервере. Правки здесь будут перезаписаны — меняйте сайт на сервере «${siteRes.synced_from}».`) : null,
     h('div', { class: 'grid split' },
       h('div', { class: 'card' }, h('div', { class: 'card-body' }, tabBar, formBox)),
       h('div', { class: 'card sticky-preview' }, h('div', { class: 'card-head' }, h('h2', {}, 'Итоговая конфигурация nginx'), h('span', { class: 'muted small' }, 'обновляется при вводе')),

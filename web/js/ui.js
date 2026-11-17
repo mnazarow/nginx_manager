@@ -329,6 +329,13 @@ export function empty(title, text = '', action = null, ic = 'file') {
 
 export function loading(text = 'Загрузка…') { return h('div', { class: 'loading' }, h('span', { class: 'spinner' }), ' ', text); }
 
+/** QR-код текста (SVG от библиотеки qrcode-generator: из адреса, без пользовательской разметки). */
+export function qrBlock(text, cell = 4, label = 'QR-код') {
+  /* global qrcode */
+  const q = qrcode(0, 'M'); q.addData(text); q.make();
+  return h('div', { class: 'qr', html: q.createSvgTag(cell, 0), role: 'img', 'aria-label': label });
+}
+
 export function copyBtn(getText, label = '') {
   return h('button', { class: 'btn sm', title: 'Копировать', onclick: async () => {
     try { await navigator.clipboard.writeText(typeof getText === 'function' ? getText() : getText); toast('Скопировано', 'good'); }

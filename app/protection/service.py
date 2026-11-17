@@ -1482,6 +1482,8 @@ class ProtectionService:
         self.db.execute("DELETE FROM prot_minute WHERE ts<?", (cut,))
         self.db.execute("DELETE FROM attack_periods WHERE end IS NOT NULL AND end<?", (cut,))
         self.db.execute("DELETE FROM ipdeny_minute WHERE ts<?", (cut,))
+        from ..services.access_links import cleanup as links_cleanup
+        links_cleanup(self.db)
 
     # ------------------------------------------------------------------ отчёты
     def overview(self, hours: int = 24, site: str = "") -> Dict[str, Any]:

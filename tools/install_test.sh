@@ -5,10 +5,19 @@
 #   tools/install_test.sh debian:12 nginx-manager-2.3.0.tar.gz   установка старой версии → сайт → обновление до этой
 #
 # Образ — любой поддерживаемой ОС (ubuntu:22.04, ubuntu:24.04, debian:12, rockylinux:9, almalinux:9, fedora:40…).
+#
+#   tools/install_test.sh --emulate rocky:9 [старая.tar.gz]   ЭМУЛЯЦИЯ: образ Ubuntu (NM_TEST_IMAGE, по умолчанию
+#       nm-test/noble:prep) с /etc/os-release другой ОС, а для RHEL-совместимых — с dnf и rpm, которые ставят пакеты
+#       Ubuntu (nginx-mod-stream → libnginx-mod-stream и т. п.). Проверяет ветки установщика для этой ОС (выбор
+#       пакетного менеджера, EPEL, имена пакетов, срок поддержки ОС), когда зеркала дистрибутива недоступны. Сами
+#       пакеты и сборка nginx при этом — Ubuntu; это не замена проверки на настоящей системе.
+#       Варианты: debian:12, debian:13, rocky:9, rocky:10, almalinux:9, almalinux:10, rhel:9, ol:9, centos-stream:10.
 # В контейнере нет systemd: панель запускается в фоне — так и задумано для проверки. Переменные https_proxy и
 # http_proxy передаются в контейнер, если заданы; NM_TEST_CA=файл.crt — сертификат прокси с перехватом TLS (будет
 # добавлен в доверенные в контейнере). Журнал — в stdout; код возврата 0, если все шаги прошли.
 set -u
+EMU=""
+if [ "${1:-}" = "--emulate" ]; then EMU="${2:?ОС для эмуляции, например rocky:9}"; shift 2; set -- "${NM_TEST_IMAGE:-nm-test/noble:prep}" "$@"; fi
 IMAGE="${1:?образ Docker, например ubuntu:22.04}"
 OLD="${2:-}"
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
@@ -18,6 +27,66 @@ mkdir -p "$WORK/new"
 (cd "$SRC" && git ls-files -co --exclude-standard | tar -cf - -T -) | tar -xf - -C "$WORK/new"
 if [ -n "$OLD" ]; then cp "$OLD" "$WORK/old.tar.gz"; fi
 if [ -n "${NM_TEST_CA:-}" ]; then cp "$NM_TEST_CA" "$WORK/ca.crt"; fi
+
+echo "$EMU" >"$WORK/emulate"
+cat >"$WORK/emu.sh" <<'EMUEOF'
+#!/bin/bash
+# Эмуляция другой ОС в образе Ubuntu: /etc/os-release и (для RHEL-совместимых) dnf/rpm поверх apt.
+EMU="$(cat /t/emulate)"
+[ -n "$EMU" ] || exit 0
+BASE="$(. /etc/os-release; echo "$PRETTY_NAME")"
+rm -f /etc/os-release  # в Ubuntu это ссылка на /usr/lib/os-release — пишем отдельный файл
+os() { printf 'NAME="%s"\nVERSION_ID="%s"\nID=%s\nID_LIKE="%s"\nPRETTY_NAME="%s"\nVERSION_CODENAME=%s\n' "$@" >/etc/os-release; }
+case "$EMU" in
+  debian:12) os "Debian GNU/Linux" 12 debian "" "Debian GNU/Linux 12 (bookworm)" bookworm ;;
+  debian:13) os "Debian GNU/Linux" 13 debian "" "Debian GNU/Linux 13 (trixie)" trixie ;;
+  rocky:9) os "Rocky Linux" 9.6 rocky "rhel centos fedora" "Rocky Linux 9.6 (Blue Onyx)" "" ;;
+  rocky:10) os "Rocky Linux" 10.0 rocky "rhel centos fedora" "Rocky Linux 10.0 (Red Quartz)" "" ;;
+  almalinux:9) os "AlmaLinux" 9.6 almalinux "rhel centos fedora" "AlmaLinux 9.6 (Sage Margay)" "" ;;
+  almalinux:10) os "AlmaLinux" 10.0 almalinux "rhel centos fedora" "AlmaLinux 10.0 (Purple Lion)" "" ;;
+  rhel:9) os "Red Hat Enterprise Linux" 9.6 rhel "fedora" "Red Hat Enterprise Linux 9.6 (Plow)" "" ;;
+  ol:9) os "Oracle Linux Server" 9.6 ol "fedora" "Oracle Linux Server 9.6" "" ;;
+  centos-stream:10) os "CentOS Stream" 10 centos "rhel fedora" "CentOS Stream 10 (Coughlan)" "" ;;
+  *) echo "ОШИБКА: неизвестная ОС для эмуляции: $EMU"; exit 1 ;;
+esac
+echo "ЭМУЛЯЦИЯ: $(grep PRETTY_NAME /etc/os-release | cut -d'"' -f2) поверх $BASE"
+case "$EMU" in debian:*) exit 0 ;; esac
+# dnf/rpm → apt: имена пакетов RHEL заменяются ближайшими пакетами Ubuntu, EPEL пропускается
+cat >/usr/local/bin/emu-map <<'MAP'
+#!/bin/bash
+for p in "$@"; do case "$p" in
+  -*) ;;
+  epel-release|oracle-epel-release-el*|https://*|*.rpm) echo "эмуляция: $p пропущен" >&2 ;;
+  nginx-mod-stream) echo libnginx-mod-stream ;;
+  nginx-mod-modsecurity) echo libnginx-mod-http-modsecurity ;;
+  procps-ng) echo procps ;;
+  iproute) echo iproute2 ;;
+  python3) echo python3; echo python3-venv; echo python3-pip ;;
+  python3.11|python39) echo "эмуляция: $p недоступен" >&2; echo __missing__ ;;
+  *) echo "$p" ;;
+esac; done
+MAP
+cat >/usr/local/bin/dnf <<'DNF'
+#!/bin/bash
+echo "dnf $*" >>/root/emu-dnf.log
+cmd="$1"; shift
+case "$cmd" in
+  install|remove)
+    mapfile -t pk < <(/usr/local/bin/emu-map "$@" 2>>/root/emu-dnf.log)
+    for p in "${pk[@]}"; do [ "$p" = __missing__ ] && exit 1; done
+    [ ${#pk[@]} -eq 0 ] && exit 0
+    exec env DEBIAN_FRONTEND=noninteractive apt-get "$cmd" -y -q -o Dpkg::Options::=--force-confold "${pk[@]}" ;;
+  *) exit 0 ;;
+esac
+DNF
+cat >/usr/local/bin/rpm <<'RPM'
+#!/bin/bash
+[ "$1" = -q ] || exit 1
+shift
+for p in "$@"; do n="$(/usr/local/bin/emu-map "$p" 2>/dev/null | head -1)"; dpkg -s "${n:-$p}" >/dev/null 2>&1 || exit 1; done
+RPM
+chmod +x /usr/local/bin/emu-map /usr/local/bin/dnf /usr/local/bin/rpm
+EMUEOF
 
 cat >"$WORK/run.sh" <<'EOF'
 #!/bin/bash
@@ -34,8 +103,15 @@ if [ -f /t/ca.crt ]; then
   fi
   export PIP_CERT=$B REQUESTS_CA_BUNDLE=$B SSL_CERT_FILE=$B
 fi
+# прокси без обычного HTTP (только CONNECT): источники пакетов — по HTTPS
+if [ -n "${https_proxy:-}" ] && [ -d /etc/apt ]; then
+  sed -i 's#http://\([a-z.]*\.ubuntu\.com\)#https://\1#g; s#http://deb\.debian\.org#https://deb.debian.org#g' \
+    /etc/apt/sources.list /etc/apt/sources.list.d/*.sources 2>/dev/null
+  unset http_proxy
+fi
 if command -v apt-get >/dev/null; then apt-get update -qq >/dev/null && apt-get install -y -qq curl python3 >/dev/null
 elif command -v dnf >/dev/null; then dnf install -y -q curl python3 tar gzip >/dev/null; fi
+bash /t/emu.sh || exit 1
 login() { curl -s -c /tmp/c -H 'Content-Type: application/json' \
   -d '{"username":"admin","password":"Admin12345!"}' http://127.0.0.1:8088/api/auth/login >/dev/null; }
 if [ -f /t/old.tar.gz ]; then
@@ -65,6 +141,7 @@ if [ -f /t/old.tar.gz ]; then
 fi
 echo "nginx -t: $(nginx -t 2>&1 | grep -c '\[warn\]') предупреждений"
 /usr/local/bin/nmctl diag -p 2>&1 | grep -E "^\s+!|✗|Итого"
+if [ -s /root/emu-dnf.log ]; then echo "вызовы dnf (эмуляция):"; sed 's/^/  /' /root/emu-dnf.log | sort -u | head -20; fi
 /opt/nginx-manager/uninstall.sh -y >/root/uninstall.log 2>&1 || { tail -20 /root/uninstall.log; fail "удаление"; }
 grep -E "✓|!|      " /root/uninstall.log | head -12
 [ ! -d /opt/nginx-manager ] || fail "каталог программы не удалён"

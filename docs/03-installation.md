@@ -29,8 +29,22 @@
 | Ubuntu 26.04 LTS | 1.28 | 3.14 | проверено обновление 2.4.0 → текущая версия |
 | Ubuntu 26.10 | 1.30 | 3.14 | coreutils на Rust (uutils): установщик не использует ключи, которых там нет (`df -m`) |
 
-Debian, RHEL-совместимые и Fedora поддерживаются тем же установщиком (пакеты `apt` и `dnf`), но на стенде их
-проверить не удалось — зеркала этих дистрибутивов были недоступны; проверьте свою ОС сценарием ниже. Если исходный
+Debian, RHEL-совместимые и Fedora поддерживаются тем же установщиком (пакеты `apt` и `dnf`), но на настоящих
+системах на стенде их проверить не удалось — зеркала этих дистрибутивов недоступны из сети стенда. Вместо этого
+ветки установщика для них прогоняются **в эмуляции** (`tools/install_test.sh --emulate …`): образ Ubuntu 24.04 с
+`/etc/os-release` нужной ОС, а для RHEL-совместимых — с командами `dnf` и `rpm`, которые ставят ближайшие пакеты
+Ubuntu. Так проверяются выбор пакетного менеджера, подключение EPEL, имена пакетов (`nginx-mod-stream`, `iproute`,
+`procps-ng`), срок поддержки ОС, установка, создание сайта, диагностика и удаление; сами сборки nginx и Python
+остаются Ubuntu — это не замена проверки на настоящей системе.
+
+| Эмуляция | Результат | Что проверено сверх Ubuntu |
+|---|---|---|
+| Rocky Linux 9.6 | установка → сайт 200 → удаление | ветка `dnf`: EPEL (`epel-release`), пакеты `nginx openssl curl ca-certificates logrotate python3 iproute procps-ng`, `nginx-mod-stream`, `certbot`; срок поддержки «до 31 мая 2032» |
+| AlmaLinux 10.0 | установка → сайт 200 → удаление | то же для EL10; «до 31 мая 2035» |
+| Debian 12 | установка → сайт 200 → удаление | ветка `apt` с `ID=debian`; «до 30 июня 2028 (Debian LTS)» |
+| Debian 13 | установка → сайт 200 → удаление | «до 30 июня 2030» |
+
+Проверьте свою ОС сценарием ниже на машине, откуда доступны её зеркала. Если исходный
 `nginx.conf` не проходит `nginx -t` (например, сайт по умолчанию слушает `[::]:80`, а IPv6 на сервере выключен),
 удаление оставляет конфигурацию панели и показывает ошибку nginx.
 
@@ -82,14 +96,17 @@ tools/install_test.sh ubuntu:24.04 nginx-manager-2.3.0.tar.gz      # стара�
 ```
 
 За прокси с перехватом TLS передайте его сертификат: `NM_TEST_CA=/path/proxy-ca.crt tools/install_test.sh …`.
+Эмуляция другой ОС на образе Ubuntu (`NM_TEST_IMAGE`, по умолчанию `nm-test/noble:prep`):
+`tools/install_test.sh --emulate rocky:9` (варианты: `debian:12`, `debian:13`, `rocky:9`, `rocky:10`,
+`almalinux:9`, `almalinux:10`, `rhel:9`, `ol:9`, `centos-stream:10`).
 
 ## Установка
 
 ```bash
 # 1. Скопируйте архив на сервер и распакуйте
-scp nginx-manager-2.6.0.tar.gz root@server:/root/
+scp nginx-manager-2.7.0.tar.gz root@server:/root/
 ssh root@server
-tar xzf nginx-manager-2.6.0.tar.gz && cd nginx-manager-2.6.0
+tar xzf nginx-manager-2.7.0.tar.gz && cd nginx-manager-2.7.0
 
 # 2. Запустите установку
 sudo ./install.sh
@@ -233,10 +250,10 @@ sudo ./install.sh --wheels /root/nginx-manager/wheels
 ## Обновление
 
 ```bash
-tar xzf nginx-manager-2.6.0.tar.gz
-sudo ./nginx-manager-2.6.0/update.sh --yes
+tar xzf nginx-manager-2.7.0.tar.gz
+sudo ./nginx-manager-2.7.0/update.sh --yes
 # или из архива напрямую:
-sudo /opt/nginx-manager/update.sh --archive /root/nginx-manager-2.6.0.tar.gz
+sudo /opt/nginx-manager/update.sh --archive /root/nginx-manager-2.7.0.tar.gz
 ```
 
 Порядок работы `update.sh`:

@@ -115,6 +115,10 @@ def render(app) -> str:
     o.metric("nm_http_cache_responses_total", "counter", "Ответов по статусу кэша ($upstream_cache_status)", cache)
     o.metric("nm_http_banned_requests_total", "counter", "Отклонено запросов с заблокированных IP", banned)
     o.metric("nm_http_geo_blocked_requests_total", "counter", "Отклонено запросов правилами доступа по странам", geo)
+    o.metric("nm_http_ipaccess_denied_requests_total", "counter",
+             "Отказано «Доступом по IP» (сайт только с разрешённых адресов; с паролем — запросы без входа)",
+             [({"site_id": sid, "site": names.get(sid, f"#{sid}")}, n)
+              for sid, n in sorted(getattr(agg, "ipdeny_total", {}).items())])
     o.metric("nm_http_request_duration_seconds", "histogram", "Время обработки запроса ($request_time)", [],
              hist_samples)
 

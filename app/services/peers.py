@@ -70,6 +70,7 @@ class PeerSync:
         self.db = app.db
         self.dirty = True
         self.last_push = 0.0
+        self.last_sites = 0.0
         self.task: Optional[asyncio.Task] = None
 
     # ---------------------------------------------------------------- состояние
@@ -181,6 +182,68 @@ class PeerSync:
         self.db.event("info", "peers", f"Сайты отправлены на сервер «{peer.name}»: {len(payload['sites'])}, "
                       f"сертификатов {len(payload['certs'])}")
         return {"ok": True, "sent": len(payload["sites"]), "certs_sent": len(payload["certs"]), **(d or {})}
+
+    # ---------------------------------------------------------------- синхронизация сайтов
+    def push_sites_to(self, peer, last: Dict[str, Any]) -> Dict[str, Any]:
+        """Отправить сайты последней применённой версии (mirror): получатель создаёт, обновляет и удаляет их и
+        применяет конфигурацию. Сертификаты — только новые и продлённые."""
+        from ..nginx.generator import State
+        from . import transfer as TF
+        state = State.from_json(json.loads(last["state"]))
+        known = (self.db.kv_get(TF.OUT_KV, {}) or {}).get(peer.id, {})
+        payload = TF.build_mirror(self.db, state, (peer.sites_tag or "").strip(), known)
+        body = {"origin": self.origin(), **payload, "mirror": True, "apply": True, "version": last["id"]}
+        code, d = call(peer, "POST", "/sync/sites", body, self.app.panel().peers_verify_tls, timeout=180)
+        if code == 404:
+            raise ValueError("на сервере старая версия Nginx Manager (синхронизация сайтов — с версии 2.7)")
+        if code != 200:
+            raise ValueError(_err(code, d))
+        TF.remember(self.db, peer.id, [c for c in payload["certs"] if not c.get("known")])
+        missing = ((d or {}).get("certs") or {}).get("missing") or []
+        if missing:  # на получателе сертификат удалили — в следующий раз отправим целиком
+            st = self.db.kv_get(TF.OUT_KV, {}) or {}
+            for m in missing:
+                (st.get(peer.id) or {}).pop(str(m), None)
+            self.db.kv_set(TF.OUT_KV, st)
+        return {"sent": len(payload["sites"]), "certs_sent": sum(1 for c in payload["certs"] if not c.get("known")),
+                "missing": missing, **(d or {})}
+
+    def sites_tick(self) -> Dict[str, Any]:
+        """Новая применённая версия → сайты на серверы с включённой синхронизацией (неудача — повтор через минуту)."""
+        peers = [p for p in self.peers() if getattr(p, "sites", False)]
+        if not peers:
+            return {}
+        last = self.app.nginx.last_applied()
+        if not last:
+            return {}
+        res: Dict[str, Any] = {}
+        now = time.time()
+        for peer in peers:
+            ps = self.status().get(peer.id) or {}
+            if ps.get("sites_version") == last["id"] and ps.get("sites_tag") == peer.sites_tag:
+                continue
+            if not ps.get("sites_ok", True) and ps.get("sites_tried_version") == last["id"] and \
+                    now - (ps.get("sites_tried") or 0) < 60:
+                continue
+            try:
+                r = self.push_sites_to(peer, last)
+                s = r.get("sites") or {}
+                # доставлено; если получатель не применил (у него свои неприменённые правки) — пометка, без повтора:
+                # сайты уже в его базе и применятся вместе с его изменениями
+                self._set(peer.id, sites_ok=True, sites_version=None if r.get("missing") else last["id"],
+                          sites_tag=peer.sites_tag, sites_at=now, sites_error="",
+                          sites_note=str(r.get("apply_error") or "")[:300], sites_sent=r["sent"],
+                          sites_result={k: s.get(k, 0) for k in ("created", "updated", "deleted", "unchanged",
+                                                                 "skipped")},
+                          sites_applied=r.get("applied"), sites_tried_version=last["id"], sites_tried=now)
+                res[peer.id] = {"ok": True, **r}
+            except Exception as e:  # noqa: BLE001
+                msg = str(e)[:300] if isinstance(e, ValueError) else f"нет связи: {e}"[:300]
+                if ps.get("sites_ok", True) or ps.get("sites_error") != msg:
+                    self.db.event("warning", "peers", f"Сервер «{peer.name}»: сайты не синхронизированы — {msg}")
+                self._set(peer.id, sites_ok=False, sites_error=msg, sites_tried=now, sites_tried_version=last["id"])
+                res[peer.id] = {"ok": False, "error": msg}
+        return res
 
     def push_cert(self, cid: int) -> Dict[str, Any]:
         """Продлённый сертификат — на серверы, куда он раньше переносился вместе с сайтами."""
@@ -299,6 +362,9 @@ class PeerSync:
                                      time.time() - self.last_push > INTERVAL):
                     self.dirty = False
                     await asyncio.to_thread(self.push_bans)
+                if time.time() - self.last_sites > 5:
+                    self.last_sites = time.time()
+                    await asyncio.to_thread(self.sites_tick)
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001

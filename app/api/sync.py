@@ -129,15 +129,20 @@ async def peers_status(request: Request, user=Depends(viewer)):
     out = []
     for peer in app.panel().peers:
         out.append({"id": peer.id, "name": peer.name, "url": peer.url, "enabled": peer.enabled, "bans": peer.bans,
-                    "protection": peer.protection, "trusted": peer.trusted, **(st.get(peer.id) or {})})
+                    "protection": peer.protection, "trusted": peer.trusted, "sites": peer.sites,
+                    "sites_tag": peer.sites_tag, **(st.get(peer.id) or {})})
     incoming = app.db.kv_get("peers_incoming", {}) or {}
     counts = {r["source"]: r["n"] for r in app.db.query("SELECT source, COUNT(*) AS n FROM bans WHERE source LIKE "
                                                          "'sync:%' GROUP BY source")}
     from ..services.trusted import by_peer
     tr = {x["id"]: len(x["entries"]) for x in by_peer(app.db)}
     inc = [{"id": k, **v, "active": counts.get(f"sync:{k}", 0), "trusted": tr.get(k, 0)} for k, v in incoming.items()]
+    mk = app.db.kv_get("synced_sites", {}) or {}
+    mirrors = [{"id": k, "name": v.get("name") or k, "sites": len(v.get("map") or {}), "at": v.get("at")}
+               for k, v in mk.items()]
     return {"peers": out, "incoming": inc, "me": app.peers.origin(), "accept_trusted": app.panel().peers_accept_trusted,
-            "transfers": app.db.kv_get("transfers_in", []) or []}
+            "transfers": app.db.kv_get("transfers_in", []) or [], "mirrors": mirrors,
+            "last_version": (app.nginx.last_applied() or {}).get("id")}
 
 
 @router.post("/peers/{pid}/test")
@@ -159,8 +164,12 @@ async def peers_push(request: Request, body: Dict[str, Any] = Body(...), user=De
         res = await asyncio.to_thread(app.peers.push_bans)
     elif what == "protection":
         res = await asyncio.to_thread(app.peers.push_protection, body.get("peer"))
+    elif what == "sites":  # синхронизировать сайты заново (сброс отметки отправленной версии)
+        for peer in app.panel().peers:
+            app.peers._set(peer.id, sites_version=None, sites_tried_version=None)
+        res = await asyncio.to_thread(app.peers.sites_tick)
     else:
-        raise HTTPException(400, "what: bans или protection")
+        raise HTTPException(400, "what: bans, protection или sites")
     audit(request, user, "peers_push", what)
     return {"results": res}
 
@@ -183,25 +192,29 @@ async def sync_sites(request: Request, body: Dict[str, Any] = Body(...), user=De
     if not isinstance(sites, list) or not isinstance(certs, list):
         raise HTTPException(400, "sites и certs — списки")
     want_apply = bool(body.get("apply"))
-    pending_before = bool(sites) and want_apply and bool(app.pending().get("pending"))
+    mirror = bool(body.get("mirror"))
+    if mirror and not app.panel().peers_accept_sites:
+        raise HTTPException(403, "Приём синхронизации сайтов выключен на этом сервере (Настройки панели → Другие серверы)")
+    pending_before = (bool(sites) or mirror) and want_apply and bool(app.pending().get("pending"))
     res: Dict[str, Any] = {"name": app.peers.origin()["name"]}
-    overwrite = bool(body.get("overwrite"))
-    if sites:  # сертификаты — только для сайтов, которые будут созданы или обновлены
+    overwrite = bool(body.get("overwrite")) or mirror
+    if sites or mirror:  # сертификаты — только для сайтов, которые будут созданы или обновлены
         only = await asyncio.to_thread(TF.needed_certs, app, sites, overwrite)
         res["certs"] = await asyncio.to_thread(TF.receive_certs, app, origin, certs, user["username"], only)
+        res["sites"] = await asyncio.to_thread(TF.receive_sites, app, origin, sites, res["certs"]["map"],
+                                               overwrite, user["username"], mirror)
     else:  # только сертификаты: продление на источнике — обновляем уже перенесённые
         res["certs"] = await asyncio.to_thread(TF.receive_certs, app, origin, certs, user["username"], None, False)
-    if sites:
-        res["sites"] = await asyncio.to_thread(TF.receive_sites, app, origin, sites, res["certs"]["map"],
-                                               overwrite, user["username"])
     app.touch()
-    changed = res.get("sites", {}).get("created", 0) + res.get("sites", {}).get("updated", 0)
+    changed = sum(res.get("sites", {}).get(k, 0) for k in ("created", "updated", "deleted")) + \
+        (len(res["certs"]["changed_ids"]) if mirror else 0)
     if changed and want_apply:
         if pending_before:
             res["apply_error"] = "на этом сервере есть неприменённые изменения — примените конфигурацию вручную"
         else:
             try:
-                r = await app.apply(user["username"], f"Перенос сайтов с сервера «{origin['name']}»", "transfer")
+                r = await app.apply(user["username"], f"{'Синхронизация' if mirror else 'Перенос'} сайтов с сервера "
+                                    f"«{origin['name']}»", "transfer")
                 res["applied"] = r.get("version")
             except ApplyError as e:
                 res["apply_error"] = str(e)[:500]
@@ -210,6 +223,8 @@ async def sync_sites(request: Request, body: Dict[str, Any] = Body(...), user=De
         for cid in res["certs"]["changed_ids"]:
             await app.after_cert_issued(cid)
     res["certs"].pop("map", None)
+    if mirror and not changed:
+        return res  # синхронизация без изменений — не засоряем журнал событий
     TF.log_incoming(app.db, origin, res, user["username"])
     s_ = res.get("sites") or {}
     c_ = res["certs"]

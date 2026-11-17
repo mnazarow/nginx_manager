@@ -101,6 +101,8 @@ class App:
         self.protection = ProtectionService(self)
         from .services.geoupdate import GeoUpdater
         self.geoupdate = GeoUpdater(self)
+        from .services.access_links import GrantSync
+        self.grants = GrantSync(self)
         self.stats.agg.protection = self.protection
         self.alerts.site_name = self._site_name
         self.clients: Set[WSClient] = set()
@@ -210,6 +212,10 @@ class App:
             await self.protection.sync_attack_file()
         except Exception:  # noqa: BLE001
             log.exception("защита: не удалось обновить файл режима «Под атакой»")
+        try:  # доступ по ссылке мог истечь, пока панель не работала
+            await self.grants.sync()
+        except Exception:  # noqa: BLE001
+            log.exception("не удалось обновить файл доступа по ссылкам")
         self.db.event("info", "panel", f"Nginx Manager {VERSION} запущен")
 
     async def stop(self) -> None:
@@ -344,6 +350,8 @@ class App:
             self.touch()
             self.db.event("info", "access", f"Истёк временный доступ: {', '.join(gone[:10])}"
                           + (f" и ещё {len(gone) - 10}" if len(gone) > 10 else ""))
+        # доступ по ссылке: истёкшие адреса убираются из ip-grants.conf (без новой версии конфигурации)
+        await self.grants.sync()
         last = self.nginx.last_applied()
         if not last or self.nginx.lock.locked():
             return None
@@ -419,6 +427,19 @@ class App:
                 if f["level"] == "crit")[:1500]
         if m in ("attacks_blocked", "under_attack", "vuln_attempts"):
             return self.protection.alert_metric(m, site, rule.window)
+        if m == "ipaccess_denied":
+            start = int((time.time() - rule.window) // 60) * 60
+            q, args = "SELECT ip, SUM(n) AS n FROM ipdeny_minute WHERE ts>=?", [start]
+            if site != "*":
+                q += " AND site=?"
+                args.append(str(site))
+            by: Dict[str, int] = {r["ip"]: r["n"] for r in self.db.query(q + " GROUP BY ip", tuple(args))}
+            for (ts, s_, ip), v in list(getattr(self.stats.agg, "ipdeny", {}).items()):  # ещё не записанные минуты
+                if ts >= start and (site == "*" or s_ == str(site)):
+                    by[ip] = by.get(ip, 0) + v[0]
+            minutes = max(1.0, (time.time() - start) / 60)
+            top = sorted(by.items(), key=lambda x: -x[1])[:5]
+            return round(sum(by.values()) / minutes, 2), ", ".join(f"{ip}: {n}" for ip, n in top)
         if m == "autobans":
             n = self.db.scalar("SELECT COUNT(*) FROM events WHERE source='bans' AND ts>=? AND message LIKE "
                                "'Автоблокировка%'", (time.time() - rule.window,))

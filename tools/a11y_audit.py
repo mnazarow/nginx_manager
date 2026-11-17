@@ -103,7 +103,17 @@ async def theme_run(browser, a, axe, theme, out):
             await btn.click()
             try:
                 await page.wait_for_selector(".modal #nm-temp-addr", timeout=10000)
+                await page.wait_for_timeout(500)
                 await check(page, axe, f"{theme}: окно «Временный доступ»", out)
+            finally:
+                await page.keyboard.press("Escape")
+        btn = page.locator(".ipa-tools button", has_text="Ссылка для доступа")
+        if await btn.count():
+            await btn.click()
+            try:
+                await page.wait_for_selector(".modal #nm-link-cmt", timeout=10000)
+                await page.wait_for_timeout(500)  # окно появляется с анимацией прозрачности
+                await check(page, axe, f"{theme}: окно «Ссылка для доступа»", out)
             finally:
                 await page.keyboard.press("Escape")
         print(f"{theme}: site ip_access", flush=True)

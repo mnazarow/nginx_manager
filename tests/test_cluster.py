@@ -23,14 +23,14 @@ from tests.test_collector import line
 TMP = Path(os.environ["NM_TEST_TMP"]) / "cluster"
 
 
-def _gen(sites, panel=None):
+def _gen(sites, panel=None, **paths):
     from app.nginx.manager import NginxManager
     TMP.mkdir(parents=True, exist_ok=True)
     caps = NginxManager(Database(TMP / "t.db")).caps()
     st = State(sites=sites, streams=[], glob=GlobalSettings(), panel=panel or PanelSettings(), certs={},
                protection=ProtectionSettings())
     g = Generator(st, caps, Paths("/etc/nm", "/etc/nm", "/var/acme", "/var/log/nm", "/var/cache/nm", 18089, 8088,
-                                  str(TMP), bans_file="/etc/nm/bans.conf"))
+                                  str(TMP), **{"bans_file": "/etc/nm/bans.conf", **paths}))
     return g, g.render()
 
 

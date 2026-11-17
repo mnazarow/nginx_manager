@@ -115,6 +115,7 @@ class Paths:
     challenge_key: str = ""     # ключ, которым nginx подписывает запросы к панели за страницей проверки
     panel_host: str = "127.0.0.1"
     panel_scheme: str = "http"
+    grants_file: str = ""       # доступ по ссылке: адрес → «,номера сайтов,» для geo $nm_ipgrant
     bots_file: str = ""         # официальные адреса роботов для geo $nm_vbot
     bots_ua_file: str = ""      # User-Agent проверяемых роботов для map $nm_bot_claim
     vuln_file: str = ""         # пути эксплойтов известных уязвимостей для map $nm_vuln_raw
@@ -311,6 +312,13 @@ class Generator:
             c.d("default", "0")
             for gsid in self.geo_sites():
                 c.d(f'"{gsid}"', f"$nm_geo_{gsid}")
+        if self.ipacl_sites():
+            c.comment("Доступ по ссылке («Доступ по IP» сайта): адрес посетителя → «,номера сайтов,»; файл обновляет панель")
+            with c.block("geo $nm_ipgrant"):
+                c.d("default", '""')
+                if self.p.grants_file:
+                    c.d("include", self.p.grants_file)
+            c.d("limit_req_zone", "$binary_remote_addr", "zone=nm_ipalink:1m", "rate=20r/m")
         c.comment("1 — отказ «Доступа по IP» сайта, p — запрошен пароль (поле ia журнала доступа)")
         with c.block("map $nm_site $nm_ia"):
             c.d("default", "0")
@@ -681,6 +689,9 @@ class Generator:
         """Ключ зоны ограничений: доверенные адреса — пустой ключ (nginx их не считает)."""
         return "$nm_limit_key" if key == "$binary_remote_addr" and self.trusted() else key
 
+    def ipacl_sites(self) -> List[int]:
+        return [sid for sid, s in self.st.sites if s.enabled and s.ip_access.enabled]
+
     def ipacl_vars(self, c: Conf, sid: int, s: Site) -> None:
         """Доступ по IP: geo с разрешёнными адресами и map «отказать / пустить» с учётом открытых путей."""
         from ..models import LOOPBACK_NETS, PRIVATE_NETS
@@ -701,19 +712,51 @@ class Generator:
             c.d("default", "0")
             for n in nets:
                 c.d(n, "1")
+        with c.block(f"map $nm_ipgrant $nm_ipg_{sid}"):
+            c.d("default", "0")
+            c.d(f'"~,{sid},"', "1")  # доступ, выданный по ссылке (файл вне версий конфигурации)
         pw = a.deny == "password"
         allow_v, deny_v = ("off", quote(s.security.basic_auth_realm or "Restricted")) if pw else ("0", "1")
         var = f"$nm_ipauth_{sid}" if pw else f"$nm_ipdeny_{sid}"
-        with c.block(f'map "$nm_ipacl_{sid}:$uri" {var}'):
+        # ключ: «список» «ссылка»:путь — 1x: адрес в списке, 01: доступ по ссылке, 00: остальные
+        with c.block(f'map "$nm_ipacl_{sid}$nm_ipg_{sid}:$uri" {var}'):
             c.d("default", deny_v)
-            c.d('"~^1:"', allow_v)
-            c.d('"~^0:/\\.well-known/acme-challenge/"', allow_v)
+            c.d('"~^1"', allow_v)
+            c.d('"~^01:"', allow_v)
+            c.d('"~^00:/\\.well-known/acme-challenge/"', allow_v)
+            c.d(quote("~^00:" + re.escape(LINK_PREFIX + "/")), allow_v)
             for path in a.public_paths:
-                c.d(quote("~^0:" + re.escape(path)), allow_v)
+                c.d(quote("~^00:" + re.escape(path)), allow_v)
         if pw:
             with c.block(f"map $nm_ipauth_{sid} $nm_ipaw_{sid}"):
                 c.d("default", "p")
                 c.d("off", "0")
+
+    def ipacl_link_location(self, c: Conf, sid: int, s: Site) -> None:
+        """Ссылка «Временный доступ»: /.nm-access/<код> → страница панели (подтверждение и выдача доступа)."""
+        if not (s.ip_access.enabled and self.p.challenge_key):
+            return
+        host = f"[{self.p.panel_host}]" if ":" in self.p.panel_host else self.p.panel_host
+        c.line()
+        with c.block(f"location ^~ {LINK_PREFIX}/"):
+            c.d("limit_req", "zone=nm_ipalink", "burst=10", "nodelay")
+            c.d("client_max_body_size", "4k")
+            c.d("proxy_pass", f"{self.p.panel_scheme}://{host}:{self.p.panel_port}/access-link/")
+            c.d("proxy_set_header", "Host", "$host")
+            c.d("proxy_set_header", "X-Real-IP", "$remote_addr")
+            c.d("proxy_set_header", "X-Forwarded-For", '""')
+            c.d("proxy_set_header", "X-Forwarded-Proto", "$scheme")
+            c.d("proxy_set_header", "X-NM-Site", f'"{sid}"')
+            c.d("proxy_set_header", "X-NM-Key", quote(self.p.challenge_key))
+            c.d("proxy_set_header", "Cookie", '""')
+            if self.p.panel_scheme == "https":
+                c.d("proxy_ssl_verify", "off")
+            c.d("proxy_connect_timeout", "5s")
+            c.d("proxy_read_timeout", "30s")
+            c.d("auth_basic", "off")
+            c.d("add_header", "Cache-Control", '"no-store"', "always")
+            if self.pc.modsec_on():
+                c.d("modsecurity", "off")  # тело формы пустое; проверку кода выполняет панель
 
     def ipacl_check(self, c: Conf, sid: int, s: Site) -> None:
         a = s.ip_access
@@ -902,6 +945,7 @@ class Generator:
             if http:
                 self.acme_location(c)
             self.pc.locations(c, sid, s)
+            self.ipacl_link_location(c, sid, s)
             if sec.block_hidden_files:
                 with c.block("location ~ /\\.(?!well-known)"):
                     c.d("return", 404)
@@ -1208,6 +1252,8 @@ class Generator:
                 self.files[f"pages/maintenance-{sid}.html"] = page_html(
                     503, s.maintenance.title, s.maintenance.message, maintenance=True)
 
+
+from ..protection.nginx import LINK_PREFIX  # noqa: E402 — ссылки временного доступа («Доступ по IP»)
 
 LOG_FORMAT_HTTP = r"""log_format nm_json escape=json '{'
     '"t":"$msec","site":"$nm_site","host":"$host","ip":"$remote_addr",'

@@ -160,8 +160,10 @@ def build():
     p += [
         series("Отклонённые запросы", [
             target(f"sum(rate(nm_http_banned_requests_total{{{SITE}}}{RI}))", "заблокированные IP", "A"),
-            target(f"sum(rate(nm_http_geo_blocked_requests_total{{{SITE}}}{RI}))", "доступ по странам", "B")],
-            0, y, w=12, unit="reqps"),
+            target(f"sum(rate(nm_http_geo_blocked_requests_total{{{SITE}}}{RI}))", "доступ по странам", "B"),
+            target(f"sum(rate(nm_http_ipaccess_denied_requests_total{{{SITE}}}{RI}))", "доступ по IP", "C")],
+            0, y, w=12, unit="reqps",
+            desc="Отклонено nginx до бэкенда: блокировки IP, доступ по странам и «Доступ по IP» сайтов"),
         series("Блокировки IP", [target(f"sum by (source) (nm_bans_active{{{SEL}}})", "активные: {{source}}", "A"),
                                  target(f"max(nm_bans_suspicious{{{SEL}}})", "подозрительные", "B")],
                12, y, w=12, unit="short"),

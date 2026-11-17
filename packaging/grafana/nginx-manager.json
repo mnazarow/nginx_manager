@@ -1268,7 +1268,7 @@
       "id": 20,
       "type": "timeseries",
       "title": "Отклонённые запросы",
-      "description": "",
+      "description": "Отклонено nginx до бэкенда: блокировки IP, доступ по странам и «Доступ по IP» сайтов",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1336,6 +1336,18 @@
           "expr": "sum(rate(nm_http_geo_blocked_requests_total{instance=~\"$instance\",site=~\"$site\"}[$__rate_interval]))",
           "legendFormat": "доступ по странам",
           "refId": "B",
+          "range": true,
+          "instant": false,
+          "format": "time_series"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(nm_http_ipaccess_denied_requests_total{instance=~\"$instance\",site=~\"$site\"}[$__rate_interval]))",
+          "legendFormat": "доступ по IP",
+          "refId": "C",
           "range": true,
           "instant": false,
           "format": "time_series"

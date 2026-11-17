@@ -25,6 +25,7 @@ from ..models import CustomRule, ProtectionSettings, RateRule, Site
 from . import rules as W
 
 CHALLENGE_PREFIX = "/.nm-challenge"
+LINK_PREFIX = "/.nm-access"  # ссылки временного доступа раздела сайта «Доступ по IP» (страница панели)
 FIELD_VARS = {"uri": "$request_uri", "path": "$uri", "args": "$args", "ua": "$http_user_agent",
               "referer": "$http_referer", "cookie": "$http_cookie", "host": "$host", "method": "$request_method"}
 
@@ -327,16 +328,18 @@ class ProtectionConf:
             sp = s.protection
             if not sp.enabled:
                 continue
-            if sp.waf_exclude_paths:
+            if self.waf_excluded(s):
                 a(f"map $uri $nm_wx_{sid} {{")
                 a('    default "";')
-                for pth in sp.waf_exclude_paths:
+                # страница ссылки временного доступа: только проверка кода в панели (с ограничением частоты)
+                for pth in list(sp.waf_exclude_paths) + ([LINK_PREFIX + "/"] if s.ip_access.enabled else []):
                     a(f"    {path_key(pth)} \"x\";")
                 a("}")
             if sp.challenge != "off":
                 a(f"map $uri $nm_cx_{sid} {{")
                 a('    default "";')
                 for pth in [CHALLENGE_PREFIX + "/", "/.well-known/acme-challenge/"] + \
+                        ([LINK_PREFIX + "/"] if s.ip_access.enabled else []) + \
                         list(self.prot.challenge_exempt_paths) + list(sp.challenge_exclude_paths):
                     a(f"    {path_key(pth)} \"x\";")
                 a("}")
@@ -487,7 +490,7 @@ class ProtectionConf:
             pat = "^[a-z_]+/(?:" + "|".join(re.escape(x) for x in sp.waf_disabled_rules) + ")$"
             with c.block(f"if ($nm_waf ~ {W.nginx_quote(pat)})"):
                 c.d("set", "$nm_wact", '"off"')
-        wx = f"$nm_wx_{sid}" if sp.waf_exclude_paths else ""
+        wx = f"$nm_wx_{sid}" if self.waf_excluded(s) else ""
         c.d("set", "$nm_wchk", f'"$nm_pa{wx}$nm_wact"')
         with c.block('if ($nm_wchk = "block")'):
             c.d("return", self.deny_code(s, self.prot.block_status))
@@ -560,6 +563,10 @@ class ProtectionConf:
                 c.d("auth_basic", "off")
                 c.d("add_header", "Cache-Control", '"no-store"', "always")
                 c.d("return", 403, blocked_body())
+
+    @staticmethod
+    def waf_excluded(s: Site) -> bool:
+        return bool(s.protection.waf_exclude_paths) or s.ip_access.enabled
 
     def block_page(self, s: Site) -> bool:
         """Страница «Доступ запрещён» в этом server: защита включена, ответ 403, своей страницы 403 у сайта нет."""

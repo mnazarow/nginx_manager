@@ -44,7 +44,7 @@ SCROLL = {"protection-intel": ("#/protection?tab=threats", "Обмен данн�
           "system-os": ("#/system", "Сборка nginx", 4000)}
 SCENES = {"protection-ip", "protection-rule", "protection-ratelimit", "protection-vuln", "protection-ip-network",
           "alerts-channels", "protection-vuln-installed", "protection-tech-wp", "trusted", "site-ip-access",
-          "site-ip-denials", "ip-temp-access", "peers-transfer",
+          "site-ip-denials", "ip-temp-access", "peers-transfer", "ip-link", "site-ip-links",
           *SCROLL, "geo-site", "sites-bulk", "backup-s3", "backup-restore"}  # снимки с действиями: --only geo-site,sites-bulk или --extras
 
 
@@ -213,7 +213,7 @@ async def scenes(page, a, only):
         await page.wait_for_timeout(500)
         await page.screenshot(path=f"{a.out}/site-ip-access.png")
         print("site-ip-access: ok")
-    if not only or "site-ip-denials" in only or "ip-temp-access" in only:
+    if not only or "site-ip-denials" in only or "ip-temp-access" in only or "ip-link" in only or "site-ip-links" in only:
         sid = await page.evaluate("""async () => { const r = await fetch('/api/sites'); const d = await r.json();
             const s = d.find(x => x.ip_access); return s ? s.id : (d[0] || {}).id; }""")
         await page.goto(f"{a.url}/#/sites?edit={sid}&tab=ip_access")
@@ -226,6 +226,28 @@ async def scenes(page, a, only):
             await page.wait_for_timeout(800)
             await page.screenshot(path=f"{a.out}/site-ip-denials.png")
             print("site-ip-denials: ok")
+        if not only or "site-ip-links" in only:
+            # карточка «Ссылки для доступа»: открытый по ссылке доступ и действующие ссылки
+            await page.evaluate("""() => { const h = [...document.querySelectorAll('.card h2')]
+                .find(x => x.textContent.includes('Ссылки для доступа')); h.scrollIntoView({block: 'start'});
+                window.scrollBy(0, -80); }""")
+            await page.wait_for_timeout(600)
+            await page.screenshot(path=f"{a.out}/site-ip-links.png")
+            print("site-ip-links: ok")
+        if not only or "ip-link" in only:
+            # окно «Ссылка для доступа» после создания ссылки (адрес и QR-код)
+            await page.evaluate("window.scrollTo(0, 0)")
+            await page.locator(".ipa-tools button", has_text="Ссылка для доступа").click()
+            await page.wait_for_selector(".modal #nm-link-cmt", timeout=10000)
+            await page.select_option("#nm-link-hours", "24")
+            await page.select_option("#nm-link-valid", "72")
+            await page.fill("#nm-link-cmt", "Аудитор (проверка документации)")
+            await page.locator(".modal button", has_text="Создать ссылку").click()
+            await page.wait_for_selector(".modal .qr", timeout=10000)
+            await page.wait_for_timeout(400)
+            await page.screenshot(path=f"{a.out}/ip-link.png")
+            await page.keyboard.press("Escape")
+            print("ip-link: ok")
         if not only or "ip-temp-access" in only:
             await page.evaluate("window.scrollTo(0, 0)")
             await page.locator(".ipa-tools button", has_text="Временный доступ").click()
