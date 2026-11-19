@@ -119,23 +119,62 @@ function settingsCard(onDone) {
         if (onDone) onDone();
       } catch (e) { toast(e.data?.detail || e.message, 'bad'); } finally { run.disabled = false; }
     } }, icon('upload'), 'Отправить сейчас');
+    const verifyBtn = h('button', { class: 'btn sm', type: 'button', title: 'Открыть последнюю копию на сервере и во внешних хранилищах паролем копий и проверить содержимое', onclick: async () => {
+      verifyBtn.disabled = true;
+      try {
+        const r = await api('/backup/settings/verify', { method: 'POST' });
+        toast(r.ok ? 'Копии настроек открываются, содержимое в порядке' : `Проблемы: ${r.items.filter(x => !x.ok).map(x => x.where + ': ' + x.problems.join('; ')).join(' · ')}`, r.ok ? 'good' : 'bad');
+        drawJob(await api('/backup/settings/job'));
+      } catch (e) { toast(e.data?.detail || e.message, 'bad'); } finally { verifyBtn.disabled = false; }
+    } }, icon('check'), 'Проверить копии');
     mount(job, h('div', { class: 'sub-h', style: { margin: '6px 0 4px', fontWeight: 600 } }, 'По расписанию'),
       h('div', { class: 'muted' }, j.hours ? `каждые ${j.hours} ч${j.only_changed ? ', если настройки изменились' : ''}` : 'вместе с ежедневной копией базы',
         j.targets.length ? ` → ${j.targets.map(t => t.name).join(', ')}` : ' — во внешние места не отправляется'),
+      j.verify ? h('div', { class: j.verify.ok ? 'muted' : 'bad-text' }, `проверка ${fmtAgo(j.verify.at)}: `,
+        j.verify.ok ? j.verify.items.map(x => `${x.where} — открывается`).join('; ')
+          : j.verify.items.filter(x => !x.ok).map(x => `${x.where}: ${x.problems.join('; ')}`).join('; ')) : null,
       last ? h('div', { class: bad.length || last.ok === false ? 'bad-text' : 'muted' },
         `последняя: ${fmtAgo(last.at)}${last.name ? ' — ' + last.name : ''}`,
         bad.length ? ` — ошибки: ${bad.map(([k, v]) => (v.name || k) + ': ' + v.error).join('; ')}` : last.error ? ` — ${last.error}` : '') : null,
-      h('div', { class: 'row', style: { gap: '8px', marginTop: '6px', flexWrap: 'wrap' } }, run,
+      h('div', { class: 'row', style: { gap: '8px', marginTop: '6px', flexWrap: 'wrap' } }, run, verifyBtn,
         j.targets.some(t => t.id === 's3_second') ? h('button', { class: 'btn sm', type: 'button', onclick: async () => {
           const r = await api('/backup/settings/s3-check', { method: 'POST' });
           toast(r.ok ? `Второе хранилище: ${r.steps.join(', ')}` : `Второе хранилище недоступно: ${r.error}`, r.ok ? 'good' : 'bad');
         } }, icon('check'), 'Проверить второе хранилище') : null,
+        j.targets.some(t => t.id === 's3_second') ? h('button', { class: 'btn sm', type: 'button', onclick: () => secondStorageDlg(onDone) }, icon('history'), 'Копии во втором хранилище…') : null,
         h('a', { class: 'btn sm ghost', href: '#/settings?tab=sbackup' }, 'Настроить')));
   };
   api('/backup/settings/job', { silent: true }).then(drawJob).catch(() => {});
   return card('Копия всех настроек', h('div', { class: 'col' },
     h('div', { class: 'small ink2' }, 'Один файл со всеми настройками: сайты и потоки, сертификаты с ключами и данными certbot, учётные записи DNS, настройки nginx, панели и защиты от атак, оповещения, пользователи с 2FA и API-токены, ручные блокировки. Без статистики и журналов — файл небольшой.'),
     h('div', { class: 'field' }, h('label', { for: 'nm-sb-pass' }, 'Пароль для шифрования (рекомендуется)'), pass), note, btn, job));
+}
+
+/** Копии настроек во втором S3-хранилище: скачать на сервер и сразу восстановить. */
+async function secondStorageDlg(onDone) {
+  const body = h('div', {}, loading());
+  const m = modal({ title: 'Копии настроек во втором хранилище', size: 'lg', body, footer: [h('button', { class: 'btn', onclick: () => m.close() }, 'Закрыть')] });
+  let d;
+  try { d = await api('/backup/settings/s3', { silent: true }); } catch (e) { mount(body, h('div', { class: 'alert bad' }, e.data?.detail || e.message)); return; }
+  mount(body,
+    h('p', { class: 'small muted' }, `Бакет ${d.bucket}, префикс ${d.prefix || '—'}. «Восстановить…» скачивает копию в каталог копий сервера и открывает окно восстановления (пароль — пароль копий настроек).`),
+    d.items.length ? table([
+      { title: 'Файл', render: (x) => h('span', { class: 'mono small', style: { wordBreak: 'break-all' } }, x.name) },
+      { title: 'Размер', num: true, render: (x) => fmtBytes(x.size) },
+      { title: 'Изменён', render: (x) => x.modified ? fmtDate(Date.parse(x.modified) / 1000) : '—' },
+      { title: '', srTitle: 'Действия', render: (x) => {
+        const b = h('button', { class: 'btn sm', type: 'button', onclick: async () => {
+          b.disabled = true;
+          try {
+            const r = await api('/backup/settings/s3/download', { method: 'POST', body: { name: x.name } });
+            m.close();
+            if (onDone) onDone();
+            restoreSettingsDlg(r.name, r.encrypted, onDone);
+          } catch (e) { toast(e.data?.detail || e.message, 'bad'); b.disabled = false; }
+        } }, icon('history'), 'Восстановить…');
+        return b;
+      } },
+    ], d.items) : h('div', { class: 'empty' }, 'Копий настроек в хранилище нет'));
 }
 
 /** Окно восстановления настроек из копии: пароль (если зашифрована), проверка, выбор разделов, восстановление. */

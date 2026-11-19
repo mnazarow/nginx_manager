@@ -162,6 +162,16 @@ async def theme_run(browser, a, axe, theme, out):
             await check(page, axe, f"{theme}: окно восстановления настроек", out)
         finally:
             await page.keyboard.press("Escape")
+    # окно «Копии настроек во втором хранилище»
+    sec = page.locator("button", has_text="Копии во втором хранилище")
+    if await sec.count():
+        await sec.first.click()
+        try:
+            await page.wait_for_selector(".modal table.t, .modal .alert, .modal .empty", timeout=15000)
+            await page.wait_for_timeout(400)
+            await check(page, axe, f"{theme}: окно «Копии во втором хранилище»", out)
+        finally:
+            await page.keyboard.press("Escape")
     # каналы уведомлений и окно канала Telegram (кнопки действий, список разрешённых пользователей)
     await page.goto(f"{a.url}/#/alerts")
     await page.wait_for_timeout(1500)

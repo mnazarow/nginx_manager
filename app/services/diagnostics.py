@@ -1194,6 +1194,19 @@ class Diagnostics:
                 res.append(R("backup_s3_enc", g, "Шифрование копий в хранилище", INFO, "выключено",
                              hint="В копиях есть секреты (токены каналов и DNS, ключи сертификатов, хеши паролей). "
                                   "Задайте пароль шифрования, если хранилищем пользуется кто-то ещё."))
+        from . import settings_job as SJ
+        ver = self.app.db.kv_get(SJ.KV_VERIFY) or {}
+        if ver and not ver.get("ok"):
+            bad = [x for x in ver.get("items", []) if not x.get("ok")]
+            res.append(R("backup_settings_verify", g, "Проверка копий настроек", FAIL,
+                         "; ".join(f"{x['where']}: {'; '.join(x.get('problems') or [])}" for x in bad)[:400],
+                         hint="Из такой копии сервер не восстановить. Проверьте пароль копий настроек («Настройки "
+                              "панели → Копия настроек»), сделайте новую копию («Отправить сейчас») и проверьте её "
+                              "кнопкой «Проверить копии» на странице «Копии и импорт»."))
+        elif ver:
+            age = (now - float(ver.get("at") or 0)) / 86400
+            res.append(R("backup_settings_verify", g, "Проверка копий настроек", OK if age < 15 else INFO,
+                         f"{age:.0f} дн. назад: " + "; ".join(f"{x['where']} — открывается" for x in ver["items"])))
         from .backup import RESTORE_LAST, _read_json, restore_pending
         pend = restore_pending()
         if pend is not None and now - (pend.get("ts") or now) > 120:

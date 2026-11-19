@@ -745,6 +745,8 @@ class App:
             from .services import settings_job
             if settings_job.due(self):
                 await self._guard("копия настроек по расписанию", asyncio.to_thread(settings_job.run, self))
+            if settings_job.verify_due(self) and time.time() - self.started > 600:
+                await self._guard("проверка копий настроек", asyncio.to_thread(settings_job.verify, self))
             await self._guard("регулярный отчёт", self.maybe_send_report())
             await self._guard("сверка автопереключения бэкендов", self.reconcile_failover())
             lt = time.localtime(now)

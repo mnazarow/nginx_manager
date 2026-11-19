@@ -47,7 +47,8 @@ SCENES = {"protection-ip", "protection-rule", "protection-ratelimit", "protectio
           "alerts-channels", "protection-vuln-installed", "protection-tech-wp", "trusted", "site-ip-access",
           "site-ip-denials", "ip-temp-access", "peers-transfer", "ip-link", "site-ip-links",
           *SCROLL, "geo-site", "sites-bulk", "backup-s3", "backup-restore", "backup-settings-restore",
-          "site-ip-lists", "ip-bulk-file", "peers-compare", "backup-restore-sites", "trusted-lists"}  # снимки с действиями: --only geo-site,sites-bulk или --extras
+          "site-ip-lists", "ip-bulk-file", "peers-compare", "backup-restore-sites", "trusted-lists",
+          "backup-second-storage"}  # снимки с действиями: --only geo-site,sites-bulk или --extras
 
 
 async def main(a):
@@ -374,6 +375,16 @@ async def scenes(page, a, only):
         await page.screenshot(path=f"{a.out}/backup-restore-sites.png")
         await page.keyboard.press("Escape")
         print("backup-restore-sites: ok")
+    if not only or "backup-second-storage" in only:
+        # «Копии во втором хранилище…»: список копий настроек и «Восстановить…»
+        await page.goto(f"{a.url}/#/backup")
+        await page.wait_for_timeout(2000)
+        await page.locator("button", has_text="Копии во втором хранилище").click()
+        await page.wait_for_selector(".modal table.t tbody tr", timeout=20000)
+        await page.wait_for_timeout(400)
+        await page.screenshot(path=f"{a.out}/backup-second-storage.png")
+        await page.keyboard.press("Escape")
+        print("backup-second-storage: ok")
     if not only or "trusted-lists" in only:
         # «Доверенные адреса»: списки по ссылке и их загрузка
         await page.goto(f"{a.url}/#/trusted")

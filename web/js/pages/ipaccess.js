@@ -205,15 +205,16 @@ const HRS = (x) => x < 1 ? `${Math.round(x * 60)} мин` : x < 48 ? `${x} ч` :
 export function listsView(lists, drafts, { readonly, onAccept }) {
   const check = async (x, out) => {
     mount(out, h('span', { class: 'muted' }, 'скачиваю…'));
-    const r = await api('/ip-lists/check', { method: 'POST', body: { url: x.url, min_prefix: x.min_prefix ?? 16, sha256: x.sha256 || '' }, silent: true }).catch(e => ({ ok: false, error: e.message }));
-    mount(out, r.ok ? h('span', { class: 'good-text' }, `найдено ${fmtInt(r.count)} (IPv6: ${r.v6})${r.dropped ? `, отброшено слишком широких: ${r.dropped}` : ''}: ${r.sample.slice(0, 6).join(', ')}${r.count > 6 ? '…' : ''}`)
+    const r = await api('/ip-lists/check', { method: 'POST', body: { url: x.url, min_prefix: x.min_prefix ?? 16, sha256: x.sha256 || '', pubkey: x.pubkey || '', sig_url: x.sig_url || '' }, silent: true }).catch(e => ({ ok: false, error: e.message }));
+    mount(out, r.ok ? h('span', { class: 'good-text' }, `${r.signed ? 'подпись верна, ' : ''}найдено ${fmtInt(r.count)} (IPv6: ${r.v6})${r.dropped ? `, отброшено слишком широких: ${r.dropped}` : ''}: ${r.sample.slice(0, 6).join(', ')}${r.count > 6 ? '…' : ''}`)
       : h('span', { class: 'bad-text' }, r.error || 'ошибка'));
   };
   const applied = new Set(lists.map(x => x.url));
   const draft = drafts.filter(x => x.url && !applied.has(x.url));
   return h('div', {},
     lists.length ? table([
-      { title: 'Список', render: (x) => h('div', {}, x.comment || h('span', { class: 'muted' }, '—'), h('div', { class: 'small muted', style: { wordBreak: 'break-all' } }, x.url)) },
+      { title: 'Список', render: (x) => h('div', {}, x.comment || h('span', { class: 'muted' }, '—'), x.signed ? h('span', { class: 'badge good', style: { marginLeft: '6px' }, title: 'Загрузка принимается только с верной подписью владельца (Ed25519)' }, 'подписан') : null,
+        h('div', { class: 'small muted', style: { wordBreak: 'break-all' } }, x.url)) },
       { title: 'Адресов', num: true, render: (x) => x.at ? fmtInt(x.count) : '—' },
       { title: 'Загружен', render: (x) => h('div', { class: 'small' },
         x.at ? fmtAgo(x.at) : h('span', { class: 'muted' }, x.tried ? 'ни разу' : 'ожидает загрузки'), h('div', { class: 'muted' }, `раз в ${x.hours} ч`),

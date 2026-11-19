@@ -17,7 +17,7 @@ from ..models import GlobalSettings, ProtectionSettings, Site, Stream
 
 FORMAT = 1
 # поля, которые у серверов законно различаются и в сравнении не участвуют
-SKIP_GLOBAL = {"server_name_default", "resolver"}
+SKIP_GLOBAL = {"user", "resolver", "ssl_dhparam", "include_conf_d", "include_sites_enabled"}  # свои у сервера
 SKIP_PROTECTION = {"crowdsec_url", "crowdsec_key", "crowdsec_action", "crowdsec_minutes"}  # у каждого сервера свой
 
 
@@ -48,9 +48,10 @@ def summary(app) -> Dict[str, Any]:
                               "sections": _sections(d, ("name", "notes")),
                               "cert": {"domains": sorted(c["domains"]), "not_after": c.get("not_after"),
                                        "status": c["status"]} if c else None}
-    streams = {f"{s.listen_ip or '*'}:{s.listen_port}/{getattr(s, 'protocol', 'tcp')}":
-               {"name": s.name, "enabled": s.enabled, "sections": _sections(s.model_dump(mode="json"), ("name", "notes"))}
-               for _, s in state.streams}
+    from .cluster_parts import stream_key
+    streams = {stream_key(s): {"id": sid, "name": s.name, "enabled": s.enabled,
+                               "sections": _sections(s.model_dump(mode="json"), ("name", "notes"))}
+               for sid, s in state.streams}
     trusted = sorted(e.address for e in state.panel.trusted_ips if e.origin in ("", None))
     # правила защиты, привязанные к сайтам: номера сайтов → домены (на серверах номера разные)
     keys = {sid: site_key(s) for sid, s in state.sites}

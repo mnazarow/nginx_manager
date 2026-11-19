@@ -640,6 +640,11 @@ class IpListSource(Model):
                              "ошибки в файле). 0 — применять любые изменения")
     sha256: str = F("", label="Контрольная сумма SHA-256", ph="пусто — не проверять",
                     help="Для неизменного файла: если содержимое не совпадает с этой суммой, загрузка отклоняется")
+    pubkey: str = F("", label="Открытый ключ подписи (Ed25519)", ph="ed25519:… — пусто, подпись не проверяется",
+                    help="Владелец списка подписывает файл своим ключом (nmctl lists sign или openssl pkeyutl -sign "
+                         "-rawin); панель принимает загрузку, только если подпись из файла «адрес.sig» верна. "
+                         "Список может меняться, а подменить его без закрытого ключа нельзя")
+    sig_url: str = F("", label="Адрес файла подписи", ph="пусто — адрес списка + .sig")
 
     @field_validator("url")
     @classmethod
@@ -648,6 +653,28 @@ class IpListSource(Model):
         u = urllib.parse.urlparse(v)
         if u.scheme not in ("https", "http") or not u.netloc or any(c in v for c in " \"'\n"):
             raise V.ValidationError("Адрес списка — https://…")
+        return v
+
+    @field_validator("pubkey")
+    @classmethod
+    def _pk(cls, v):
+        v = " ".join((v or "").split())
+        if v:
+            from .services.ed25519 import format_public, parse_public
+            try:
+                v = format_public(parse_public(v))
+            except ValueError as e:
+                raise V.ValidationError(str(e))
+        return v
+
+    @field_validator("sig_url")
+    @classmethod
+    def _su(cls, v):
+        v = (v or "").strip()
+        if v:
+            u = urllib.parse.urlparse(v)
+            if u.scheme not in ("https", "http") or not u.netloc or any(c in v for c in " \"'\n"):
+                raise V.ValidationError("Адрес файла подписи — https://…")
         return v
 
     @field_validator("sha256")
@@ -2448,6 +2475,10 @@ class PanelSettings(Model):
     sb_s3_access_key: str = F("", label="Access key ID", tab="sbackup", show={"sb_s3": [True]})
     sb_s3_secret_key: str = F("", label="Secret access key", tab="sbackup", ui="password", show={"sb_s3": [True]})
     sb_s3_path_style: bool = F(True, label="Адресация path-style", tab="sbackup", show={"sb_s3": [True]}, adv=True)
+    sb_verify_days: int = F(7, label="Проверять копии настроек раз в", unit="дн", tab="sbackup", ge=0, le=90,
+                            help="Панель открывает последнюю копию на сервере и последние копии во внешних хранилищах "
+                                 "паролем копий, сверяет контрольные суммы, проверяет настройки и пары «сертификат — "
+                                 "ключ». Ошибка — событие «ошибка» и уведомление. 0 — не проверять")
     sb_remote_keep: int = F(90, label="Хранить копий настроек во внешних хранилищах", tab="sbackup", ge=0, le=5000,
                             help="Для основного (каталог settings/) и второго хранилища. 0 — не удалять")
 

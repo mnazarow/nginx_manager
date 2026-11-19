@@ -240,6 +240,7 @@ export async function compareDlg(p) {
   const m = modal({ title: `Сравнение с «${p.name}»`, size: 'lg', body, footer: [h('button', { class: 'btn', onclick: () => m.close() }, 'Закрыть')] });
   const adm = can('admin');
   const report = (res, verb) => {
+    if (res.renew_note) toast(res.renew_note, 'warn');
     const s = res.sites || {};
     const notes = (s.items || []).flatMap(it => (it.notes || []).map(n => `«${it.name}»: ${n}`));
     toast(`${verb}: создано ${s.created || 0}, обновлено ${s.updated || 0}${s.skipped ? ', пропущено ' + s.skipped : ''}`
@@ -266,6 +267,20 @@ export async function compareDlg(p) {
     }) }, icon('download'), 'Забрать сюда');
     return b;
   };
+  const partsReport = (res, verb) => {
+    const st = res.streams || {};
+    const parts = [res.streams ? `потоки: создано ${st.created || 0}, обновлено ${st.updated || 0}${st.skipped ? ', пропущено ' + st.skipped : ''}` : '',
+      res.global ? (res.global.length ? `общие настройки: ${res.global.length} полей` : 'общие настройки уже совпадали') : ''].filter(Boolean);
+    toast(`${verb}: ${parts.join('; ')}` + (res.applied ? `, применено (версия ${res.applied})` : res.apply_error ? ` — не применено: ${res.apply_error}` : ''), res.apply_error ? 'bad' : 'good');
+  };
+  const partBtn = (dir, body, label, question) => {
+    const b = h('button', { class: 'btn sm', type: 'button', onclick: () => act(b, async () => {
+      if (question && !await confirmDlg(question, { ok: dir === 'push' ? 'Отправить' : 'Забрать' })) throw new Error('отменено');
+      const r = await api(`/peers/${p.id}/parts/${dir}`, { method: 'POST', body: { ...body, apply: true } });
+      partsReport(r, dir === 'push' ? `Отправлено на «${p.name}»` : 'Забрано сюда');
+    }) }, icon(dir === 'push' ? 'upload' : 'download'), label);
+    return b;
+  };
   const draw = async () => {
   const r = await api(`/peers/${p.id}/compare`, { method: 'POST', silent: true }).catch(e => ({ ok: false, error: e.message }));
   if (!r.ok) { mount(body, h('div', { class: 'alert bad' }, r.error)); return; }
@@ -285,6 +300,9 @@ export async function compareDlg(p) {
         { title: 'Расхождение', render: (r_) => r_.what },
         ...(adm && unit.startsWith('Сайт') ? [{ title: '', srTitle: 'Действия', render: (r_) => h('div', { class: 'row', style: { gap: '6px', flexWrap: 'nowrap', justifyContent: 'flex-end' } },
           r_.kind !== 'there' ? send(r_.x, r_.kind === 'changed') : null, r_.kind !== 'here' ? pull(r_.x, r_.kind === 'changed') : null) }] : []),
+        ...(adm && unit.startsWith('Поток') ? [{ title: '', srTitle: 'Действия', render: (r_) => h('div', { class: 'row', style: { gap: '6px', flexWrap: 'nowrap', justifyContent: 'flex-end' } },
+          r_.kind !== 'there' ? partBtn('push', { streams: [r_.x.key] }, 'Отправить туда', r_.kind === 'changed' ? `Заменить поток ${r_.x.key} на «${p.name}» настройками этого сервера и применить там?` : '') : null,
+          r_.kind !== 'here' ? partBtn('pull', { streams: [r_.x.key] }, 'Забрать сюда', r_.kind === 'changed' ? `Заменить поток ${r_.x.key} здесь настройками с «${p.name}» и применить?` : '') : null) }] : []),
       ], rows) : null);
   };
   const list = (title, xs) => xs.length ? h('div', { class: 'small mb' }, h('b', {}, title + ': '), xs.join(', ')) : null;
@@ -293,7 +311,11 @@ export async function compareDlg(p) {
     h('div', { class: 'small muted mb' }, `Здесь: версия конфигурации ${r.me.config_version || '—'}, Nginx Manager ${r.me.version}. «${p.name}»: версия конфигурации ${r.peer.config_version || '—'}${r.peer.applied_at ? ' от ' + fmtDate(r.peer.applied_at) : ''}, Nginx Manager ${r.peer.version}.`),
     objs('Сайты', r.sites, 'Сайт (домены)'),
     r.streams.only_here.length + r.streams.only_there.length + r.streams.changed.length || r.streams.same ? objs('Потоки TCP/UDP', r.streams, 'Поток (порт)') : null,
-    list('Общие настройки nginx различаются', r.global), list('Настройки защиты различаются', r.protection),
+    r.global.length ? h('div', { class: 'small mb' }, h('b', {}, 'Общие настройки nginx различаются: '), r.global.join(', '),
+      adm ? h('div', { class: 'row', style: { gap: '6px', marginTop: '6px' } },
+        partBtn('push', { global: true }, 'Отправить туда', `Заменить общие настройки nginx на «${p.name}» настройками этого сервера и применить там? Пользователь nginx, резолвер, DH-параметры и подключение conf.d остаются свои у каждого сервера.`),
+        partBtn('pull', { global: true }, 'Забрать сюда', `Заменить общие настройки nginx здесь настройками с «${p.name}» и применить? Пользователь nginx, резолвер, DH-параметры и подключение conf.d остаются свои.`)) : null) : null,
+    list('Настройки защиты различаются', r.protection),
     list('Доверенные адреса только здесь', r.trusted.only_here), list(`Доверенные адреса только на «${p.name}»`, r.trusted.only_there),
     adm && r.protection.length ? h('button', { class: 'btn sm mt', type: 'button', onclick: (e) => act(e.currentTarget, async () => {
       if (!await confirmDlg(`Отправить настройки защиты от атак этого сервера на «${p.name}»? Там применится конфигурация с ними (CrowdSec и правила сайтов, которых здесь нет, останутся свои).`, { ok: 'Отправить' })) throw new Error('отменено');

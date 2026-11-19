@@ -282,7 +282,7 @@ def test_compare_pull_and_export(client, monkeypatch):
     monkeypatch.setattr(nm, "apply", fake_apply)
     monkeypatch.setattr(nm, "pending", lambda: {"pending": False})
     r = client.post(f"/api/peers/{pid}/pull", headers=client.h, json={"keys": ["blog.test"]}).json()
-    assert calls[0] == ("/sync/sites/export", {"keys": ["blog.test"], "certs": True})
+    assert calls[0] == ("/sync/sites/export", {"keys": ["blog.test"], "certs": True, "caller": nm.peers.origin()})
     assert r["sites"]["created"] == 1 and r["applied"] == 3, r
     assert {x["name"] for x in nm.db.query("SELECT name FROM sites")} == {"Магазин", "Блог"}
     assert client.post(f"/api/peers/{pid}/pull", headers=client.h, json={"keys": []}).status_code == 400

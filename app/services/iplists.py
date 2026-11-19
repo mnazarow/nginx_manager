@@ -46,14 +46,28 @@ def parse(text: str) -> List[str]:
     return out
 
 
-def fetch(url: str, timeout: float = 20, sha256: str = "") -> List[str]:
+def _get(url: str, limit: int, timeout: float) -> bytes:
     req = urllib.request.Request(url, headers={"User-Agent": "NginxManager-IpList/1.0", "Accept": "*/*"})
     with urllib.request.urlopen(req, timeout=timeout, context=ssl.create_default_context()) as r:  # noqa: S310
-        blob = r.read(MAX_BYTES + 1)
+        return r.read(limit + 1)
+
+
+def fetch(url: str, timeout: float = 20, sha256: str = "", pubkey: str = "", sig_url: str = "") -> List[str]:
+    blob = _get(url, MAX_BYTES, timeout)
     if len(blob) > MAX_BYTES:
         raise ValueError("список больше 4 МБ")
     if sha256 and hashlib.sha256(blob).hexdigest() != sha256:
         raise ValueError("контрольная сумма SHA-256 не совпадает — файл изменён, загрузка отклонена")
+    if pubkey:
+        from . import ed25519
+        su = sig_url or url + ".sig"
+        try:
+            sig = _get(su, 4096, timeout)
+        except Exception as e:  # noqa: BLE001
+            raise ValueError(f"файл подписи {su} не скачан: {e}")
+        if not ed25519.verify(ed25519.parse_public(pubkey), blob, ed25519.parse_signature(sig.strip()
+                                                                                            if len(sig) != 64 else sig)):
+            raise ValueError("подпись списка не совпадает с ключом владельца — загрузка отклонена")
     nets = parse(blob.decode("utf-8", "replace"))
     if not nets:
         raise ValueError("в файле не найдено ни одного IP-адреса или подсети")
@@ -62,7 +76,8 @@ def fetch(url: str, timeout: float = 20, sha256: str = "") -> List[str]:
 
 def _opts(src) -> Dict[str, Any]:
     return {"hours": src.hours, "min_prefix": getattr(src, "min_prefix", 16), "max_change": getattr(src, "max_change", 50),
-            "sha256": getattr(src, "sha256", ""), "comment": src.comment, "sites": []}
+            "sha256": getattr(src, "sha256", ""), "pubkey": getattr(src, "pubkey", ""),
+            "sig_url": getattr(src, "sig_url", ""), "comment": src.comment, "sites": []}
 
 
 def _merge_opts(d: Dict[str, Any], src) -> None:
@@ -72,6 +87,8 @@ def _merge_opts(d: Dict[str, Any], src) -> None:
     mc = getattr(src, "max_change", 50)
     d["max_change"] = min(x for x in (d["max_change"], mc) if x) if (d["max_change"] or mc) else 0
     d["sha256"] = d["sha256"] or getattr(src, "sha256", "")
+    if not d.get("pubkey") and getattr(src, "pubkey", ""):
+        d["pubkey"], d["sig_url"] = src.pubkey, getattr(src, "sig_url", "")
 
 
 def sources(state) -> Dict[str, Dict[str, Any]]:
@@ -143,7 +160,8 @@ def _refresh(db, kv: str, srcs: Dict[str, Dict[str, Any]], force_urls: Optional[
         if not due or url in done:
             continue
         try:
-            raw = fetcher(url, sha256=d["sha256"]) if d.get("sha256") else fetcher(url)
+            kw = {k: d[k] for k in ("sha256", "pubkey", "sig_url") if d.get(k)}
+            raw = fetcher(url, **kw) if kw else fetcher(url)
             nets, dropped, pct = guard(raw, cur.get("nets"), d)
             if pct is not None:
                 st[url] = {**cur, "tried": now, "ok": False, "dropped": dropped,
@@ -201,6 +219,7 @@ def trusted_entries(db, panel) -> List[Tuple[str, str]]:
 def _status_item(src, d: Dict[str, Any]) -> Dict[str, Any]:
     pend = d.get("pending") or None
     return {"url": src.url, "comment": src.comment, "hours": src.hours, "ok": d.get("ok"),
+            "signed": bool(getattr(src, "pubkey", "")),
             "error": d.get("error", ""), "count": d.get("count", 0), "at": d.get("at"), "tried": d.get("tried"),
             "dropped": d.get("dropped", 0), "sample": (d.get("nets") or [])[:12],
             "pending": {"count": len(pend["nets"]), "pct": pend["pct"], "at": pend["at"],

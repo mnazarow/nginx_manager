@@ -24,6 +24,9 @@
     nmctl settings backup [-o DIR]    копия всех настроек (пароль — NM_BACKUP_PASSWORD или --password-file)
     nmctl settings inspect ФАЙЛ       что в копии настроек
     nmctl settings restore ФАЙЛ [--sections sites,certificates] [--no-apply]   восстановить настройки
+    nmctl lists keygen -o ключ.txt    ключи подписи списков адресов (Ed25519): закрытый — в файл, открытый — на экран
+    nmctl lists sign СПИСОК --key ключ.txt   подписать список адресов (рядом появится СПИСОК.sig)
+    nmctl lists verify СПИСОК --pub ed25519:…   проверить подпись списка
 """
 from __future__ import annotations
 
@@ -493,6 +496,45 @@ def cmd_deps(a) -> int:
     return 0 if all(x["ok"] for x in items) else 2
 
 
+def cmd_lists(a) -> int:
+    """Подпись списков адресов по ссылке (Ed25519): ключи, подпись, проверка. Работает и без установленной панели."""
+    from .services import ed25519 as E
+    if a.action == "keygen":
+        secret, public = E.keygen()
+        text = "ed25519-secret:" + __import__("base64").b64encode(secret).decode() + "\n"
+        if a.output:
+            out = Path(a.output)
+            if out.exists():
+                raise ValueError(f"{out} уже есть — не перезаписываю")
+            fd = os.open(str(out), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w") as f:
+                f.write(text)
+            print(f"Закрытый ключ: {out} (храните его там, где готовится список; на серверы панели он не нужен)")
+        else:
+            print("Закрытый ключ (сохраните в файл с правами 600):", text.strip())
+        print("Открытый ключ (поле «Открытый ключ подписи» у списка):", E.format_public(public))
+        return 0
+    if not a.file:
+        raise ValueError("Укажите файл списка")
+    data = Path(a.file).read_bytes()
+    if a.action == "sign":
+        if not a.key:
+            raise ValueError("Укажите --key ФАЙЛ закрытого ключа (nmctl lists keygen или openssl genpkey -algorithm "
+                             "ed25519)")
+        secret = E.parse_secret(Path(a.key).read_text())
+        sig = E.sign(secret, data)
+        out = Path(a.file + ".sig")
+        out.write_text(__import__("base64").b64encode(sig).decode() + "\n")
+        print(f"Подпись: {out}; открытый ключ: {E.format_public(E.public_key(secret))}")
+        return 0
+    if not a.pub:
+        raise ValueError("Укажите --pub открытый ключ (ed25519:…)")
+    sig = Path(a.sig or a.file + ".sig").read_bytes()
+    ok = E.verify(E.parse_public(a.pub), data, E.parse_signature(sig if len(sig) == 64 else sig.strip()))
+    print(f"{C['ok']}✓ подпись верна{C['r']}" if ok else f"{C['fail']}✗ подпись не совпадает{C['r']}")
+    return 0 if ok else 1
+
+
 def cmd_os(a) -> int:
     """Срок поддержки ОС: 0 — поддерживается, 1 — поддержка закончилась, 2 — заканчивается в ближайшие полгода."""
     from .services import osinfo
@@ -728,6 +770,13 @@ def main(argv=None) -> int:
         ["sites", "streams", "certificates", "dns", "global", "panel", "protection", "alerts", "users", "bans",
          "secrets"]))
     p.add_argument("--no-apply", action="store_true", help="не применять конфигурацию nginx")
+    p = sub.add_parser("lists", help="подпись списков адресов по ссылке (Ed25519)")
+    p.add_argument("action", choices=["keygen", "sign", "verify"])
+    p.add_argument("file", nargs="?", default="", help="файл списка адресов")
+    p.add_argument("-o", "--output", default="", help="keygen: файл для закрытого ключа")
+    p.add_argument("--key", default="", help="sign: файл закрытого ключа")
+    p.add_argument("--pub", default="", help="verify: открытый ключ ed25519:…")
+    p.add_argument("--sig", default="", help="verify: файл подписи (по умолчанию СПИСОК.sig)")
     p = sub.add_parser("transfer", help="перенести сайты с сертификатами на другой сервер")
     p.add_argument("--to", required=True, help="сервер: название (или его начало) либо ID из «Другие серверы»")
     p.add_argument("--sites", default="", help="номера сайтов через запятую")
@@ -745,7 +794,7 @@ def main(argv=None) -> int:
            "import": cmd_import,
            "versions": cmd_versions, "rollback": cmd_rollback, "sites": cmd_sites, "vulns": cmd_vulns,
            "deps": cmd_deps, "os": cmd_os, "peers": cmd_peers, "transfer": cmd_transfer,
-           "settings": cmd_settings}[a.cmd]
+           "settings": cmd_settings, "lists": cmd_lists}[a.cmd]
     from .nginx.manager import ApplyError
     try:
         return cmd(a)

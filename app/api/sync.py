@@ -286,8 +286,156 @@ async def sync_sites_export(request: Request, body: Dict[str, Any] = Body(...), 
     if not ids:
         raise HTTPException(404, "Таких сайтов здесь нет")
     payload = await asyncio.to_thread(TF.build, app.db, ids, bool(body.get("certs", True)))
-    audit(request, user, "sites_exported", ",".join(sorted(keys))[:200], {"sites": ids})
-    return {"origin": app.peers.origin(), **payload}
+    # кто забирает: если он есть в «Других серверах», продлённые сертификаты будут уходить ему сами
+    renew = None
+    caller = str((body.get("caller") or {}).get("id") or "")[:32]
+    if caller and payload.get("certs"):
+        peer = await asyncio.to_thread(app.peers.find_by_instance, caller)
+        if peer:
+            TF.remember(app.db, peer.id, payload["certs"])
+            renew = peer.name
+    audit(request, user, "sites_exported", ",".join(sorted(keys))[:200], {"sites": ids, "renew_to": renew})
+    return {"origin": app.peers.origin(), "renew": renew, **payload}
+
+
+# ---------------------------------------------------------------- потоки и общие настройки nginx
+async def _apply_parts(app, username: str, comment: str, want_apply: bool, pending_before: bool,
+                       res: Dict[str, Any]) -> None:
+    from ..nginx.manager import ApplyError
+    if not want_apply:
+        return
+    if pending_before:
+        res["apply_error"] = "на этом сервере есть неприменённые изменения — примените конфигурацию вручную"
+        return
+    try:
+        r = await app.apply(username, comment, "transfer")
+        res["applied"] = r.get("version")
+    except ApplyError as e:
+        res["apply_error"] = str(e)[:500]
+
+
+async def receive_parts(app, origin: Dict[str, str], body: Dict[str, Any], username: str) -> Dict[str, Any]:
+    from ..services import cluster_parts as CP
+    streams = body.get("streams") or []
+    glob = body.get("global")
+    want_apply = bool(body.get("apply", True))
+    pending_before = want_apply and bool(app.pending().get("pending"))
+    res: Dict[str, Any] = {"name": app.peers.origin()["name"]}
+    if streams:
+        res["streams"] = await asyncio.to_thread(CP.receive_streams, app, streams, bool(body.get("overwrite", True)))
+    if isinstance(glob, dict):
+        try:
+            res["global"] = await asyncio.to_thread(CP.receive_global, app, glob)
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(400, f"Общие настройки не приняты: {str(e)[:300]}")
+    app.touch()
+    st = res.get("streams") or {}
+    changed = st.get("created", 0) + st.get("updated", 0) + len(res.get("global") or [])
+    if changed:
+        what = ", ".join(x for x in (f"потоки: {st.get('created', 0) + st.get('updated', 0)}" if streams else "",
+                                     "общие настройки nginx" if res.get("global") else "") if x)
+        await _apply_parts(app, username, f"Перенос с сервера «{origin['name']}»: {what}", want_apply,
+                           pending_before, res)
+        app.db.event("info", "peers", f"Сервер «{origin['name']}»: {what}"
+                     + (f" — различались: {', '.join(res['global'][:8])}" if res.get("global") else ""),
+                     {"user": username})
+    return res
+
+
+@router.post("/sync/parts")
+async def sync_parts(request: Request, body: Dict[str, Any] = Body(...), user=Depends(admin)):
+    """Принять TCP/UDP-потоки и общие настройки nginx с другого сервера: {origin, streams: [{key, name, data}],
+    global: {...} | null, overwrite, apply}."""
+    app = _nm(request)
+    o = body.get("origin") or {}
+    origin = {"id": str(o.get("id") or "")[:32], "name": str(o.get("name") or "?")[:80]}
+    if not origin["id"] or origin["id"] == app.peers.origin()["id"]:
+        raise HTTPException(400, "неверный источник")
+    res = await receive_parts(app, origin, body, user["username"])
+    audit(request, user, "parts_received", origin["name"],
+          {"streams": (res.get("streams") or {}).get("items", [])[:50], "global": res.get("global")})
+    return res
+
+
+@router.post("/sync/parts/export")
+async def sync_parts_export(request: Request, body: Dict[str, Any] = Body(...), user=Depends(admin)):
+    """Отдать потоки (по ключам сравнения «адрес:порт/протокол») и общие настройки nginx для «Забрать сюда»:
+    {streams: [...], global: true}."""
+    from ..services import cluster_parts as CP
+    app = _nm(request)
+    out: Dict[str, Any] = {"origin": app.peers.origin()}
+    keys = [str(k) for k in (body.get("streams") or [])][:200]
+    if keys:
+        out["streams"] = await asyncio.to_thread(CP.export_streams, app, keys)
+        if not out["streams"]:
+            raise HTTPException(404, "Таких потоков здесь нет")
+    if body.get("global"):
+        out["global"] = await asyncio.to_thread(CP.export_global, app)
+    audit(request, user, "parts_exported", ",".join(keys)[:200], {"global": bool(body.get("global"))})
+    return out
+
+
+@router.post("/peers/{pid}/parts/push")
+async def peers_parts_push(request: Request, pid: str, body: Dict[str, Any] = Body(...), user=Depends(admin)):
+    """Отправить потоки ({streams: [ключи]}) и/или общие настройки nginx ({global: true}) на другой сервер."""
+    from ..services import cluster_parts as CP
+    from ..services.peers import _err, call
+    app = _nm(request)
+    peer = _peer(app, pid)
+    payload: Dict[str, Any] = {"origin": app.peers.origin(), "apply": bool(body.get("apply", True)),
+                               "overwrite": bool(body.get("overwrite", True))}
+    keys = [str(k) for k in (body.get("streams") or [])][:200]
+    if keys:
+        payload["streams"] = await asyncio.to_thread(CP.export_streams, app, keys)
+    if body.get("global"):
+        payload["global"] = await asyncio.to_thread(CP.export_global, app)
+    if not payload.get("streams") and "global" not in payload:
+        raise HTTPException(400, "Нечего отправлять")
+    try:
+        code, d = await asyncio.to_thread(call, peer, "POST", "/sync/parts", payload, app.panel().peers_verify_tls,
+                                          120)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"нет связи: {e}"[:300])
+    if code == 404 and not isinstance(d, dict):
+        raise HTTPException(400, "на сервере старая версия Nginx Manager — перенос потоков и настроек есть с 2.10")
+    if code != 200 or not isinstance(d, dict):
+        raise HTTPException(400, _err(code, d))
+    audit(request, user, "parts_sent", peer.name, {"streams": keys, "global": bool(body.get("global"))})
+    return d
+
+
+@router.post("/peers/{pid}/parts/pull")
+async def peers_parts_pull(request: Request, pid: str, body: Dict[str, Any] = Body(...), user=Depends(admin)):
+    """Забрать потоки ({streams: [ключи]}) и/или общие настройки nginx ({global: true}) с другого сервера."""
+    from ..services.peers import _err, call
+    app = _nm(request)
+    peer = _peer(app, pid)
+    keys = [str(k) for k in (body.get("streams") or [])][:200]
+    if not keys and not body.get("global"):
+        raise HTTPException(400, "Нечего забирать")
+    try:
+        code, d = await asyncio.to_thread(call, peer, "POST", "/sync/parts/export",
+                                          {"streams": keys, "global": bool(body.get("global"))},
+                                          app.panel().peers_verify_tls, 60)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"нет связи: {e}"[:300])
+    if code == 404 and not isinstance(d, dict):
+        raise HTTPException(400, "на сервере старая версия Nginx Manager — перенос потоков и настроек есть с 2.10")
+    if code != 200 or not isinstance(d, dict):
+        raise HTTPException(400, _err(code, d))
+    o = d.get("origin") or {}
+    origin = {"id": str(o.get("id") or peer.id)[:32], "name": str(o.get("name") or peer.name)[:80]}
+    res = await receive_parts(app, origin, {**d, "apply": bool(body.get("apply", True)),
+                                            "overwrite": bool(body.get("overwrite", True))}, user["username"])
+    audit(request, user, "parts_pulled", peer.name, {"streams": keys, "global": bool(body.get("global"))})
+    return res
+
+
+def _peer(app, pid: str):
+    peer = next((x for x in app.panel().peers if x.id == pid), None)
+    if not peer:
+        raise HTTPException(404, "Сервер не найден")
+    return peer
 
 
 @router.post("/peers/{pid}/pull")
@@ -302,7 +450,8 @@ async def peers_pull(request: Request, pid: str, body: Dict[str, Any] = Body(...
     if not keys:
         raise HTTPException(400, "Выберите сайты")
     try:
-        code, d = await asyncio.to_thread(call, peer, "POST", "/sync/sites/export", {"keys": keys, "certs": True},
+        code, d = await asyncio.to_thread(call, peer, "POST", "/sync/sites/export",
+                                          {"keys": keys, "certs": True, "caller": app.peers.origin()},
                                           app.panel().peers_verify_tls, 120)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"нет связи: {e}"[:300])
@@ -316,6 +465,11 @@ async def peers_pull(request: Request, pid: str, body: Dict[str, Any] = Body(...
                                 bool(body.get("overwrite", True)), bool(body.get("apply", True)), False,
                                 user["username"])
     res.pop("_quiet", None)
+    if d.get("certs"):
+        res["renew"] = bool(d.get("renew"))
+        if not d.get("renew"):
+            res["renew_note"] = (f"Продлённые сертификаты с «{peer.name}» сюда сами не придут: на том сервере нет "
+                                 "этого сервера в «Других серверах» (с токеном администратора) — добавьте его там")
     audit(request, user, "sites_pulled", peer.name, {"keys": keys, "sites": (res.get("sites") or {}).get("items", [])[:50]})
     return res
 

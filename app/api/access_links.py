@@ -137,13 +137,14 @@ async def iplists_check(request: Request, body: Dict[str, Any] = Body(...), user
     except Exception:
         raise HTTPException(400, "Адрес списка — https://…")
     try:
-        src = IpListSource(url=url, min_prefix=int(body.get("min_prefix", 16)), sha256=str(body.get("sha256") or ""))
-        nets = await asyncio.to_thread(iplists.fetch, url, 20, src.sha256)
+        src = IpListSource(url=url, min_prefix=int(body.get("min_prefix", 16)), sha256=str(body.get("sha256") or ""),
+                           pubkey=str(body.get("pubkey") or ""), sig_url=str(body.get("sig_url") or ""))
+        nets = await asyncio.to_thread(iplists.fetch, url, 20, src.sha256, src.pubkey, src.sig_url)
         keep, dropped, _ = iplists.guard(nets, None, {"min_prefix": src.min_prefix})
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": str(e)[:300]}
     return {"ok": True, "count": len(keep), "sample": keep[:20], "dropped": dropped,
-            "v6": sum(1 for x in keep if ":" in x)}
+            "v6": sum(1 for x in keep if ":" in x), "signed": bool(src.pubkey)}
 
 
 # =============================================================================

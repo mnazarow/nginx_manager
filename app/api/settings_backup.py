@@ -116,7 +116,8 @@ async def settings_job_status(request: Request, user=Depends(admin)):
                         else []) + ([{"id": "s3_second", "name": f"второе хранилище {p.sb_s3_bucket}"}]
                                     if p.sb_s3 else [])
             + [{"id": f"channel:{c}", "name": names.get(c) or f"канал #{c}"} for c in p.sb_channels],
-            "last": app.db.kv_get(SJ.KV_LAST) or None}
+            "last": app.db.kv_get(SJ.KV_LAST) or None, "verify_days": p.sb_verify_days,
+            "verify": app.db.kv_get(SJ.KV_VERIFY) or None}
 
 
 @router.post("/backup/settings/job")
@@ -141,3 +142,55 @@ async def settings_s3_check(request: Request, user=Depends(admin)):
         return await asyncio.to_thread(offsite_check, app, True)
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": str(e)[:500]}
+
+
+@router.get("/backup/settings/s3")
+async def settings_s3_list(request: Request, user=Depends(admin)):
+    """Копии настроек во втором хранилище (новые сверху)."""
+    from ..services.settings_job import second_s3
+    app = _nm(request)
+    p = app.panel()
+    if not p.sb_s3:
+        raise HTTPException(400, "Второе хранилище не включено («Настройки панели → Копия настроек»)")
+    try:
+        objs = await asyncio.to_thread(second_s3(p).list, p.sb_s3_prefix)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"Хранилище недоступно: {str(e)[:300]}")
+    out = []
+    for o in objs:
+        name = o["key"][len(p.sb_s3_prefix):]
+        if "/" in name or ".settings.tar.gz" not in name:
+            continue
+        out.append({"name": name, "size": o.get("size", 0), "modified": o.get("last_modified", "")})
+    out.sort(key=lambda x: x["name"], reverse=True)
+    return {"bucket": p.sb_s3_bucket, "prefix": p.sb_s3_prefix, "items": out}
+
+
+@router.post("/backup/settings/s3/download")
+async def settings_s3_download(request: Request, body: Dict[str, Any] = Body(...), user=Depends(admin)):
+    """Скачать копию настроек из второго хранилища в каталог копий сервера (как есть — пароль спросит окно
+    восстановления)."""
+    from ..services.settings_job import second_s3
+    app = _nm(request)
+    p = app.panel()
+    name = Path(str(body.get("name") or "")).name
+    if not p.sb_s3 or not name.startswith("nginx-manager-") or ".settings.tar.gz" not in name:
+        raise HTTPException(400, "Это не копия настроек Nginx Manager")
+    dest = settings.backups_dir / name
+    try:
+        await asyncio.to_thread(second_s3(p).get_to_file, p.sb_s3_prefix + name, dest)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"Не удалось скачать: {str(e)[:300]}")
+    dest.chmod(0o600)
+    audit(request, user, "settings_s3_downloaded", name)
+    return {"name": name, "encrypted": name.endswith(".enc"), "size": dest.stat().st_size}
+
+
+@router.post("/backup/settings/verify")
+async def settings_verify(request: Request, user=Depends(admin)):
+    """Проверить последнюю копию настроек на сервере и во внешних хранилищах сейчас."""
+    from ..services import settings_job as SJ
+    app = _nm(request)
+    res = await asyncio.to_thread(SJ.verify, app, "manual")
+    audit(request, user, "settings_verified", "", {"ok": res["ok"]})
+    return res

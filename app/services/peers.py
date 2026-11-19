@@ -272,6 +272,28 @@ class PeerSync:
                 res[peer.id] = {"ok": False, "error": msg}
         return res
 
+    def find_by_instance(self, oid: str):
+        """Запись «Другие серверы» по номеру экземпляра панели (id из /sync/hello); номера запоминаются."""
+        cache = self.db.kv_get("peers_instance", {}) or {}
+        peers = {p.id: p for p in self.peers()}
+        for pid, inst in cache.items():
+            if inst == oid and pid in peers:
+                return peers[pid]
+        found = None
+        for peer in peers.values():
+            if peer.id in cache:
+                continue
+            try:
+                code, d = call(peer, "GET", "/sync/hello", None, self.app.panel().peers_verify_tls, timeout=5)
+            except Exception:  # noqa: BLE001
+                continue
+            if code == 200 and isinstance(d, dict) and d.get("id"):
+                cache[peer.id] = d["id"]
+                if d["id"] == oid:
+                    found = peer
+        self.db.kv_set("peers_instance", cache)
+        return found
+
     def test(self, peer) -> Dict[str, Any]:
         try:
             code, d = call(peer, "GET", "/sync/hello", None, self.app.panel().peers_verify_tls, timeout=10)
@@ -281,6 +303,10 @@ class PeerSync:
             return {"ok": False, "error": _err(code, d)}
         if (d or {}).get("id") == instance_id(self.db):
             return {"ok": False, "error": "это этот же сервер"}
+        if (d or {}).get("id"):
+            cache = self.db.kv_get("peers_instance", {}) or {}
+            cache[peer.id] = d["id"]
+            self.db.kv_set("peers_instance", cache)
         return {"ok": True, **(d or {})}
 
     # ---------------------------------------------------------------- приём
