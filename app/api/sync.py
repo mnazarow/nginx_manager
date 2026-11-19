@@ -132,6 +132,7 @@ async def peers_status(request: Request, user=Depends(viewer)):
     for peer in app.panel().peers:
         out.append({"id": peer.id, "name": peer.name, "url": peer.url, "enabled": peer.enabled, "bans": peer.bans,
                     "protection": peer.protection, "trusted": peer.trusted, "sites": peer.sites,
+                    "streams": peer.streams, "global_settings": peer.global_settings,
                     "sites_tag": peer.sites_tag, "compare": cmp.get(peer.id), **(st.get(peer.id) or {})})
     incoming = app.db.kv_get("peers_incoming", {}) or {}
     counts = {r["source"]: r["n"] for r in app.db.query("SELECT source, COUNT(*) AS n FROM bans WHERE source LIKE "
@@ -165,7 +166,7 @@ async def peers_compare(request: Request, pid: str, user=Depends(operator)):
     res = await asyncio.to_thread(compare, app, peer)
     if res.get("ok"):
         st = app.db.kv_get("peers_compare", {}) or {}
-        st[pid] = {"at": time.time(), "total": res["total"]}
+        st[pid] = {**(st.get(pid) or {}), "at": time.time(), "total": res["total"], "error": ""}
         app.db.kv_set("peers_compare", st)
     return res
 
@@ -191,8 +192,12 @@ async def peers_push(request: Request, body: Dict[str, Any] = Body(...), user=De
         res = await asyncio.to_thread(app.peers.push_protection, body.get("peer"))
     elif what == "sites":  # синхронизировать сайты заново (сброс отметки отправленной версии)
         for peer in app.panel().peers:
-            app.peers._set(peer.id, sites_version=None, sites_tried_version=None)
+            app.peers._set(peer.id, sites_version=None, sites_tried_version=None, parts_version=None,
+                           parts_tried_version=None)
         res = await asyncio.to_thread(app.peers.sites_tick)
+        parts = await asyncio.to_thread(app.peers.parts_tick)
+        for k, v in parts.items():
+            res.setdefault(k, {})["parts"] = v
     else:
         raise HTTPException(400, "what: bans, protection или sites")
     audit(request, user, "peers_push", what)
@@ -318,11 +323,13 @@ async def receive_parts(app, origin: Dict[str, str], body: Dict[str, Any], usern
     from ..services import cluster_parts as CP
     streams = body.get("streams") or []
     glob = body.get("global")
+    mirror = bool(body.get("mirror"))
     want_apply = bool(body.get("apply", True))
     pending_before = want_apply and bool(app.pending().get("pending"))
     res: Dict[str, Any] = {"name": app.peers.origin()["name"]}
-    if streams:
-        res["streams"] = await asyncio.to_thread(CP.receive_streams, app, streams, bool(body.get("overwrite", True)))
+    if streams or mirror:
+        res["streams"] = await asyncio.to_thread(CP.receive_streams, app, streams, bool(body.get("overwrite", True)),
+                                                 origin, mirror)
     if isinstance(glob, dict):
         try:
             res["global"] = await asyncio.to_thread(CP.receive_global, app, glob)
@@ -330,9 +337,10 @@ async def receive_parts(app, origin: Dict[str, str], body: Dict[str, Any], usern
             raise HTTPException(400, f"Общие настройки не приняты: {str(e)[:300]}")
     app.touch()
     st = res.get("streams") or {}
-    changed = st.get("created", 0) + st.get("updated", 0) + len(res.get("global") or [])
+    changed = st.get("created", 0) + st.get("updated", 0) + st.get("deleted", 0) + len(res.get("global") or [])
     if changed:
-        what = ", ".join(x for x in (f"потоки: {st.get('created', 0) + st.get('updated', 0)}" if streams else "",
+        what = ", ".join(x for x in (f"потоки: {st.get('created', 0) + st.get('updated', 0) + st.get('deleted', 0)}"
+                                     if st.get("created", 0) + st.get("updated", 0) + st.get("deleted", 0) else "",
                                      "общие настройки nginx" if res.get("global") else "") if x)
         await _apply_parts(app, username, f"Перенос с сервера «{origin['name']}»: {what}", want_apply,
                            pending_before, res)
@@ -351,6 +359,8 @@ async def sync_parts(request: Request, body: Dict[str, Any] = Body(...), user=De
     origin = {"id": str(o.get("id") or "")[:32], "name": str(o.get("name") or "?")[:80]}
     if not origin["id"] or origin["id"] == app.peers.origin()["id"]:
         raise HTTPException(400, "неверный источник")
+    if body.get("mirror") and not app.panel().peers_accept_sites:
+        raise HTTPException(403, "Приём синхронизации выключен на этом сервере (Настройки панели → Другие серверы)")
     res = await receive_parts(app, origin, body, user["username"])
     audit(request, user, "parts_received", origin["name"],
           {"streams": (res.get("streams") or {}).get("items", [])[:50], "global": res.get("global")})

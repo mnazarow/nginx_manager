@@ -71,6 +71,7 @@ class PeerSync:
         self.dirty = True
         self.last_push = 0.0
         self.last_sites = 0.0
+        self.last_compare = time.time()
         self.task: Optional[asyncio.Task] = None
 
     # ---------------------------------------------------------------- состояние
@@ -245,6 +246,114 @@ class PeerSync:
                 res[peer.id] = {"ok": False, "error": msg}
         return res
 
+    def compare_tick(self, force: bool = False) -> Dict[str, Any]:
+        """«Сравнивать конфигурацию с другими серверами раз в N ч»: событие (и уведомление), когда расхождения
+        появились или изменились, и когда конфигурации снова совпали."""
+        import hashlib
+        import json as _json
+        from .compare import compare
+        hours = self.app.panel().peers_compare_hours
+        if hours <= 0 and not force:
+            return {}
+        st = self.db.kv_get("peers_compare", {}) or {}
+        now = time.time()
+        out: Dict[str, Any] = {}
+        for peer in self.peers():
+            if not peer.token:
+                continue
+            prev = st.get(peer.id) or {}
+            if not force and now - float(prev.get("auto_at") or 0) < hours * 3600:
+                continue
+            r = compare(self.app, peer)
+            cur: Dict[str, Any] = {**prev, "auto_at": now}
+            if not r.get("ok"):
+                if prev.get("error") != r.get("error"):
+                    self.db.event("warning", "peers", f"Сервер «{peer.name}»: сравнить конфигурацию не удалось — "
+                                                      f"{r.get('error')}")
+                cur["error"] = r.get("error")
+                st[peer.id] = cur
+                out[peer.id] = r
+                continue
+            parts = []
+            for kind in ("sites", "streams"):
+                o = r[kind]
+                parts += [f"{kind}:here:{x['key']}" for x in o["only_here"]]
+                parts += [f"{kind}:there:{x['key']}" for x in o["only_there"]]
+                parts += [f"{kind}:diff:{x['key']}:{','.join(x['fields'])}" for x in o["changed"]]
+            parts += [f"global:{x}" for x in r["global"]] + [f"protection:{x}" for x in r["protection"]]
+            parts += [f"trusted:{x}" for x in r["trusted"]["only_here"] + r["trusted"]["only_there"]]
+            sig = hashlib.sha256(_json.dumps(sorted(parts), ensure_ascii=False).encode()).hexdigest()[:16]
+            cur.update(at=now, total=r["total"], sig=sig, error="")
+            if r["total"] and sig != prev.get("sig"):
+                s_, t_ = r["sites"], r["streams"]
+                bits = [f"сайты только здесь: {', '.join(x['name'] for x in s_['only_here'][:5])}" if s_["only_here"]
+                        else "", f"только там: {', '.join(x['name'] for x in s_['only_there'][:5])}"
+                        if s_["only_there"] else "",
+                        f"различаются: {', '.join(x['name'] for x in s_['changed'][:5])}" if s_["changed"] else "",
+                        f"потоков с различиями: {len(t_['only_here']) + len(t_['only_there']) + len(t_['changed'])}"
+                        if t_["only_here"] or t_["only_there"] or t_["changed"] else "",
+                        f"общие настройки nginx: {', '.join(r['global'][:4])}" if r["global"] else "",
+                        f"защита: {', '.join(r['protection'][:4])}" if r["protection"] else ""]
+                self.db.event("warning", "peers", f"Конфигурация расходится с сервером «{peer.name}»: различий "
+                              f"{r['total']} — " + "; ".join(b for b in bits if b)
+                              + ". «Блокировки IP → Другие серверы → Сравнить»", {"peer": peer.id})
+            elif not r["total"] and prev.get("total"):
+                self.db.event("info", "peers", f"Конфигурация совпадает с сервером «{peer.name}»", {"peer": peer.id})
+            st[peer.id] = cur
+            out[peer.id] = {"ok": True, "total": r["total"]}
+        self.db.kv_set("peers_compare", st)
+        return out
+
+    def parts_tick(self) -> Dict[str, Any]:
+        """Новая применённая версия → потоки и общие настройки nginx на серверы с их синхронизацией."""
+        from . import cluster_parts as CP
+        peers = [p for p in self.peers() if getattr(p, "streams", False) or getattr(p, "global_settings", False)]
+        if not peers:
+            return {}
+        last = self.app.nginx.last_applied()
+        if not last:
+            return {}
+        res: Dict[str, Any] = {}
+        now = time.time()
+        state = self.app.last_applied_state()
+        keys = [CP.stream_key(s) for _, s in state.streams] if state else []
+        for peer in peers:
+            ps = self.status().get(peer.id) or {}
+            want = f"{int(peer.streams)}{int(peer.global_settings)}"
+            if ps.get("parts_version") == last["id"] and ps.get("parts_what") == want:
+                continue
+            if not ps.get("parts_ok", True) and ps.get("parts_tried_version") == last["id"] and \
+                    now - (ps.get("parts_tried") or 0) < 60:
+                continue
+            payload: Dict[str, Any] = {"origin": self.origin(), "apply": True, "overwrite": True}
+            if peer.streams:
+                payload["streams"] = CP.export_streams(self.app, keys)
+                payload["mirror"] = True
+            if peer.global_settings:
+                payload["global"] = CP.export_global(self.app)
+            try:
+                code, d = call(peer, "POST", "/sync/parts", payload, self.app.panel().peers_verify_tls, timeout=120)
+                if code == 404 and not isinstance(d, dict):
+                    raise ValueError("на сервере старая версия Nginx Manager — синхронизация потоков и общих "
+                                     "настроек есть с 2.11")
+                if code != 200 or not isinstance(d, dict):
+                    raise ValueError(_err(code, d))
+                st = d.get("streams") or {}
+                self._set(peer.id, parts_ok=True, parts_version=last["id"], parts_what=want, parts_at=now,
+                          parts_error="", parts_note=str(d.get("apply_error") or "")[:300],
+                          parts_result={k: st.get(k, 0) for k in ("created", "updated", "deleted", "unchanged")},
+                          parts_global=len(d.get("global") or []), parts_applied=d.get("applied"),
+                          parts_tried_version=last["id"], parts_tried=now)
+                res[peer.id] = {"ok": True, **d}
+            except Exception as e:  # noqa: BLE001
+                msg = str(e)[:300] if isinstance(e, ValueError) else f"нет связи: {e}"[:300]
+                if ps.get("parts_ok", True) or ps.get("parts_error") != msg:
+                    self.db.event("warning", "peers", f"Сервер «{peer.name}»: потоки и общие настройки не "
+                                                      f"синхронизированы — {msg}")
+                self._set(peer.id, parts_ok=False, parts_error=msg, parts_tried=now, parts_tried_version=last["id"])
+                res[peer.id] = {"ok": False, "error": msg}
+        return res
+
     def push_cert(self, cid: int) -> Dict[str, Any]:
         """Продлённый сертификат — на серверы, куда он раньше переносился вместе с сайтами."""
         from . import transfer as TF
@@ -391,6 +500,10 @@ class PeerSync:
                 if time.time() - self.last_sites > 5:
                     self.last_sites = time.time()
                     await asyncio.to_thread(self.sites_tick)
+                    await asyncio.to_thread(self.parts_tick)
+                if time.time() - self.last_compare > 300:
+                    self.last_compare = time.time()
+                    await asyncio.to_thread(self.compare_tick)
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001

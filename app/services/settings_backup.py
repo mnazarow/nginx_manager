@@ -525,6 +525,123 @@ def restore_sites(app, path: Path, ids: List[int], password: str = "", user: str
             "relogin": False}
 
 
+PREVIEW_NAME = {"sites": "name", "streams": "name", "certificates": "name", "dns_accounts": "name",
+                "alert_channels": "name", "alert_rules": "name", "silences": "comment", "users": "username",
+                "api_tokens": "name", "bans": "net"}
+PREVIEW_SKIP = {"updated_at", "last_used", "last_used_at", "last_login", "last_login_at", "last_ip", "not_after",
+                "status", "last_error", "cert_path", "key_path"}
+
+
+def _kv_labels(key: str, a: Dict[str, Any], b: Dict[str, Any]) -> List[str]:
+    from ..models import GlobalSettings, PanelSettings, ProtectionSettings
+    model = {"global_settings": GlobalSettings, "panel_settings": PanelSettings,
+             "protection_settings": ProtectionSettings}.get(key)
+    if model:  # через модель: поля, добавленные новой версией со значениями по умолчанию, — не различие
+        try:
+            a = model.model_validate(a).model_dump(mode="json")
+            b = model.model_validate(b).model_dump(mode="json")
+        except Exception:  # noqa: BLE001
+            pass
+    out = []
+    for k in sorted(set(a) | set(b)):
+        if a.get(k) == b.get(k):
+            continue
+        f = model.model_fields.get(k) if model else None
+        extra = (f.json_schema_extra if f else None) or {}
+        out.append(extra.get("label", k) if isinstance(extra, dict) else k)
+    return out
+
+
+def preview(app, path: Path, password: str = "", sections: Optional[List[str]] = None,
+            site_ids: Optional[List[int]] = None) -> Dict[str, Any]:
+    """Что изменится при восстановлении: по разделам — что добавится, удалится, изменится (по названиям), для
+    настроек — какие поля; для отдельных сайтов — какие обновятся, какие будут созданы."""
+    from ..models import Site
+    from .compare import site_key
+    _, data, _files = read(path, password)
+    out: List[Dict[str, Any]] = []
+    db = app.db
+    if site_ids:
+        t = (data.get("sites") or {}).get("sites") or {"columns": [], "rows": []}
+        local = []
+        for r in db.query("SELECT id, name, data FROM sites"):
+            try:
+                d = json.loads(r["data"])
+                local.append((r["id"], r["name"], {x.lower() for x in d.get("domains") or []}, d))
+            except ValueError:
+                continue
+        items = []
+        for r in t["rows"]:
+            row = dict(zip(t["columns"], r))
+            if int(row["id"]) not in {int(x) for x in site_ids}:
+                continue
+            d = json.loads(row["data"])
+            doms = {x.lower() for x in d.get("domains") or []}
+            match = next((x for x in local if x[2] & doms), None)
+            if not match:
+                items.append({"name": row["name"], "action": "create"})
+                continue
+            a = Site.model_validate(match[3]).model_dump(mode="json")
+            b = Site.model_validate(d).model_dump(mode="json")
+            a.get("ssl", {}).pop("certificate_id", None)
+            b.get("ssl", {}).pop("certificate_id", None)
+            fields = [k for k in sorted(set(a) | set(b)) if a.get(k) != b.get(k) and k != "name"]
+            items.append({"name": row["name"], "action": "update" if fields else "same", "local": match[1],
+                          "fields": [_site_label(k) for k in fields], "key": site_key(Site.model_validate(d))})
+        return {"sites": items}
+    for sec in [x for x in (sections or list(SECTIONS)) if x in SECTIONS and x in data]:
+        part = data[sec]
+        item: Dict[str, Any] = {"id": sec, "title": SECTIONS[sec], "added": [], "removed": [], "changed": [],
+                                "fields": []}
+        for table, where in TABLES.get(sec, []):
+            t = part.get(table) or {"columns": [], "rows": []}
+            cur = _rows(db, table, where)
+            name = PREVIEW_NAME.get(table, "id")
+
+            def index(tt):
+                res = {}
+                for r in tt["rows"]:
+                    row = dict(zip(tt["columns"], r))
+                    res[row.get("id", row.get(name))] = row
+                return res
+            a, b = index(cur), index(t)
+            label = (lambda row: str(row.get(name) or row.get("id"))) if table != "api_tokens" else \
+                (lambda row: f"токен «{row.get('name')}»")
+            item["added"] += [label(b[k]) for k in b if k not in a]
+            item["removed"] += [label(a[k]) for k in a if k not in b]
+            for k in a.keys() & b.keys():
+                ra = {c: v for c, v in a[k].items() if c not in PREVIEW_SKIP}
+                rb = {c: v for c, v in b[k].items() if c not in PREVIEW_SKIP}
+                if ra != rb:
+                    item["changed"].append(label(b[k]))
+        for key in KV.get(sec, []):
+            if key not in part:
+                continue
+            cur_v = db.kv_get(key)
+            if key in ("challenge_secret", "tg_actions_secret"):
+                if cur_v != part[key]:
+                    item["fields"].append("ключ " + ("проверки браузера (выданные отметки станут недействительны)"
+                                                     if key == "challenge_secret" else "кнопок Telegram"))
+                continue
+            if isinstance(cur_v, dict) and isinstance(part[key], dict):
+                item["fields"] += _kv_labels(key, cur_v, part[key])
+            elif cur_v != part[key]:
+                item["fields"].append(key)
+        item["same"] = not (item["added"] or item["removed"] or item["changed"] or item["fields"])
+        out.append(item)
+    return {"sections": out}
+
+
+def _site_label(k: str) -> str:
+    from ..models import Site
+    from .compare import SITE_GROUPS
+    if k in SITE_GROUPS:
+        return SITE_GROUPS[k]
+    f = Site.model_fields.get(k)
+    extra = (f.json_schema_extra if f else None) or {}
+    return extra.get("label", k) if isinstance(extra, dict) else k
+
+
 def _after(app, sections: List[str], notes: List[str]) -> None:
     """Сбросить кэши и пересобрать то, что зависит от восстановленных данных."""
     app._panel = None

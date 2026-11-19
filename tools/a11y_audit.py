@@ -68,6 +68,7 @@ async def theme_run(browser, a, axe, theme, out):
         await rst.click()
         try:
             await page.wait_for_selector(".modal", timeout=15000)
+            await page.wait_for_timeout(600)  # окно появляется плавно — проверять после анимации
             await check(page, axe, f"{theme}: окно восстановления копии", out)
         finally:
             await page.keyboard.press("Escape")

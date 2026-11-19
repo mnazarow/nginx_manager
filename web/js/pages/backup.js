@@ -246,7 +246,25 @@ export async function restoreSettingsDlg(name, encrypted, onDone) {
           sec.names.length ? h('div', { class: 'small muted' }, sec.names.slice(0, 8).join(', ') + (sec.count > 8 ? ' …' : '')) : null,
           sec.id === 'users' ? h('div', { class: 'small warning-text' }, 'Все выйдут из панели и войдут с паролями и 2FA из копии') : null));
     }));
+    const pvBox = h('div', { class: 'small', 'aria-live': 'polite' });
+    const pvBtn = h('button', { class: 'btn sm', type: 'button', onclick: async () => {
+      const sections = Object.keys(checks).filter(k => checks[k].checked);
+      const sites = Object.keys(siteChecks).filter(k => siteChecks[k].checked).map(Number);
+      if (mode === 'sites' ? !sites.length : !sections.length) { toast(mode === 'sites' ? 'Выберите сайты' : 'Выберите разделы', 'bad'); return; }
+      pvBtn.disabled = true;
+      mount(pvBox, h('span', { class: 'muted' }, 'сравниваю с текущими настройками…'));
+      try {
+        const r = await api('/backup/settings/preview', { method: 'POST', body: { name, password: pass.value, ...(mode === 'sites' ? { sites } : { sections }) } });
+        const list = (label, xs, cls) => xs.length ? h('div', { class: cls }, `${label}: ${xs.slice(0, 12).join(', ')}${xs.length > 12 ? ` и ещё ${xs.length - 12}` : ''}`) : null;
+        mount(pvBox, h('div', { class: 'card-inset', style: { padding: '8px 10px', border: '1px solid var(--line)', borderRadius: '8px' } },
+          r.sites ? r.sites.map(x => h('div', {}, h('b', {}, x.name), ' — ',
+            x.action === 'create' ? 'будет создан' : x.action === 'same' ? `совпадает с «${x.local}», не изменится` : `обновится «${x.local}»: ${x.fields.join(', ')}`))
+            : r.sections.map(x => h('div', { class: 'mb' }, h('b', {}, x.title.split(' (')[0]), x.same ? h('span', { class: 'muted' }, ' — без изменений') : null,
+              list('добавится', x.added, 'good-text'), list('удалится', x.removed, 'bad-text'), list('изменится', x.changed, ''), list('поля', x.fields, 'muted')))));
+      } catch (e) { mount(pvBox, h('span', { class: 'bad-text' }, e.data?.detail || e.message)); } finally { pvBtn.disabled = false; }
+    } }, icon('eye'), 'Что изменится');
     body.append(
+      h('div', { class: 'col', style: { gap: '6px' } }, h('div', {}, pvBtn), pvBox),
       h('label', { class: 'check', style: { display: 'flex', gap: '8px', alignItems: 'baseline' } }, applyCb,
         h('span', {}, 'Сразу применить конфигурацию nginx', h('div', { class: 'small muted' }, 'С проверкой nginx -t; если nginx её не примет — настройки вернутся к текущим автоматически'))),
       h('div', { class: 'alert info small' }, 'Каждый выбранный раздел заменяется целиком. Статистика, журналы и история версий не меняются. Перед восстановлением текущие настройки сохраняются в копию before-settings-restore — к ним можно вернуться так же.'));

@@ -197,6 +197,11 @@ export async function peersCard() {
           `версия ${p.sites_version || '—'} — ${fmtAgo(p.sites_at)}`, h('div', { class: 'muted small' }, `${fmtInt(p.sites_sent || 0)} сайтов${p.sites_tag ? ' с меткой «' + p.sites_tag + '»' : ''}${p.sites_applied ? ', применено' : ''}`),
           p.sites_note ? h('div', { class: 'warning-text small', title: p.sites_note }, 'не применено: ' + p.sites_note.slice(0, 80)) : null)
           : h('span', { class: 'muted small' }, 'ожидает') },
+      { title: 'Потоки и nginx', render: (p) => !p.streams && !p.global_settings ? h('span', { class: 'muted small' }, 'по кнопке') : p.parts_error ? h('span', { class: 'bad-text small', title: p.parts_error }, p.parts_error.slice(0, 90))
+        : p.parts_at ? h('span', { class: 'small', title: p.parts_result ? `потоки: создано ${p.parts_result.created}, обновлено ${p.parts_result.updated}, удалено ${p.parts_result.deleted}, без изменений ${p.parts_result.unchanged}` : '' },
+          `версия ${p.parts_version || '—'} — ${fmtAgo(p.parts_at)}`, h('div', { class: 'muted small' }, [p.streams ? 'потоки' : '', p.global_settings ? 'общие настройки' : ''].filter(Boolean).join(' и ') + (p.parts_applied ? ', применено' : '')),
+          p.parts_note ? h('div', { class: 'warning-text small', title: p.parts_note }, 'не применено: ' + p.parts_note.slice(0, 80)) : null)
+          : h('span', { class: 'muted small' }, 'ожидает') },
       { title: 'Настройки защиты', render: (p) => !p.protection ? h('span', { class: 'muted small' }, 'вручную') : p.prot_error ? h('span', { class: 'bad-text small' }, p.prot_error)
         : p.prot_at ? h('span', { class: 'small' }, `применены ${fmtAgo(p.prot_at)}`,
           p.prot_mapped || p.prot_dropped ? h('div', { class: 'muted small', title: 'Правила, привязанные к сайтам, сопоставляются по доменам: сайт с тем же доменом на получателе' },
@@ -204,8 +209,8 @@ export async function peersCard() {
           : h('span', { class: 'muted small' }, 'при сохранении') },
       { title: '', srTitle: 'Действия', render: (p) => h('div', { class: 'row', style: { gap: '6px', flexWrap: 'nowrap' } },
         can('admin') ? h('button', { class: 'btn sm', onclick: () => test(p) }, 'Проверить связь') : null,
-        can('operator') ? h('button', { class: 'btn sm', title: p.compare ? `прошлое сравнение ${fmtAgo(p.compare.at)}: различий ${p.compare.total}` : 'Сравнить применённую конфигурацию с этим сервером', onclick: () => compareDlg(p) },
-          'Сравнить', p.compare ? h('span', { class: `badge ${p.compare.total ? 'warn' : 'good'}`, style: { marginLeft: '6px' } }, p.compare.total ? String(p.compare.total) : '✓') : null) : null) },
+        can('operator') ? h('button', { class: 'btn sm', title: p.compare?.at ? `прошлое сравнение ${fmtAgo(p.compare.at)}: различий ${p.compare.total}${p.compare.error ? '; последняя автоматическая проверка: ' + p.compare.error : ''}` : 'Сравнить применённую конфигурацию с этим сервером', onclick: () => compareDlg(p) },
+          'Сравнить', p.compare?.at ? h('span', { class: `badge ${p.compare.total ? 'warn' : 'good'}`, style: { marginLeft: '6px' } }, p.compare.total ? String(p.compare.total) : '✓') : null) : null) },
     ], d.peers) : empty('Серверов нет', 'Добавьте их в «Настройки панели → Другие серверы»', can('admin') ? h('a', { class: 'btn primary', href: '#/settings?tab=peers' }, 'Добавить сервер') : null, 'server'),
     { flush: !!d.peers.length, actions: can('admin') && d.peers.length ? [
       h('button', { class: 'btn', onclick: () => transferDialog(d.peers.filter(p => p.enabled)) }, icon('upload'), 'Перенести сайты…'),

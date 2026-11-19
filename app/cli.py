@@ -24,6 +24,8 @@
     nmctl settings backup [-o DIR]    копия всех настроек (пароль — NM_BACKUP_PASSWORD или --password-file)
     nmctl settings inspect ФАЙЛ       что в копии настроек
     nmctl settings restore ФАЙЛ [--sections sites,certificates] [--no-apply]   восстановить настройки
+    nmctl settings remote s3://бакет/префикс/ --endpoint URL   копии настроек в хранилище
+    nmctl settings restore s3://бакет/префикс/latest --endpoint URL   новый сервер — прямо из хранилища
     nmctl lists keygen -o ключ.txt    ключи подписи списков адресов (Ed25519): закрытый — в файл, открытый — на экран
     nmctl lists sign СПИСОК --key ключ.txt   подписать список адресов (рядом появится СПИСОК.sig)
     nmctl lists verify СПИСОК --pub ed25519:…   проверить подпись списка
@@ -530,7 +532,7 @@ def cmd_lists(a) -> int:
     if not a.pub:
         raise ValueError("Укажите --pub открытый ключ (ed25519:…)")
     sig = Path(a.sig or a.file + ".sig").read_bytes()
-    ok = E.verify(E.parse_public(a.pub), data, E.parse_signature(sig if len(sig) == 64 else sig.strip()))
+    ok = E.verify_any(E.parse_publics(a.pub), data, E.parse_signature(sig if len(sig) == 64 else sig.strip()))
     print(f"{C['ok']}✓ подпись верна{C['r']}" if ok else f"{C['fail']}✗ подпись не совпадает{C['r']}")
     return 0 if ok else 1
 
@@ -660,11 +662,88 @@ class _CliApp:
         pass
 
 
+def _s3_from_url(a, db, url: str):
+    """s3://бакет/префикс/[имя|latest] → (клиент, префикс, имя или ''). Адрес и ключи — из --endpoint и
+    NM_S3_ACCESS_KEY / NM_S3_SECRET_KEY (новый сервер) или из настроек панели, если бакет — её хранилище."""
+    import urllib.parse
+    from .models import PanelSettings
+    from .services.s3 import S3Client
+    u = urllib.parse.urlparse(url)
+    if u.scheme != "s3" or not u.netloc:
+        raise ValueError("Адрес копии в хранилище — s3://бакет/префикс/имя-файла (или …/latest)")
+    bucket, rest = u.netloc, u.path.lstrip("/")
+    name = ""
+    if rest.endswith(".settings.tar.gz") or rest.endswith(".settings.tar.gz.enc") or rest.endswith("/latest") \
+            or rest == "latest":
+        prefix, _, name = rest.rpartition("/")
+        prefix = prefix + "/" if prefix else ""
+    else:
+        prefix = rest if not rest or rest.endswith("/") else rest + "/"
+    ak, sk = os.environ.get("NM_S3_ACCESS_KEY", ""), os.environ.get("NM_S3_SECRET_KEY", "")
+    endpoint = a.endpoint or os.environ.get("NM_S3_ENDPOINT", "")
+    region = a.region or os.environ.get("NM_S3_REGION", "")
+    path_style = not a.virtual_host
+    if not endpoint:
+        ps = PanelSettings.model_validate(db.kv_get("panel_settings", {}))
+        if ps.sb_s3 and ps.sb_s3_bucket == bucket:
+            endpoint, region, ak, sk, path_style = (ps.sb_s3_endpoint, ps.sb_s3_region, ak or ps.sb_s3_access_key,
+                                                    sk or ps.sb_s3_secret_key, ps.sb_s3_path_style)
+        elif ps.s3_endpoint and ps.s3_bucket == bucket:
+            endpoint, region, ak, sk, path_style = (ps.s3_endpoint, ps.s3_region, ak or ps.s3_access_key,
+                                                    sk or ps.s3_secret_key, ps.s3_path_style)
+        else:
+            raise ValueError("Укажите --endpoint (адрес хранилища) — этот бакет не настроен в панели")
+    if not ak and sys.stdin.isatty():
+        ak = input("Access key ID: ").strip()
+    if not sk and sys.stdin.isatty():
+        sk = getpass.getpass("Secret access key: ")
+    if not ak or not sk:
+        raise ValueError("Ключи хранилища — переменные NM_S3_ACCESS_KEY и NM_S3_SECRET_KEY")
+    return S3Client(endpoint, region or "us-east-1", bucket, ak, sk, path_style), prefix, name
+
+
+def _s3_settings_list(cl, prefix: str):
+    return sorted((o for o in cl.list(prefix) if ".settings.tar.gz" in o["key"] and "/" not in o["key"][len(prefix):]),
+                  key=lambda o: o["key"])
+
+
+def _s3_fetch(a, db, url: str) -> Path:
+    from .config import settings
+    cl, prefix, name = _s3_from_url(a, db, url)
+    if not name or name == "latest":
+        objs = _s3_settings_list(cl, prefix)
+        if not objs:
+            raise ValueError(f"В s3://{cl.bucket}/{prefix} нет копий настроек")
+        name = objs[-1]["key"][len(prefix):]
+    if not name.startswith("nginx-manager-"):
+        raise ValueError("Это не копия настроек Nginx Manager")
+    settings.ensure_dirs()
+    dest = settings.backups_dir / name
+    cl.get_to_file(prefix + name, dest)
+    dest.chmod(0o600)
+    print(f"{C['ok']}✓{C['r']} скачана {name} ({dest.stat().st_size // 1024} КБ) → {dest}")
+    return dest
+
+
 def cmd_settings(a) -> int:
-    """Копия всех настроек: backup | inspect | restore."""
+    """Копия всех настроек: backup | inspect | restore | remote | fetch."""
     from .services import settings_backup as SB
     db = _db()
     password = _backup_password(a)
+    if a.action == "remote":
+        if not a.file:
+            raise ValueError("Укажите s3://бакет/префикс/")
+        cl, prefix, _ = _s3_from_url(a, db, a.file)
+        objs = _s3_settings_list(cl, prefix)
+        for o in objs:
+            print(f"  {o['key'][len(prefix):]:<64} {o.get('size', 0) // 1024:>6} КБ  {o.get('last_modified', '')}")
+        print(f"копий настроек: {len(objs)} (s3://{cl.bucket}/{prefix})")
+        return 0
+    if a.action == "fetch":
+        if not a.file:
+            raise ValueError("Укажите s3://бакет/префикс/имя-файла или …/latest")
+        _s3_fetch(a, db, a.file)
+        return 0
     if a.action == "backup":
         app = _CliApp(db)
         p = SB.create(app, "cli", None, password, dest_dir=Path(a.output) if a.output else None)
@@ -675,7 +754,7 @@ def cmd_settings(a) -> int:
         return 0
     if not a.file:
         raise ValueError("Укажите файл копии")
-    path = Path(a.file)
+    path = _s3_fetch(a, db, a.file) if a.file.startswith("s3://") else Path(a.file)
     if path.name.endswith(".enc") and not password and sys.stdin.isatty():
         password = getpass.getpass("Пароль копии: ")
     if a.action == "inspect":
@@ -762,8 +841,12 @@ def main(argv=None) -> int:
     p.add_argument("--json", action="store_true")
     sub.add_parser("peers", help="другие серверы: связь и обмен")
     p = sub.add_parser("settings", help="копия всех настроек и восстановление")
-    p.add_argument("action", choices=["backup", "inspect", "restore"])
-    p.add_argument("file", nargs="?", default="")
+    p.add_argument("action", choices=["backup", "inspect", "restore", "remote", "fetch"])
+    p.add_argument("file", nargs="?", default="", help="файл копии или s3://бакет/префикс/имя (…/latest — последняя)")
+    p.add_argument("--endpoint", default="", help="адрес S3-хранилища (или NM_S3_ENDPOINT); ключи — NM_S3_ACCESS_KEY, "
+                                                  "NM_S3_SECRET_KEY")
+    p.add_argument("--region", default="", help="регион хранилища (или NM_S3_REGION)")
+    p.add_argument("--virtual-host", action="store_true", help="адресация virtual-hosted вместо path-style")
     p.add_argument("-o", "--output", default="", help="каталог для копии (по умолчанию — каталог копий панели)")
     p.add_argument("--password-file", default="", help="файл с паролем копии (или переменная NM_BACKUP_PASSWORD)")
     p.add_argument("--sections", default="", help="разделы через запятую: " + ", ".join(

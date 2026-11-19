@@ -150,6 +150,27 @@ def parse_public(text: str) -> bytes:
     return raw
 
 
+def parse_publics(text: str) -> list:
+    """Несколько открытых ключей (смена ключа: старый и новый на переходный период) — через пробел, запятую или
+    перевод строки; PEM-блоки — целиком. До трёх ключей."""
+    import re
+    t = text or ""
+    keys = [parse_public(m) for m in re.findall(r"-----BEGIN PUBLIC KEY-----.*?-----END PUBLIC KEY-----", t, re.S)]
+    t = re.sub(r"-----BEGIN PUBLIC KEY-----.*?-----END PUBLIC KEY-----", " ", t, flags=re.S)
+    keys += [parse_public(x) for x in re.split(r"[\s,;]+", t) if x]
+    out = []
+    for k in keys:
+        if k not in out:
+            out.append(k)
+    if len(out) > 3:
+        raise ValueError("не больше трёх открытых ключей")
+    return out
+
+
+def verify_any(publics: list, msg: bytes, signature: bytes) -> bool:
+    return any(verify(k, msg, signature) for k in publics)
+
+
 def parse_signature(blob: bytes) -> bytes:
     if len(blob) == 64:
         return blob

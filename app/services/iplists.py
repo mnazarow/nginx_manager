@@ -65,8 +65,8 @@ def fetch(url: str, timeout: float = 20, sha256: str = "", pubkey: str = "", sig
             sig = _get(su, 4096, timeout)
         except Exception as e:  # noqa: BLE001
             raise ValueError(f"файл подписи {su} не скачан: {e}")
-        if not ed25519.verify(ed25519.parse_public(pubkey), blob, ed25519.parse_signature(sig.strip()
-                                                                                            if len(sig) != 64 else sig)):
+        if not ed25519.verify_any(ed25519.parse_publics(pubkey), blob,
+                                  ed25519.parse_signature(sig.strip() if len(sig) != 64 else sig)):
             raise ValueError("подпись списка не совпадает с ключом владельца — загрузка отклонена")
     nets = parse(blob.decode("utf-8", "replace"))
     if not nets:

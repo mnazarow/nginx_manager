@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from ..models import GlobalSettings, Stream
 
@@ -31,14 +31,26 @@ def export_global(app) -> Dict[str, Any]:
     return {k: v for k, v in state.glob.model_dump(mode="json").items() if k not in GLOBAL_LOCAL}
 
 
-def receive_streams(app, items: List[Dict[str, Any]], overwrite: bool = True) -> Dict[str, Any]:
-    res: Dict[str, Any] = {"created": 0, "updated": 0, "skipped": 0, "items": []}
-    local = {}
+MIRROR_KV = "synced_streams"
+
+
+def receive_streams(app, items: List[Dict[str, Any]], overwrite: bool = True, origin: Optional[Dict[str, str]] = None,
+                    mirror: bool = False) -> Dict[str, Any]:
+    """Принять потоки. mirror — постоянная синхронизация: потоки, созданные этой синхронизацией и пропавшие у
+    источника, удаляются (свои потоки получателя с тем же ключом, которые синхронизация обновляла, — остаются)."""
+    res: Dict[str, Any] = {"created": 0, "updated": 0, "unchanged": 0, "skipped": 0, "deleted": 0, "items": []}
+    local: Dict[str, int] = {}
+    cur_data: Dict[int, str] = {}
     for r in app.db.query("SELECT id, data FROM streams"):
         try:
             local[stream_key(Stream.model_validate(json.loads(r["data"])))] = r["id"]
+            cur_data[r["id"]] = json.dumps(json.loads(r["data"]), sort_keys=True)
         except Exception:  # noqa: BLE001
             continue
+    track_all = app.db.kv_get(MIRROR_KV, {}) or {}
+    oid = (origin or {}).get("id", "")
+    track: Dict[str, List[Any]] = dict((track_all.get(oid) or {}).get("map") or {}) if mirror else {}
+    seen = set()
     now = time.time()
     for it in items[:200]:
         try:
@@ -49,11 +61,18 @@ def receive_streams(app, items: List[Dict[str, Any]], overwrite: bool = True) ->
                                  "notes": [f"неверные настройки: {str(e)[:200]}"]})
             continue
         key = stream_key(s)
-        data = json.dumps(s.model_dump(mode="json"), ensure_ascii=False)
+        seen.add(key)
+        dump = s.model_dump(mode="json")
+        data = json.dumps(dump, ensure_ascii=False)
         if key in local:
-            if not overwrite:
+            if not overwrite and not mirror:
                 res["skipped"] += 1
                 res["items"].append({"name": s.name, "action": "skipped", "notes": ["такой поток уже есть"]})
+                continue
+            if mirror and key not in track:
+                track[key] = [local[key], False]  # свой поток получателя — не удалять, если пропадёт у источника
+            if cur_data.get(local[key]) == json.dumps(dump, sort_keys=True):
+                res["unchanged"] += 1
                 continue
             app.db.execute("UPDATE streams SET name=?, enabled=?, data=?, updated_at=? WHERE id=?",
                            (s.name, int(s.enabled), data, now, local[key]))
@@ -63,8 +82,19 @@ def receive_streams(app, items: List[Dict[str, Any]], overwrite: bool = True) ->
             sid = app.db.execute("INSERT INTO streams(name, enabled, data, created_at, updated_at) VALUES(?,?,?,?,?)",
                                  (s.name, int(s.enabled), data, now, now))
             local[key] = sid
+            if mirror:
+                track[key] = [sid, True]
             res["created"] += 1
             res["items"].append({"name": s.name, "id": sid, "action": "created"})
+    if mirror and oid:
+        for key in [k for k in track if k not in seen]:
+            lid, created = track.pop(key)
+            if created and app.db.one("SELECT 1 FROM streams WHERE id=?", (lid,)):
+                app.db.execute("DELETE FROM streams WHERE id=?", (lid,))
+                res["deleted"] += 1
+                res["items"].append({"name": key, "id": lid, "action": "deleted"})
+        track_all[oid] = {"name": (origin or {}).get("name", oid), "map": track, "at": now}
+        app.db.kv_set(MIRROR_KV, track_all)
     return res
 
 

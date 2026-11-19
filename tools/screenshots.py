@@ -48,7 +48,7 @@ SCENES = {"protection-ip", "protection-rule", "protection-ratelimit", "protectio
           "site-ip-denials", "ip-temp-access", "peers-transfer", "ip-link", "site-ip-links",
           *SCROLL, "geo-site", "sites-bulk", "backup-s3", "backup-restore", "backup-settings-restore",
           "site-ip-lists", "ip-bulk-file", "peers-compare", "backup-restore-sites", "trusted-lists",
-          "backup-second-storage"}  # снимки с действиями: --only geo-site,sites-bulk или --extras
+          "backup-second-storage", "backup-restore-preview"}  # снимки с действиями: --only geo-site,sites-bulk или --extras
 
 
 async def main(a):
@@ -375,6 +375,22 @@ async def scenes(page, a, only):
         await page.screenshot(path=f"{a.out}/backup-restore-sites.png")
         await page.keyboard.press("Escape")
         print("backup-restore-sites: ok")
+    if not only or "backup-restore-preview" in only:
+        # «Что изменится» перед восстановлением
+        await page.goto(f"{a.url}/#/backup")
+        await page.wait_for_timeout(2000)
+        btn = page.locator("table.t tbody tr", has_text="-all.settings.tar.gz").locator("button", has_text="Восстановить").first
+        await btn.click()
+        await page.wait_for_selector(".modal dl.kv", timeout=15000)
+        for sec in ("Пользователи", "Ключи проверки", "Оповещения", "Ручные блокировки", "Учётные записи DNS"):
+            await page.locator(".modal label.check", has_text=sec).locator("input").first.uncheck()
+        await page.locator(".modal button", has_text="Что изменится").click()
+        await page.wait_for_selector(".modal .card-inset", timeout=20000)
+        await page.locator(".modal .card-inset").scroll_into_view_if_needed()
+        await page.wait_for_timeout(400)
+        await page.screenshot(path=f"{a.out}/backup-restore-preview.png")
+        await page.keyboard.press("Escape")
+        print("backup-restore-preview: ok")
     if not only or "backup-second-storage" in only:
         # «Копии во втором хранилище…»: список копий настроек и «Восстановить…»
         await page.goto(f"{a.url}/#/backup")

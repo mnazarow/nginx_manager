@@ -194,3 +194,16 @@ async def settings_verify(request: Request, user=Depends(admin)):
     res = await asyncio.to_thread(SJ.verify, app, "manual")
     audit(request, user, "settings_verified", "", {"ok": res["ok"]})
     return res
+
+
+@router.post("/backup/settings/preview")
+async def settings_preview(request: Request, body: Dict[str, Any] = Body(...), user=Depends(admin)):
+    """Что изменится при восстановлении: {name, password, sections | sites}."""
+    app = _nm(request)
+    p = _file(str(body.get("name") or ""))
+    sites = [int(x) for x in (body.get("sites") or []) if str(x).isdigit()]
+    try:
+        return await asyncio.to_thread(SB.preview, app, p, str(body.get("password") or ""),
+                                       [str(x) for x in (body.get("sections") or [])] or None, sites or None)
+    except ValueError as e:
+        raise HTTPException(400, str(e))

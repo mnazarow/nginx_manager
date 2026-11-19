@@ -241,7 +241,7 @@ class FakeS3:
     store: dict = {}
 
     def __init__(self, *a):
-        pass
+        self.bucket = a[2] if len(a) > 2 else "fake"
 
     def put_file(self, key, path):
         self.store[key] = Path(path).read_bytes()
