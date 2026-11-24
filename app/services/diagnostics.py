@@ -113,6 +113,39 @@ def selinux_port_problems(needed: List[tuple], types: Dict[tuple, str]) -> List[
     return out
 
 
+UFW_APPS = {"nginx full": {80, 443}, "nginx http": {80}, "nginx https": {443}, "apache full": {80, 443},
+            "apache": {80}, "apache secure": {443}, "www full": {80, 443}, "www": {80}, "www secure": {443}}
+
+
+def port_list(text: str) -> set:
+    """Порты из записей вида 80/tcp, 80,443/tcp, 8000:8100/tcp, 8000-8100/udp (ufw, firewalld)."""
+    out: set = set()
+    for item in re.findall(r"(?<![\w.:])([\d,:\-]+)(?:/(?:tcp|udp))?(?=\s|$)", text):
+        for part in item.split(","):
+            rng = re.fullmatch(r"(\d+)[:\-](\d+)", part)
+            if rng and int(rng.group(1)) <= int(rng.group(2)) <= 65535:
+                out.update(range(int(rng.group(1)), int(rng.group(2)) + 1))
+            elif part.isdigit():
+                out.add(int(part))
+    return out
+
+
+def ufw_open_ports(status: str) -> set:
+    """Разрешённые для всех входящие порты из вывода «ufw status»: числа, списки, диапазоны, профили (Nginx Full)."""
+    out: set = set()
+    for line in status.splitlines():
+        m = re.match(r"^(.+?)\s{2,}(ALLOW|LIMIT)(?: IN)?\s+(.+?)\s*$", line)
+        if not m or not m.group(3).startswith("Anywhere"):
+            continue
+        to = re.sub(r"\s*\(v6\)$", "", m.group(1).strip())
+        app = UFW_APPS.get(to.lower())
+        if app:
+            out |= app
+        else:
+            out |= port_list(to)
+    return out
+
+
 def plural(n: int, one: str, few: str, many: str) -> str:
     n = abs(n) % 100
     if 10 < n < 20:
@@ -648,8 +681,8 @@ class Diagnostics:
         if which("ufw"):
             code, out = await asyncio.to_thread(run, ["ufw", "status"])
             if "Status: active" in out:
-                closed = [p for p in sorted(ports) if not re.search(rf"^{p}(/tcp|/udp)?\s+(ALLOW|LIMIT)", out, re.M)
-                          and not ("Nginx Full" in out and p in (80, 443))]
+                opened = ufw_open_ports(out)
+                closed = [p for p in sorted(ports) if p not in opened]
                 if closed:
                     res.append(R("fw_ufw", g, "UFW", WARN, f"Порты не разрешены: {', '.join(map(str, closed))}",
                                  fix="fw_open", fix_label="Открыть порты", fix_args={"ports": closed}))
@@ -663,9 +696,10 @@ class Diagnostics:
                 _, services = await asyncio.to_thread(run, ["firewall-cmd", "--list-services"])
                 _, plist = await asyncio.to_thread(run, ["firewall-cmd", "--list-ports"])
                 closed = []
+                opened = port_list(plist)
                 for p in sorted(ports):
                     svc = {80: "http", 443: "https"}.get(p)
-                    if (svc and svc in services.split()) or re.search(rf"\b{p}/(tcp|udp)\b", plist):
+                    if (svc and svc in services.split()) or p in opened:
                         continue
                     closed.append(p)
                 if closed:
@@ -1260,16 +1294,27 @@ class Diagnostics:
             res = await self.app.apply(username, "server_names_hash_bucket_size=256")
             return {"ok": True, "output": f"Версия {res['version']}"}
         if action == "fw_open":
-            ports = [int(p) for p in args.get("ports", [80, 443])]
-            outs = []
+            try:
+                ports = sorted({int(p) for p in (args or {}).get("ports", [80, 443])})
+            except (TypeError, ValueError):
+                raise ValueError("Порты — числа от 1 до 65535") from None
+            if not ports or not all(1 <= p <= 65535 for p in ports):
+                raise ValueError("Порты — числа от 1 до 65535")
+            outs, ok = [], True
+            if not which("ufw") and not which("firewall-cmd"):
+                return {"ok": False, "output": "Не найден ни ufw, ни firewalld — откройте порты вручную "
+                                               "(iptables/nftables или правила облачного провайдера)"}
             if which("ufw"):
                 for p in ports:
-                    outs.append((await asyncio.to_thread(run, ["ufw", "allow", str(p)]))[1])
+                    code, out = await asyncio.to_thread(run, ["ufw", "allow", str(p)])
+                    ok, _ = ok and code == 0, outs.append(out)
             if which("firewall-cmd"):
                 for p in ports:
-                    outs.append((await asyncio.to_thread(run, ["firewall-cmd", "--permanent", f"--add-port={p}/tcp"]))[1])
-                outs.append((await asyncio.to_thread(run, ["firewall-cmd", "--reload"]))[1])
-            return {"ok": True, "output": "\n".join(outs)}
+                    code, out = await asyncio.to_thread(run, ["firewall-cmd", "--permanent", f"--add-port={p}/tcp"])
+                    ok, _ = ok and code == 0, outs.append(out)
+                code, out = await asyncio.to_thread(run, ["firewall-cmd", "--reload"])
+                ok, _ = ok and code == 0, outs.append(out)
+            return {"ok": ok, "output": "\n".join(x.strip() for x in outs if x.strip())}
         if action == "selinux_port":
             proto = str(args.get("proto", "tcp"))
             port = int(args.get("port", 0))
@@ -1282,9 +1327,9 @@ class Diagnostics:
             code, out = await asyncio.to_thread(run, ["setsebool", "-P", "httpd_can_network_connect", "1"], 120)
             return {"ok": code == 0, "output": out}
         if action == "cert_issue_here":
-            return await self.issue_here(int(args["id"]), username)
+            return await self.issue_here(_id_arg(args), username)
         if action == "renew_cert":
-            await self.app.certs.renew(int(args["id"]), after=self.app.after_cert_issued)
+            await self.app.certs.renew(_id_arg(args), after=self.app.after_cert_issued)
             return {"ok": True, "output": "Продление запущено — следите за статусом на странице «Сертификаты»"}
         if action == "bans_sync":
             ok, out = await self.app.bans.sync(force=True)
@@ -1415,6 +1460,13 @@ LOGROTATE = """/var/log/nginx/nm-*.log {
     endscript
 }
 """
+
+
+def _id_arg(args: Optional[Dict[str, Any]]) -> int:
+    try:
+        return int((args or {})["id"])
+    except (KeyError, TypeError, ValueError):
+        raise ValueError("Не указан номер сертификата (id)") from None
 
 
 def mgr_explain(text: str) -> str:

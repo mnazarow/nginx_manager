@@ -152,7 +152,7 @@ def totp_secret() -> str:
 
 def totp_code(secret: str, t: Optional[float] = None, step: int = 30, digits: int = 6) -> str:
     key = base64.b32decode(secret + "=" * (-len(secret) % 8), casefold=True)
-    counter = int((t or time.time()) // step)
+    counter = int((time.time() if t is None else t) // step)
     h = hmac.new(key, struct.pack(">Q", counter), hashlib.sha1).digest()
     o = h[-1] & 0x0F
     code = (struct.unpack(">I", h[o:o + 4])[0] & 0x7FFFFFFF) % (10 ** digits)

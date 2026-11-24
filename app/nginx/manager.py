@@ -466,6 +466,32 @@ class NginxManager:
         if state.glob.ssl_dhparam and not (settings.certs_dir / "dhparam.pem").exists():
             (settings.certs_dir / "dhparam.pem").write_text(FFDHE2048)
 
+    def _ensure_side_files(self, files: Dict[str, str]) -> List[str]:
+        """Файлы вне версий (блокировки, доступ по ссылке, списки угроз, сети стран…), которые подключает
+        конфигурация: если файла нет (удалили вручную, перенос, сбой записи), nginx -t не пройдёт. Пустой файл —
+        правильное содержимое для geo/map до следующего обновления панелью."""
+        root = str(settings.managed_dir).rstrip("/") + "/"
+        skip = (str(settings.versions_dir) + "/", str(settings.live_dir) + "/")
+        made = []
+        for text in files.values():
+            for m in re.finditer(r"^\s*include\s+(/[^;\s*?]+);", text, re.M):
+                path = m.group(1)
+                if not path.startswith(root) or path.startswith(skip):
+                    continue
+                p = Path(path)
+                if p.exists():
+                    continue
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text("# Nginx Manager: файла не было — создан пустым; панель заполнит его при обновлении\n")
+                os.chmod(p, 0o644)
+                made.append(path)
+        if made:
+            log.warning("Созданы пустые подключаемые файлы: %s", ", ".join(made))
+            self.db.event("info", "config", "Созданы пустые подключаемые файлы: "
+                          + ", ".join(Path(x).name for x in made) + " — заполнятся при следующем обновлении "
+                          "(блокировки, списки угроз, адреса роботов, сети стран)")
+        return made
+
     def _write_tree(self, root: Path, files: Dict[str, str], group: str) -> None:
         try:
             gid = grp.getgrnam(group).gr_gid
@@ -598,6 +624,7 @@ class NginxManager:
         user = state.glob.user or caps.default_user
         self.ensure_original_backup()
         self._prepare_dirs(state, user)
+        self._ensure_side_files(staged_files)
         self._write_tree(vdir, {k: v for k, v in staged_files.items() if k != "nginx.conf"}, user)
         staged_main = vdir / "nginx.conf"
         atomic_write(staged_main, staged_files["nginx.conf"])
@@ -811,6 +838,10 @@ def explain_nginx_error(msg: str) -> str:
         (r"key values mismatch", "Закрытый ключ не соответствует сертификату."),
         (r"bind\(\) to .* failed \(98", "Порт уже занят другой программой (Apache, другой nginx...). "
                                         "См. «Диагностика → Порты»."),
+        (r"socket\(\) \[[0-9a-f:]*\]:\d+ failed \(97", "IPv6 выключен на этом сервере, а конфигурация слушает "
+                                                        "адрес [::]. Выберите «IPv6: выключен» в глобальных "
+                                                        "настройках; если адрес [::] указан в подключённом "
+                                                        "системном файле (sites-enabled, conf.d) — уберите его там."),
         (r"bind\(\) to \S*?:(\d+) failed \(13", "Нет прав занять порт {0}: на RHEL/Rocky это SELinux — порт "
                                                  "нужно пометить как http_port_t (Диагностика → SELinux предложит "
                                                  "исправление), а порты ниже 1024 требуют запуска nginx от root."),

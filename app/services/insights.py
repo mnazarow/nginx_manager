@@ -14,13 +14,12 @@
 """
 from __future__ import annotations
 
-import json
 import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..stats.collector import NB, percentile
+from ..stats.collector import NB, load_data, percentile
 from ..stats.parsing import CATEGORY_INFO, ERROR_CATEGORIES
 
 log = logging.getLogger("nm.insights")
@@ -918,7 +917,7 @@ class Analyzer:
         req = sum(r["req"] for r in rows)
         hist = [0] * NB
         for r in rows:
-            h = (json.loads(r["data"] or "{}")).get("hist") or []
+            h = load_data(r["data"]).get("hist") or []
             for i, v in enumerate(h[:NB]):
                 hist[i] += v
         return {"hours": len(rows), "req": req, "rps": req / (len(rows) * 3600), "p95": percentile(hist, 0.95) * 1000}

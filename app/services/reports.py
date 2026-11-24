@@ -188,7 +188,11 @@ async def send(app, report: Dict[str, Any], channel_ids: List[int]) -> List[Dict
             results.append({"id": cid, "ok": False, "error": "канал не найден"})
             continue
         import json
-        ch = AlertChannel.model_validate(json.loads(row["data"]))
+        try:
+            ch = AlertChannel.model_validate(json.loads(row["data"]))
+        except (ValueError, TypeError) as e:
+            results.append({"id": cid, "ok": False, "error": f"настройки канала повреждены: {e}"[:300]})
+            continue
         if not ch.enabled:
             results.append({"id": cid, "name": ch.name, "ok": False, "error": "канал выключен"})
             continue

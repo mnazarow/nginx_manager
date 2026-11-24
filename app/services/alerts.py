@@ -84,6 +84,11 @@ def send(channel: AlertChannel, title: str, text: str, severity: str = "warning"
     host = socket.gethostname()
     icon = SEV_ICON.get(severity, "")
     if channel.type == "telegram":
+        # предел Telegram — 4096 символов; режем исходный текст, а не готовую разметку (иначе тег разорвётся)
+        if len(title) > 200:
+            title = title[:199] + "…"
+        if len(text) > 3400:
+            text = text[:3399] + "…"
         msg = f"{icon} <b>{_html(title)}</b>\n{_html(text)}\n<i>{_html(host)} · Nginx Manager</i>"
         payload: Dict[str, Any] = {"chat_id": channel.telegram_chat_id, "text": msg, "parse_mode": "HTML",
                                    "disable_web_page_preview": True}

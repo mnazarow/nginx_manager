@@ -40,6 +40,18 @@ TOP_KINDS = ("uri", "ip", "ua", "referer", "browser", "os", "device", "country",
 # =============================================================================
 #  Чтение журналов
 # =============================================================================
+def load_data(raw: Any) -> Dict[str, Any]:
+    """Поле data строки статистики: повреждённая запись (сбой диска, ручная правка) — пустые подробности, а не
+    ошибка всего графика, сводки или анализа."""
+    if not raw:
+        return {}
+    try:
+        d = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    return d if isinstance(d, dict) else {}
+
+
 class LogTailer:
     def __init__(self, path: Path, name: str, db: Database, on_lines: Callable[[List[str]], None],
                  interval: float = 0.25) -> None:
@@ -142,7 +154,10 @@ class LogTailer:
                 if now - self._last_save > 5:
                     self._last_save = now
                     self.db.kv_set(f"tail:{self.name}", {"ino": self.ino, "pos": self.pos})
+                await asyncio.sleep(self.interval)
             except asyncio.CancelledError:
+                # остановка панели чаще всего приходится на паузу между чтениями — позиция сохраняется и тогда,
+                # иначе после перезапуска строки последних секунд были бы посчитаны второй раз
                 if self.ino:
                     self.db.kv_set(f"tail:{self.name}", {"ino": self.ino, "pos": self.pos})
                 raise
@@ -150,7 +165,6 @@ class LogTailer:
                 self.errors += 1
                 log.exception("ошибка чтения %s", self.path)
                 await asyncio.sleep(2)
-            await asyncio.sleep(self.interval)
 
     def info(self) -> Dict[str, Any]:
         size = 0
@@ -634,7 +648,7 @@ class Aggregator:
     @staticmethod
     def _merge_row(old: Dict[str, Any], new: tuple, uniq_max: bool = False) -> tuple:
         ts, site, req, bout, bin_, s1, s2, s3, s4, s5, rt_sum, rt_max, urt_sum, urt_n, uniq, data = new
-        merged = merge_data(json.loads(old.get("data") or "{}"), json.loads(data))
+        merged = merge_data(load_data(old.get("data")), json.loads(data))
         return (ts, site, old["req"] + req, old["bout"] + bout, old["bin"] + bin_, old["s1"] + s1, old["s2"] + s2,
                 old["s3"] + s3, old["s4"] + s4, old["s5"] + s5, old["rt_sum"] + rt_sum, max(old["rt_max"], rt_max),
                 old["urt_sum"] + urt_sum, old["urt_n"] + urt_n,
@@ -841,12 +855,12 @@ class StubPoller:
         self.error = ""
 
     async def fetch(self) -> Optional[Dict[str, float]]:
+        writer = None
         try:
             reader, writer = await asyncio.wait_for(asyncio.open_connection("127.0.0.1", self.port), 2)
             writer.write(b"GET /nm_status HTTP/1.0\r\nHost: nm_status\r\nUser-Agent: NginxManager\r\n\r\n")
             await writer.drain()
             data = await asyncio.wait_for(reader.read(4096), 2)
-            writer.close()
             text = data.decode("ascii", "replace")
             body = text.split("\r\n\r\n", 1)[-1]
             lines = body.strip().splitlines()
@@ -860,6 +874,9 @@ class StubPoller:
         except Exception as e:
             self.error = f"{type(e).__name__}: {e}"
             return None
+        finally:
+            if writer is not None:  # и при мусорном ответе или таймауте чтения — соединение не остаётся открытым
+                writer.close()
 
     async def run(self) -> None:
         while True:

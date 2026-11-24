@@ -56,7 +56,8 @@ def test_scan_and_quote():
 def test_parse_feed():
     text = "# comment\n1.2.3.4\n10.0.0.0/8 ; SBL1\n1.2.3.4\nbad\n0.0.0.0/0\n2001:db8::/32\n5.6.7.8 5.6.7.255 24 x\n"
     nets, bad = parse_feed(text)
-    assert nets == ["1.2.3.4", "10.0.0.0/8", "2001:db8::/32", "5.6.7.8"] and bad == 2
+    # строка DShield «начало конец маска» — сеть целиком (до 2.12.0 бралась только первая строка-адрес)
+    assert nets == ["1.2.3.4", "10.0.0.0/8", "2001:db8::/32", "5.6.7.0/24"] and bad == 2
 
 
 def test_challenge_crypto():

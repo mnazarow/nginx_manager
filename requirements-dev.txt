@@ -1,0 +1,7 @@
+# Для разработки и проверки (на сервере не нужны): тесты, покрытие, проверки на случайных данных
+-r requirements.txt
+-r requirements-optional.txt
+pytest>=7
+pytest-cov>=4
+hypothesis>=6
+ruff>=0.4

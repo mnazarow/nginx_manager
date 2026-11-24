@@ -56,9 +56,10 @@ confirm() {  # confirm "вопрос" -> 0/1 ; учитывает ASSUME_YES
 }
 
 detect_os() {
-  [ -r /etc/os-release ] || fail "Не удалось определить ОС (/etc/os-release отсутствует)"
-  # shellcheck disable=SC1091
-  . /etc/os-release
+  local f="${OS_RELEASE_FILE:-/etc/os-release}"  # переменная — для тестов
+  [ -r "$f" ] || fail "Не удалось определить ОС ($f отсутствует)"
+  # shellcheck disable=SC1090
+  . "$f"
   OS_ID="${ID:-unknown}"; OS_LIKE="${ID_LIKE:-}"; OS_VER="${VERSION_ID:-}"; OS_NAME="${PRETTY_NAME:-$OS_ID}"
   OS_CODENAME="${VERSION_CODENAME:-${UBUNTU_CODENAME:-}}"
   case " $OS_ID $OS_LIKE " in
@@ -142,10 +143,13 @@ find_python() {  # выбрать интерпретатор Python >= 3.9
   return 1
 }
 
-panel_port() {
+panel_port() {  # порт панели из panel.conf: допускаются кавычки, пробелы, комментарий в конце строки, CRLF
   local p
-  p=$(grep -E '^(NM_)?BIND_PORT=' "$CONF_DIR/panel.conf" 2>/dev/null | tail -1 | cut -d= -f2)
-  echo "${p:-8088}"
+  p=$(grep -E '^[[:space:]]*(export[[:space:]]+)?(NM_)?BIND_PORT[[:space:]]*=' "$CONF_DIR/panel.conf" 2>/dev/null \
+      | tail -1 | cut -d= -f2- | sed -e 's/#.*//' -e "s/[\"'[:space:]]//g")
+  case "$p" in ''|*[!0-9]*) p=8088 ;; esac
+  [ "$p" -ge 1 ] && [ "$p" -le 65535 ] || p=8088
+  echo "$p"
 }
 
 wait_healthy() {  # wait_healthy <порт> <секунд>

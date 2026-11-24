@@ -130,7 +130,9 @@ ERR_LINE_RE = re.compile(r"^(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}) \[(\w+)\] (\d+
 ERR_FIELDS = {k: re.compile(p) for k, p in {
     "client": r", client: ([^,]+)",
     "server": r", server: ([^,]*)",
-    "request": r", request: \"((?:[^\"\\\\]|\\\\.)*)\"",
+    # строка запроса — до кавычки, за которой идёт следующее поле или конец строки: внутри могут быть и обратные
+    # косые (сканеры: GET /..\\..\\win.ini), и кавычки — nginx пишет строку запроса как есть
+    "request": r", request: \"(.*?)\"(?=, (?:upstream|host|referrer|subrequest): |\s*$)",
     "upstream": r", upstream: \"([^\"]*)\"",
     "host": r", host: \"([^\"]*)\"",
 }.items()}
@@ -233,7 +235,10 @@ def parse_error(line: str) -> Optional[Dict[str, Any]]:
         fm = rx.search(rest)
         fields[k] = fm.group(1) if fm else ""
     msg = rest.split(", client: ", 1)[0] if ", client: " in rest else rest
-    return {"ts": ts, "level": level, "message": msg[:2000], "category": categorize(rest), **fields}
+    cat = categorize(rest)
+    if cat == "other" and level == "emerg":  # уровень emerg — всегда ошибка конфигурации или запуска nginx
+        cat = "config"
+    return {"ts": ts, "level": level, "message": msg[:2000], "category": cat, **fields}
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +247,10 @@ def parse_error(line: str) -> Optional[Dict[str, Any]]:
 BOT_RE = re.compile(r"bot|crawl|spider|slurp|curl|wget|python|httpclient|go-http|java/|okhttp|libwww|scrapy|"
                     r"headless|phantom|scan|nmap|masscan|zgrab|nuclei|nikto|sqlmap|feedfetcher|monitor|uptime|"
                     r"pingdom|axios|node-fetch|postman|insomnia|healthcheck|facebookexternalhit|preview", re.I)
+
+
+_IOS_RE = re.compile(r"\bios\b")
+_CROS_RE = re.compile(r"\bcros\b")
 
 
 @lru_cache(maxsize=20000)
@@ -283,13 +292,13 @@ def classify_ua(ua: str) -> Tuple[str, str, str, bool]:
         b = "Другой"
     if "android" in u:
         os_ = "Android"
-    elif "iphone" in u or "ipad" in u or "ios" in u:
+    elif "iphone" in u or "ipad" in u or _IOS_RE.search(u):
         os_ = "iOS"
     elif "windows" in u:
         os_ = "Windows"
     elif "mac os x" in u or "macintosh" in u:
         os_ = "macOS"
-    elif "cros" in u:
+    elif _CROS_RE.search(u):  # не «Microsoft» (Microsoft-CryptoAPI, Microsoft Office)
         os_ = "ChromeOS"
     elif "linux" in u:
         os_ = "Linux"

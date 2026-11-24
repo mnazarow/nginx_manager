@@ -224,9 +224,15 @@ class App:
             self.protection.flush()
         except Exception:  # noqa: BLE001
             pass
-        for t in self.tasks + [self.health.task, self.alerts.task, self.bans.task]:
-            if t:
-                t.cancel()
+        from .utils import _BACKGROUND
+        stopping = [t for t in self.tasks + [self.health.task, self.alerts.task, self.bans.task] + list(_BACKGROUND)
+                    if t and not t.done()]
+        for t in stopping:
+            t.cancel()
+        if stopping:
+            # дождаться отмены: иначе фоновые задачи (обновление баз, отправка уведомлений) падают при закрытии
+            # цикла событий с «cannot schedule new futures after shutdown» в журнале сервиса
+            await asyncio.wait(stopping, timeout=5)
         await self.stats.stop()
         for c in list(self.clients):
             try:

@@ -34,14 +34,14 @@ class AuthService:
 
     # ------------------------------------------------------------------
     def client_ip(self, request: Request) -> str:
-        ip = request.client.host if request.client else ""
+        ip = plain_ip(request.client.host if request.client else "")
         if ip in settings.trust_proxy:
             xff = request.headers.get("x-forwarded-for", "")
             if xff:
                 ip = xff.split(",")[-1].strip() or ip
             elif request.headers.get("x-real-ip"):
-                ip = request.headers["x-real-ip"]
-        return ip
+                ip = request.headers["x-real-ip"].strip() or ip
+        return plain_ip(ip)
 
     def ip_allowed(self, ip: str) -> bool:
         allow = self.get_panel().panel_allow
@@ -175,10 +175,21 @@ class AuthService:
         return None
 
 
+def plain_ip(ip: str) -> str:
+    """IPv4-адрес, пришедший через сокет IPv6 (::ffff:198.51.100.7, панель слушает «::»), — в обычном виде:
+    иначе он не совпадёт ни с одной сетью IPv4 из «Доступа к панели» и доверенных прокси."""
+    try:
+        a = ipaddress.ip_address(ip)
+    except ValueError:
+        return ip
+    m = getattr(a, "ipv4_mapped", None)
+    return str(m) if m else ip
+
+
 def check_password_strength(pw: str) -> None:
     if len(pw) < 8:
         raise ValueError("Пароль должен быть не короче 8 символов")
-    if pw.isdigit() or pw.isalpha() and pw.lower() == pw:
+    if pw.isdigit() or pw.isalpha() and (pw.lower() == pw or pw.upper() == pw):
         raise ValueError("Пароль слишком простой: используйте буквы разного регистра, цифры или символы")
 
 

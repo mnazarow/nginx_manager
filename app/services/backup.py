@@ -8,6 +8,7 @@ import os
 import re
 import sqlite3
 import time
+import zlib
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -379,8 +380,13 @@ def offsite_download(app, name: str) -> str:
         dest = plain
     if dest.name.endswith(".gz") and not dest.name.endswith(".settings.tar.gz"):  # копия настроек — как есть
         out = dest.with_name(dest.name[:-3])
-        with gzip.open(dest, "rb") as fi, open(out, "wb") as fo:
-            shutil.copyfileobj(fi, fo, 1 << 20)
+        try:
+            with gzip.open(dest, "rb") as fi, open(out, "wb") as fo:
+                shutil.copyfileobj(fi, fo, 1 << 20)
+        except (OSError, EOFError, zlib.error) as e:
+            out.unlink(missing_ok=True)
+            dest.unlink(missing_ok=True)
+            raise ValueError(f"Копия {name} из хранилища повреждена (не распаковывается): {e}") from None
         out.chmod(0o600)
         dest.unlink(missing_ok=True)
         dest = out

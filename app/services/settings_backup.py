@@ -23,6 +23,7 @@ import os
 import re
 import socket
 import tarfile
+import zlib
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -31,6 +32,7 @@ from ..config import VERSION, settings
 
 FORMAT = "nginx-manager-settings"
 LE_DIR = Path("/etc/letsencrypt")  # certbot (подменяется в тестах)
+MAX_TOTAL = 512 * 1024 * 1024  # все файлы архива вместе (защита от «архивной бомбы»)
 MAX_MEMBER = 64 << 20
 
 SECTIONS: Dict[str, str] = {
@@ -202,29 +204,36 @@ def read(path: Path, password: str = "") -> Tuple[Dict[str, Any], Dict[str, Any]
         manifest: Dict[str, Any] = {}
         data: Dict[str, Any] = {}
         files: Dict[str, bytes] = {}
-        with tar:
-            for m in tar.getmembers():
-                name = m.name
-                if name.startswith("/") or ".." in Path(name).parts or "\\" in name:
-                    raise ValueError(f"Недопустимое имя в архиве: {name}")
-                if m.issym():
-                    if not name.startswith("letsencrypt/") or m.linkname.startswith("/") or \
-                            not _inside(name, m.linkname):
-                        raise ValueError(f"Недопустимая ссылка в архиве: {name} → {m.linkname}")
-                    files[name] = ("@link:" + m.linkname).encode()
-                    continue
-                if not m.isfile():
-                    continue
-                if m.size > MAX_MEMBER:
-                    raise ValueError(f"Слишком большой файл в архиве: {name}")
-                blob = tar.extractfile(m).read()
-                if name == "manifest.json":
-                    manifest = json.loads(blob)
-                elif name == "settings.json":
-                    data = json.loads(blob)
-                    files[name] = blob
-                elif name.startswith(("certs/", "letsencrypt/")):
-                    files[name] = blob
+        total = 0
+        try:
+            with tar:
+                for m in tar.getmembers():
+                    name = m.name
+                    if name.startswith("/") or ".." in Path(name).parts or "\\" in name:
+                        raise ValueError(f"Недопустимое имя в архиве: {name}")
+                    if m.issym():
+                        if not name.startswith("letsencrypt/") or m.linkname.startswith("/") or \
+                                not _inside(name, m.linkname):
+                            raise ValueError(f"Недопустимая ссылка в архиве: {name} → {m.linkname}")
+                        files[name] = ("@link:" + m.linkname).encode()
+                        continue
+                    if not m.isfile():
+                        continue
+                    if m.size > MAX_MEMBER:
+                        raise ValueError(f"Слишком большой файл в архиве: {name}")
+                    total += m.size
+                    if total > MAX_TOTAL:
+                        raise ValueError("Слишком большой архив копии настроек")
+                    blob = tar.extractfile(m).read()
+                    if name == "manifest.json":
+                        manifest = json.loads(blob)
+                    elif name == "settings.json":
+                        data = json.loads(blob)
+                        files[name] = blob
+                    elif name.startswith(("certs/", "letsencrypt/")):
+                        files[name] = blob
+        except (tarfile.TarError, OSError, EOFError, zlib.error) as e:  # архив обрывается или повреждён внутри
+            raise ValueError(f"Копия настроек повреждена (архив не читается до конца: {e})") from None
         if manifest.get("format") != FORMAT:
             raise ValueError("Это не копия настроек Nginx Manager (нет manifest.json нужного формата)")
         for name, digest in (manifest.get("files") or {}).items():

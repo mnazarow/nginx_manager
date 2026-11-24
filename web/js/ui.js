@@ -130,7 +130,7 @@ export function fmtNum(n, d = 0) {
   if (n === null || n === undefined || isNaN(n)) return '—';
   return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: d, minimumFractionDigits: 0 }).format(n);
 }
-export function fmtInt(n) { return n === null || n === undefined ? '—' : nf.format(Math.round(n)); }
+export function fmtInt(n) { return n === null || n === undefined || isNaN(n) ? '—' : nf.format(Math.round(n)); }
 export function fmtCompact(n) {
   if (n === null || n === undefined || isNaN(n)) return '—';
   const a = Math.abs(n);
@@ -153,7 +153,7 @@ export function fmtBps(bits) {
 }
 export function fmtMs(ms) {
   if (ms === null || ms === undefined || isNaN(ms)) return '—';
-  if (ms >= 1000) return fmtNum(ms / 1000, 2) + ' с';
+  if (ms >= 999.5) return fmtNum(ms / 1000, 2) + ' с';  // 999,7 мс — «1 с», а не «1 000 мс»
   return fmtNum(ms, ms < 10 ? 1 : 0) + ' мс';
 }
 export function fmtPct(p, d = 1) { return p === null || p === undefined || isNaN(p) ? '—' : fmtNum(p, d) + '%'; }
@@ -175,7 +175,7 @@ export function fmtAgo(ts) {
   return Math.round(s / 86400) + ' дн назад';
 }
 export function fmtDur(s) {
-  s = Math.round(s || 0);
+  s = Math.max(0, Math.round(s || 0));  // отрицательная длительность (часы серверов расходятся) — «0 с»
   const d = Math.floor(s / 86400), hh = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
   if (d) return `${d} д ${hh} ч`;
   if (hh) return `${hh} ч ${m} мин`;

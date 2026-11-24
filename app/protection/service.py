@@ -79,19 +79,22 @@ def parse_feed(text: str) -> Tuple[List[str], int]:
         line = line.split("#", 1)[0].split(";", 1)[0].strip()
         if not line:
             continue
-        tok = line.split()[0].strip(",")
-        if "-" in tok and "/" not in tok:  # диапазон «a-b» (DShield пишет начало и конец через пробел)
+        parts = line.split()
+        tok = parts[0].strip(",")
+        if "-" in tok and "/" not in tok:  # диапазон «a-b»
             tok = tok.split("-")[0]
-        try:
-            net = ipaddress.ip_network(tok, strict=False)
-        except ValueError:
-            # DShield: «начало конец маска» — берём начало и маску
-            parts = line.split()
+        net = None
+        if len(parts) >= 3 and parts[2].isdigit() and "/" not in tok:
+            # DShield: «начало конец маска …» — сеть целиком, а не только её первый адрес
             try:
-                net = ipaddress.ip_network(f"{parts[0]}/{parts[2]}", strict=False) if len(parts) >= 3 else None
-            except (ValueError, IndexError):
+                ipaddress.ip_address(parts[1])
+                net = ipaddress.ip_network(f"{tok}/{parts[2]}", strict=False)
+            except ValueError:
                 net = None
-            if net is None:
+        if net is None:
+            try:
+                net = ipaddress.ip_network(tok, strict=False)
+            except ValueError:
                 bad += 1
                 continue
         if (net.version == 4 and net.prefixlen < 8) or (net.version == 6 and net.prefixlen < 16):
@@ -104,6 +107,13 @@ def parse_feed(text: str) -> Tuple[List[str], int]:
         if len(out) >= MAX_FEED_ENTRIES:
             break
     return out, bad
+
+
+def _int(v: Any, default: int = 0) -> int:
+    try:
+        return int(v) if v not in (None, "") else default
+    except (TypeError, ValueError):
+        return default
 
 
 def feed_error(e: Exception) -> str:
@@ -120,10 +130,15 @@ def feed_error(e: Exception) -> str:
 
 def fetch_feed(url: str, timeout: int = 60) -> str:
     if url.startswith("file://"):
-        return Path(url[7:]).read_text(encoding="utf-8", errors="replace")
-    req = urllib.request.Request(url, headers={"User-Agent": "NginxManager-ThreatFeeds/1.0"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310 — адрес задаёт администратор
-        data = r.read(MAX_FEED_BYTES + 1)
+        path = Path(url[7:])
+        if not path.is_file():  # каталог, устройство (/dev/zero), сокет — не список
+            raise ValueError(f"{path} — не обычный файл")
+        with path.open("rb") as f:
+            data = f.read(MAX_FEED_BYTES + 1)
+    else:
+        req = urllib.request.Request(url, headers={"User-Agent": "NginxManager-ThreatFeeds/1.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310 — адрес задаёт администратор
+            data = r.read(MAX_FEED_BYTES + 1)
     if len(data) > MAX_FEED_BYTES:
         raise ValueError("список больше 40 МБ")
     return data.decode("utf-8", errors="replace")
@@ -168,7 +183,10 @@ def raw_request(host: str, port: int, tls: bool, sni: str, method: str, target: 
             ctx = ssl.create_default_context()
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
-            s = ctx.wrap_socket(s, server_hostname=sni)
+            try:
+                s = ctx.wrap_socket(s, server_hostname=sni)
+            except ssl.SSLError as e:  # рукопожатие не состоялось — это ошибка проверки, а не «соединение закрыто»
+                raise OSError(f"ошибка TLS: {e.reason or e}") from None
         lines = [f"{method} {target} HTTP/1.1", f"Host: {sni}", "Connection: close"]
         lines += [f"{k}: {v}" for k, v in headers.items()]
         if body:
@@ -191,7 +209,11 @@ def raw_request(host: str, port: int, tls: bool, sni: str, method: str, target: 
                 k, v = ln.split(":", 1)
                 hdrs[k.strip().lower()] = v.strip()
         return (int(m.group(1)) if m else None), hdrs
-    except (ConnectionResetError, ssl.SSLError, socket.timeout, BrokenPipeError):
+    except socket.timeout:
+        # молчание сервера — не «запрос отклонён» (444 закрывает соединение сразу): иначе зависший nginx выглядел бы
+        # в самопроверке как успешно блокирующий все атаки
+        raise TimeoutError(f"нет ответа за {timeout:g} с") from None
+    except (ConnectionResetError, ssl.SSLEOFError, ssl.SSLZeroReturnError, BrokenPipeError):
         return None, {}
     finally:
         try:
@@ -1383,16 +1405,19 @@ class ProtectionService:
             data = f.read(min(st.st_size - pos, 16 * 1024 * 1024))
         cut = data.rfind(b"\n")
         if cut < 0:
+            if len(data) >= 16 * 1024 * 1024:  # одна запись больше 16 МБ — пропустить, иначе чтение застрянет на ней
+                self.modsec_pos = (st.st_ino, pos + len(data))
+                log.warning("журнал ModSecurity: пропущена запись больше 16 МБ")
             return 0
         self.modsec_pos = (st.st_ino, pos + cut + 1)
         n = 0
         for line in data[:cut].splitlines():
             try:
                 tr = json.loads(line)["transaction"]
-            except (ValueError, KeyError, TypeError):
-                continue
-            if self.observe_modsec(tr):
-                n += 1
+                if self.observe_modsec(tr):
+                    n += 1
+            except (ValueError, KeyError, TypeError, AttributeError):
+                continue  # обрывок записи (ротация, пропуск большой записи) или неожиданная структура
         return n
 
     def observe_modsec(self, tr: Dict[str, Any], ts: Optional[float] = None) -> bool:
@@ -1404,17 +1429,14 @@ class ProtectionService:
         hdr = {str(k).lower(): v for k, v in (req.get("headers") or {}).items()}
         uri = str(req.get("uri") or "")
         test = "nm_selftest=" in uri
-        code = int((tr.get("response") or {}).get("http_code") or 0)
+        code = _int((tr.get("response") or {}).get("http_code"))
         best = None
         for m in tr.get("messages") or []:
             d = m.get("details") or {}
             rule = str(d.get("ruleId") or "")
             if not rule or rule in CRS_SKIP or rule.startswith("90") or rule.startswith("419"):
                 continue
-            try:
-                sev = int(d.get("severity") or 9)
-            except ValueError:
-                sev = 9
+            sev = _int(d.get("severity"), 9)
             if best is None or sev < best[0]:
                 best = (sev, rule, str(m.get("message") or "")[:200])
         if best is None:

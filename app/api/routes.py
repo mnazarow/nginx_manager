@@ -5,6 +5,7 @@ import asyncio
 import json
 import re
 import time
+import zlib
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -34,7 +35,17 @@ def audit(request: Request, user: Dict[str, Any], action: str, target: str = "",
     nm(request).touch()
 
 
+def clamp(limit: int, hi: int) -> int:
+    """Число записей из запроса: от 1 до hi (отрицательный LIMIT в SQLite — «без ограничения», в срезах Python —
+    «все, кроме последних»)."""
+    return max(1, min(hi, limit))
+
+
 def rng(frm: Optional[float], to: Optional[float], default: int = 3600):
+    import math
+    for v in (frm, to):
+        if v is not None and (not math.isfinite(v) or not 0 <= v <= 4_102_444_800):  # до 2100 года
+            raise HTTPException(400, "Границы периода — время unix в секундах (from, to), например 1764000000")
     end = to or time.time()
     start = frm or end - default
     if start >= end:
@@ -713,7 +724,7 @@ async def test_config(request: Request, user=Depends(viewer)):
 async def versions(request: Request, limit: int = 100, user=Depends(viewer)):
     """История версий конфигурации. ?limit."""
     rows = nm(request).db.query("SELECT id, ts, username, comment, source, status, checksum, "
-                                "length(files) size FROM config_versions ORDER BY id DESC LIMIT ?", (limit,))
+                                "length(files) size FROM config_versions ORDER BY id DESC LIMIT ?", (clamp(limit, 1000),))
     applied = nm(request).db.kv_get("applied_version")
     for r in rows:
         r["current"] = r["id"] == applied
@@ -1042,7 +1053,7 @@ async def stats_ts(request: Request, frm: Optional[float] = Query(None, alias="f
                    site: str = "*", points: int = 240, user=Depends(viewer)):
     """Временные ряды за период (поминутно до 48 часов, дальше почасово). ?from, ?to, ?site, ?points."""
     s, e = rng(frm, to)
-    return await asyncio.to_thread(nm(request).stats.timeseries, s, e, site, min(1000, points))
+    return await asyncio.to_thread(nm(request).stats.timeseries, s, e, site, max(1, min(1000, points)))
 
 
 @router.get("/stats/summary")
@@ -1058,7 +1069,7 @@ async def stats_top(request: Request, kind: str, frm: Optional[float] = Query(No
                     to: Optional[float] = None, site: str = "*", limit: int = 30, user=Depends(viewer)):
     """Топ за период: ?kind = uri, ip, ua, referer, browser, os, device, country, upstream, e4xx, e5xx, slow, host."""
     s, e = rng(frm, to)
-    return await asyncio.to_thread(nm(request).stats.tops, s, e, site, kind, min(500, limit))
+    return await asyncio.to_thread(nm(request).stats.tops, s, e, site, kind, clamp(limit, 500))
 
 
 @router.get("/stats/sites")
@@ -1111,20 +1122,20 @@ async def stats_streams(request: Request, frm: Optional[float] = Query(None, ali
 async def requests_search(request: Request, limit: int = 100, offset: int = 0, user=Depends(viewer)):
     """Поиск по журналу запросов: ?site, status (код или 5xx), ip, method, uri, host, ua, upstream, country, rid, min_rt (мс), start, end (unix-время), sort = rt | bytes, limit, offset."""
     f = dict(request.query_params)
-    return await asyncio.to_thread(nm(request).stats.search_requests, f, min(1000, limit), offset)
+    return await asyncio.to_thread(nm(request).stats.search_requests, f, clamp(limit, 1000), max(0, offset))
 
 
 @router.get("/requests/live")
 async def requests_live(request: Request, seq: int = 0, limit: int = 200, user=Depends(viewer)):
     """Последние запросы из памяти; ?seq — только новее этого номера (живой журнал без WebSocket)."""
-    return nm(request).stats.agg.live_since(seq, min(1000, limit))
+    return nm(request).stats.agg.live_since(seq, clamp(limit, 1000))
 
 
 @router.get("/errors")
 async def errors_search(request: Request, limit: int = 100, offset: int = 0, user=Depends(viewer)):
     """Поиск по журналу ошибок nginx: ?level, category, site, q, start, end, limit, offset; счётчики по категориям."""
     f = dict(request.query_params)
-    return await asyncio.to_thread(nm(request).stats.search_errors, f, min(1000, limit), offset)
+    return await asyncio.to_thread(nm(request).stats.search_errors, f, clamp(limit, 1000), max(0, offset))
 
 
 @router.get("/errors/raw", response_class=PlainTextResponse)
@@ -1483,8 +1494,8 @@ async def audit_log(request: Request, limit: int = 300, q: str = "", user=Depend
     """Аудит действий пользователей (только администратор). ?q — поиск по пользователю, действию и объекту; ?limit."""
     if q:
         return nm(request).db.query("SELECT * FROM audit_log WHERE username LIKE ? OR action LIKE ? OR target LIKE ? "
-                                    "ORDER BY id DESC LIMIT ?", (f"%{q}%",) * 3 + (limit,))
-    return nm(request).db.query("SELECT * FROM audit_log ORDER BY id DESC LIMIT ?", (limit,))
+                                    "ORDER BY id DESC LIMIT ?", (f"%{q}%",) * 3 + (clamp(limit, 5000),))
+    return nm(request).db.query("SELECT * FROM audit_log ORDER BY id DESC LIMIT ?", (clamp(limit, 5000),))
 
 
 # =============================================================================
@@ -1666,7 +1677,7 @@ async def silences_end(sid: int, request: Request, user=Depends(operator)):
 @router.get("/alerts/events")
 async def alert_events(request: Request, limit: int = 200, user=Depends(viewer)):
     """История срабатываний и восстановлений правил."""
-    return nm(request).db.query("SELECT * FROM alert_events ORDER BY id DESC LIMIT ?", (limit,))
+    return nm(request).db.query("SELECT * FROM alert_events ORDER BY id DESC LIMIT ?", (clamp(limit, 5000),))
 
 
 # =============================================================================
@@ -1948,7 +1959,7 @@ async def backup_upload(request: Request, filename: str = Query(...), user=Depen
                     shutil.copyfileobj(fi, fo, 1 << 20)
             try:
                 await asyncio.to_thread(_gunzip)
-            except (OSError, EOFError) as e:
+            except (OSError, EOFError, zlib.error) as e:  # zlib.error — повреждённые данные внутри архива
                 out.unlink(missing_ok=True)
                 raise HTTPException(400, f"Не удалось распаковать .gz: {e}")
             out.chmod(0o600)

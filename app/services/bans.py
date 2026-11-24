@@ -251,6 +251,12 @@ class BanService:
         """Заблокировать адрес/подсеть. minutes=None — бессрочно. Повторная блокировка обновляет срок.
         Доверенные адреса (раздел «Доверенные адреса») не блокируются никогда — ValueError."""
         n = normalize_net(net)
+        nn = ipaddress.ip_network(n, strict=False)
+        for loc in ALWAYS_TRUSTED:
+            t = ipaddress.ip_network(loc)
+            if t.version == nn.version and (nn.subnet_of(t) or t.subnet_of(nn)):
+                raise ValueError(f"{n}: адрес самого сервера (loopback) не блокируется — через него работают "
+                                 "самопроверка защиты, проверка выпуска сертификатов и мониторинг")
         hit = self.trusted_entry(n)
         if hit:
             raise ValueError(f"{n}: адрес в доверенных ({hit}) — такие адреса не блокируются. Уберите его из "

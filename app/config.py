@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import os
+import re
 import secrets
 from pathlib import Path
 from typing import Dict
@@ -56,12 +57,26 @@ def _read_conf_file(path: Path) -> Dict[str, str]:
                 continue
             k, v = line.split("=", 1)
             k = k.strip()
+            if k.startswith("export "):  # файл, который ещё и подключают в shell: export NM_BIND_PORT=8088
+                k = k[7:].strip()
             if k.startswith("NM_"):
                 k = k[3:]
-            out[k] = v.strip().strip('"').strip("'")
+            v = v.strip()
+            if v[:1] in ("'", '"') and v[:1] in v[1:]:
+                v = v[1:v.index(v[0], 1)]  # значение в кавычках: всё, что после закрывающей, — комментарий
+            else:
+                v = re.split(r"\s+#", v, maxsplit=1)[0].strip()  # BIND_PORT=8443   # комментарий
+            out[k] = v
     except OSError:
         pass
     return out
+
+
+def _int(values: Dict[str, str], key: str) -> int:
+    try:
+        return int(values[key])
+    except (TypeError, ValueError):
+        raise ValueError(f"{CONF_FILE}: {key}={values[key]!r} — ожидается целое число") from None
 
 
 class Settings:
@@ -76,14 +91,14 @@ class Settings:
                 values[k] = env
         self.raw = values
         self.bind_host = values["BIND_HOST"]
-        self.bind_port = int(values["BIND_PORT"])
+        self.bind_port = _int(values, "BIND_PORT")
         self.data_dir = Path(values["DATA_DIR"])
         self.nginx_bin = values["NGINX_BIN"]
         self.nginx_conf = Path(values["NGINX_CONF"])
         self.managed_dir = Path(values["MANAGED_DIR"])
         self.log_dir = Path(values["LOG_DIR"])
         self.cache_dir = Path(values["CACHE_DIR"])
-        self.stub_status_port = int(values["STUB_STATUS_PORT"])
+        self.stub_status_port = _int(values, "STUB_STATUS_PORT")
         self.log_level = values["LOG_LEVEL"]
         self.tls_cert = values["TLS_CERT"]
         self.tls_key = values["TLS_KEY"]

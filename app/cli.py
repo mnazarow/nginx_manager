@@ -34,9 +34,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import os
 import getpass
 import json
+import os
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -272,6 +273,7 @@ def _prepare_restore_file(path: str) -> Path:
     """Файл копии → несжатая незашифрованная база в каталоге копий (.enc расшифровывается, .gz распаковывается)."""
     import gzip
     import shutil
+    import zlib
     from .config import settings
     from .services.backup import _decrypt
     src = Path(path).expanduser().resolve()
@@ -292,7 +294,7 @@ def _prepare_restore_file(path: str) -> Path:
             try:
                 with gzip.open(work, "rb") as fi, open(out, "wb") as fo:
                     shutil.copyfileobj(fi, fo, 1 << 20)
-            except (OSError, EOFError) as e:
+            except (OSError, EOFError, zlib.error) as e:  # повреждённые данные внутри gzip — zlib.error
                 out.unlink(missing_ok=True)
                 raise ValueError(f"Не удалось распаковать {work.name}: {e}") from e
             out.chmod(0o600)
@@ -888,6 +890,15 @@ def main(argv=None) -> int:
         return 1
     except (ValueError, OSError) as e:  # в т.ч. ошибки JSON и проверки данных, нет файла, нет прав
         print(f"{C['fail']}✗ {e}{C['r']}", file=sys.stderr)
+        return 1
+    except EOFError:  # запрос пароля без терминала (cron, конвейер) и пустой ввод
+        print(f"{C['fail']}✗ Нет ввода: пароль не задан — укажите его ключом (--password, --password-file) или "
+              f"переменной окружения{C['r']}", file=sys.stderr)
+        return 1
+    except sqlite3.Error as e:  # база повреждена, занята или недоступна
+        from .config import settings
+        print(f"{C['fail']}✗ База данных {settings.db_path}: {e}{C['r']}\n  Проверьте место на диске и права; "
+              "повреждённую базу восстановите из копии: nmctl restore ФАЙЛ", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         return 130

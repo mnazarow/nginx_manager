@@ -23,6 +23,10 @@ from ..models import (TLS_PRESETS, Backend, GlobalSettings, Location, PanelSetti
                       Stream)
 from ..validators import quote, quote_if_needed, quote_multiline
 
+# системные каталоги, которые можно подключить в глобальных настройках (флаг → шаблон include)
+EXTERNAL_INCLUDES = {"include_conf_d": "/etc/nginx/conf.d/*.conf", "include_sites_enabled": "/etc/nginx/sites-enabled/*"}
+_EXT_DEFAULT_RE = re.compile(r"^[ \t]*listen\s+(\S+)[^;#\n]*\bdefault(?:_server)?\b", re.M)
+
 MARKER = "# NGINX-MANAGER: managed file — изменения вручную будут перезаписаны"
 STATIC_EXT = "css|js|mjs|map|png|jpe?g|gif|webp|avif|svg|ico|woff2?|ttf|otf|eot|mp4|webm|mp3|pdf|zip|gz"
 HEALTH_UA = "NginxManager-HealthCheck"
@@ -191,7 +195,9 @@ class Generator:
     # ------------------------------------------------------------------
     @property
     def ipv6(self) -> bool:
-        return self.g.ipv6 == "on" or (self.g.ipv6 == "auto" and self.caps.ipv6)
+        # «включён», но в системе IPv6 нет (ядро без IPv6, ipv6.disable=1): nginx не запустится с listen [::] —
+        # адреса IPv6 не добавляются, в предупреждениях применения это видно
+        return self.g.ipv6 != "off" and self.caps.ipv6
 
     def access_log_line(self) -> str:
         opts = ""
@@ -207,6 +213,9 @@ class Generator:
 
     # ------------------------------------------------------------------
     def render(self) -> Dict[str, str]:
+        if self.g.ipv6 == "on" and not self.caps.ipv6:
+            self.warnings.append("IPv6 включён в глобальных настройках, но на сервере недоступен — nginx слушает "
+                                 "только IPv4")
         self.files["http.d/00-base.conf"] = self.render_http_base()
         self.files["http.d/05-protection.conf"] = self.pc.http_conf()
         self.files.update(self.pc.modsec_files())
@@ -271,10 +280,9 @@ class Generator:
             c.d("variables_hash_max_size", g.variables_hash_max_size)
             c.d("include", f"{self.p.include_root}/http.d/*.conf")
             c.d("include", f"{self.p.include_root}/sites/*.conf")
-            if g.include_conf_d:
-                c.d("include", "/etc/nginx/conf.d/*.conf")
-            if g.include_sites_enabled:
-                c.d("include", "/etc/nginx/sites-enabled/*")
+            for flag, pattern in EXTERNAL_INCLUDES.items():
+                if getattr(g, flag):
+                    c.d("include", pattern)
         if self.caps.stream_available:
             c.line()
             with c.block("stream"):
@@ -444,6 +452,28 @@ class Generator:
             c.d("try_files", "$uri", "=404")
             c.d("access_log", "off")
 
+    def external_default_ports(self) -> Dict[int, str]:
+        """Порты, на которых «сервер по умолчанию» (на всех адресах) уже задан в подключённых системных каталогах
+        conf.d / sites-enabled (например, /etc/nginx/sites-enabled/default в Debian): второй такой сервер nginx
+        не примет («a duplicate default server»)."""
+        import glob as _glob
+        out: Dict[int, str] = {}
+        for flag, pattern in EXTERNAL_INCLUDES.items():
+            if not getattr(self.g, flag):
+                continue
+            for path in sorted(_glob.glob(pattern)):
+                try:
+                    with open(path, encoding="utf-8", errors="replace") as f:
+                        text = f.read(2_000_000)
+                except OSError:
+                    continue
+                for m in _EXT_DEFAULT_RE.finditer(text):
+                    addr = m.group(1)
+                    pm = re.fullmatch(r"(?:\*:|0\.0\.0\.0:|\[::\]:)?(\d+)", addr)
+                    if pm:  # только «все адреса»: 127.0.0.1:80 default_server с нашим *:80 не конфликтует
+                        out.setdefault(int(pm.group(1)), path)
+        return out
+
     def render_default(self) -> str:
         c = Conf()
         c.line(MARKER)
@@ -453,6 +483,18 @@ class Generator:
         https_ports = sorted({s.https_port for s in sites if s.ssl.enabled} | {443})
         taken_http = {s.http_port for s in sites if s.default_server and not s.listen_ip}
         taken_https = {s.https_port for s in sites if s.default_server and s.ssl.enabled and not s.listen_ip}
+        ext = self.external_default_ports() if (self.g.include_conf_d or self.g.include_sites_enabled) else {}
+        for port in sorted((taken_http | taken_https) & set(ext)):
+            names = [s.name for s in sites if s.default_server and not s.listen_ip and
+                     (s.http_port == port or s.ssl.enabled and s.https_port == port)]
+            raise ConfigError(f"Порт {port}: сервер по умолчанию уже задан в {ext[port]} (подключён системный "
+                              f"каталог в глобальных настройках). Снимите «сервер по умолчанию» у сайта "
+                              f"«{', '.join(names)}» или уберите default_server из этого файла.")
+        for port in sorted(set(ext) & (set(http_ports) | set(https_ports))):
+            self.warnings.append(f"Порт {port}: сервер по умолчанию задан в {ext[port]} — запросы с неизвестными "
+                                 f"доменами обрабатывает он, а не заглушка панели")
+        taken_http |= set(ext)
+        taken_https |= set(ext)
         for port_set, kind in ((taken_http, "http_port"), (taken_https, "https_port")):
             for port in port_set:
                 owners = [s.name for s in sites if s.default_server and not s.listen_ip

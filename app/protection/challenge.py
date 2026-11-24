@@ -66,7 +66,11 @@ def leading_zero_bits(h: bytes) -> int:
 
 def safe_return(u: str) -> str:
     u = (u or "/").strip()
-    if not u.startswith("/") or u.startswith("//") or u.startswith("/\\") or "\r" in u or "\n" in u:
+    # браузеры по стандарту WHATWG URL выбрасывают из адреса табуляцию и переводы строк: «/\t/evil.com»
+    # превратился бы в «//evil.com» (переход на чужой сайт) — любые управляющие символы отклоняются
+    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in u):
+        return "/"
+    if not u.startswith("/") or u.startswith("//") or u.startswith("/\\"):
         return "/"
     if u.startswith("/.nm-challenge"):
         return "/"

@@ -117,8 +117,12 @@ sudo ./install.sh
 ## Разработка
 
 ```bash
+pip install -r requirements-dev.txt   # pytest, pytest-cov, hypothesis, ruff
 python3 -m pytest -q tests/        # автотесты (нужны nginx, pytest, httpx и зависимости из requirements.txt;
                                    # для тестов S3 — botocore и moto[server], без них эти тесты пропускаются)
+python3 -m pytest -q --cov=app --cov-report=term-missing:skip-covered tests/   # покрытие кода (≈ 88 %)
+NM_FUZZ=1000 python3 -m pytest -q tests/test_edge_generator.py -k random   # долгий фаззинг генератора с nginx -t
+node --test tests/js/              # модульные тесты функций интерфейса (форматирование, якоря документации)
 python3 tools/gen_reference.py     # обновить справочники параметров, метрик, сценариев и API в docs/
 ruff check . && shellcheck -x *.sh packaging/*.sh
 python3 tools/acme_e2e.py --help   # сквозной выпуск сертификатов на стенде (ACME-сервер Pebble + DNS-сервер BIND)
@@ -141,7 +145,11 @@ packaging/      systemd-юнит, logrotate, nmctl, общие функции с
 tools/          демо-бэкенд, генератор нагрузки, демо-данные и демо-база GeoIP, скриншоты, генератор справочника,
                 сквозной тест выпуска сертификатов (acme_e2e.py: Pebble + BIND), генератор дашборда Grafana,
                 проверка доступности (a11y_audit.py: axe-core), проверка установки на чистой ОС (install_test.sh)
-tests/          автотесты: ядро, генератор (фаззинг с nginx -t), все маршруты API (права, фаззинг), импорт nginx,
+tests/          автотесты (≈ 520, покрытие ≈ 88 %): нетиповые ситуации (test_edge_*: обрывы журналов, повреждённые
+                копии и базы, отказ команд и сети, чужие брандмауэры, поддельные кнопки Telegram, panel.conf
+                с комментариями), свойства на случайных данных (hypothesis: проверки полей, значения в кавычках через
+                живой nginx, случайные комбинации настроек → nginx -t), ядро, генератор, все маршруты API (права,
+                пустые и враждебные данные — без ошибок 500), функции интерфейса (tests/js, Node.js), импорт nginx,
                 сборщик статистики, оповещения, сертификаты, восстановление копий, автопереключение, защита от
                 атак (живой nginx: фильтр, проверка браузера, свои правила, списки угроз, карта путей эксплойтов), база
                 уязвимостей (разбор источников, отсев путей, CRS с GitHub), технологии сайтов, сборки дистрибутивов, плагины

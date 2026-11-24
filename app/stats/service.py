@@ -2,14 +2,13 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
 from typing import Any, Callable, Dict, List, Optional
 
 from ..config import settings
 from ..db import Database
-from .collector import (NB, Aggregator, LogTailer, StubPoller, SystemPoller, merge_data, percentile)
+from .collector import (NB, Aggregator, LogTailer, StubPoller, SystemPoller, load_data, merge_data, percentile)
 from .parsing import CATEGORY_INFO, LAT_LABELS, GeoIP
 
 log = logging.getLogger("nm.stats")
@@ -162,14 +161,14 @@ class StatsService:
     def timeseries(self, start: float, end: float, site: str = "*", points: int = 240) -> Dict[str, Any]:
         span = max(60, end - start)
         table, base = ("stats_minute", 60) if span <= 48 * 3600 else ("stats_hour", 3600)
-        step = max(base, int(span / points) // base * base or base)
+        step = max(base, int(span / max(1, points)) // base * base or base)
         rows = self.db.query(f"SELECT * FROM {table} WHERE site=? AND ts>=? AND ts<? ORDER BY ts",
                              (site, int(start) // base * base, int(end)))
         buckets: Dict[int, Dict[str, Any]] = {}
         for r in rows:
             b = int(r["ts"]) // step * step
             cur = buckets.get(b)
-            data = json.loads(r["data"] or "{}")
+            data = load_data(r["data"])
             if cur is None:
                 buckets[b] = {**{k: r[k] for k in ("req", "bout", "bin", "s1", "s2", "s3", "s4", "s5", "rt_sum",
                                                     "rt_max", "urt_sum", "urt_n", "uniq")}, "data": data}
@@ -230,7 +229,7 @@ class StatsService:
         for r in rows:
             for k in t:
                 t[k] += r[k]
-            data = merge_data(data, json.loads(r["data"] or "{}"))
+            data = merge_data(data, load_data(r["data"]))
         # ещё не записанные в БД (открытые) минуты
         for mts, mb in list(self.agg.mins.items()):
             m = mb.get(site)
@@ -425,10 +424,10 @@ class StatsService:
         where, params = ["1=1"], []
         if f.get("start"):
             where.append("ts >= ?")
-            params.append(float(f["start"]))
+            params.append(_number(f, "start"))
         if f.get("end"):
             where.append("ts < ?")
-            params.append(float(f["end"]))
+            params.append(_number(f, "end"))
         if f.get("site") and f["site"] != "*":
             where.append("site = ?")
             params.append(str(f["site"]))
@@ -447,20 +446,20 @@ class StatsService:
             where.append("method = ?")
             params.append(f["method"].upper())
         if f.get("uri"):
-            where.append("uri LIKE ?")
-            params.append(f"%{f['uri']}%")
+            where.append("uri LIKE ? ESCAPE '\\'")
+            params.append(_like(f["uri"]))
         if f.get("ua"):
-            where.append("ua LIKE ?")
-            params.append(f"%{f['ua']}%")
+            where.append("ua LIKE ? ESCAPE '\\'")
+            params.append(_like(f["ua"]))
         if f.get("host"):
-            where.append("host LIKE ?")
-            params.append(f"%{f['host']}%")
+            where.append("host LIKE ? ESCAPE '\\'")
+            params.append(_like(f["host"]))
         if f.get("min_rt"):
             where.append("rt >= ?")
-            params.append(float(f["min_rt"]) / 1000)
+            params.append(_number(f, "min_rt") / 1000)
         if f.get("upstream"):
-            where.append("upstream LIKE ?")
-            params.append(f"%{f['upstream']}%")
+            where.append("upstream LIKE ? ESCAPE '\\'")
+            params.append(_like(f["upstream"]))
         if f.get("country"):
             where.append("country = ?")
             params.append(f["country"].upper())
@@ -478,17 +477,18 @@ class StatsService:
         where, params = ["1=1"], []
         if f.get("start"):
             where.append("ts >= ?")
-            params.append(float(f["start"]))
+            params.append(_number(f, "start"))
         if f.get("end"):
             where.append("ts < ?")
-            params.append(float(f["end"]))
+            params.append(_number(f, "end"))
         for k in ("level", "category", "site"):
             if f.get(k):
                 where.append(f"{k} = ?")
                 params.append(f[k])
         if f.get("q"):
-            where.append("(message LIKE ? OR request LIKE ? OR client LIKE ? OR upstream LIKE ?)")
-            params += [f"%{f['q']}%"] * 4
+            where.append("(message LIKE ? ESCAPE '\\' OR request LIKE ? ESCAPE '\\' OR client LIKE ? ESCAPE '\\' "
+                         "OR upstream LIKE ? ESCAPE '\\')")
+            params += [_like(f["q"])] * 4
         w = " AND ".join(where)
         rows = self.db.query(f"SELECT * FROM errors WHERE {w} ORDER BY id DESC LIMIT ? OFFSET ?",
                              params + [limit, offset])
@@ -501,3 +501,18 @@ class StatsService:
             r["hint"] = CATEGORY_INFO.get(r["category"], {}).get("hint", "")
             r["title"] = CATEGORY_INFO.get(r["category"], {}).get("title", "")
         return {"items": rows, "total": total, "categories": cats}
+
+
+def _like(text: str) -> str:
+    """Подстрока для LIKE: «%» и «_» в запросе пользователя — обычные символы, а не шаблоны."""
+    return "%" + str(text).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+
+
+def _number(f: Dict[str, Any], key: str) -> float:
+    try:
+        v = float(f[key])
+    except (TypeError, ValueError):
+        raise ValueError(f"Параметр {key}: ожидается число, получено «{str(f[key])[:40]}»") from None
+    if v != v or v in (float("inf"), float("-inf")):
+        raise ValueError(f"Параметр {key}: ожидается конечное число")
+    return v

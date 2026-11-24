@@ -75,6 +75,26 @@ def key_matches(cert_path: str, key_path: str) -> bool:
     return c1 == 0 and c2 == 0 and a.strip() == b.strip()
 
 
+PEM_CERT_RE = re.compile(r"-----BEGIN CERTIFICATE-----.+?-----END CERTIFICATE-----", re.S)
+
+
+def reorder_chain(pem: str, key_path: str, work: Path) -> str:
+    """Цепочка, где сертификат сайта стоит не первым: вернуть её с ним в начале (остальные — в прежнем порядке).
+    Пустая строка — ни один сертификат цепочки не подходит к ключу."""
+    blocks = PEM_CERT_RE.findall(pem)
+    if len(blocks) < 2:
+        return ""
+    tmp = work / ".chain-check.pem"
+    try:
+        for i, b in enumerate(blocks):
+            atomic_write(tmp, b + "\n", 0o600)
+            if i and key_matches(str(tmp), key_path):
+                return "\n".join([b] + blocks[:i] + blocks[i + 1:])
+    finally:
+        tmp.unlink(missing_ok=True)
+    return ""
+
+
 def domain_covered(domain: str, cert_domains: List[str]) -> bool:
     domain = domain.lower()
     for d in cert_domains:
@@ -192,8 +212,14 @@ class CertificateService:
         atomic_write(d / "fullchain.pem", cert + "\n", 0o644)
         atomic_write(d / "privkey.pem", key + "\n", 0o600)
         if not key_matches(str(d / "fullchain.pem"), str(d / "privkey.pem")):
-            shutil.rmtree(d, ignore_errors=True)
-            raise ValueError("Закрытый ключ не соответствует сертификату")
+            # частая ошибка: цепочка вставлена в обратном порядке (промежуточный сертификат первым) — nginx
+            # требует сертификат сайта первым; находим его по ключу и ставим в начало
+            fixed = reorder_chain(cert, str(d / "privkey.pem"), d)
+            if not fixed:
+                shutil.rmtree(d, ignore_errors=True)
+                raise ValueError("Закрытый ключ не соответствует сертификату")
+            atomic_write(d / "fullchain.pem", fixed + "\n", 0o644)
+            log.info("сертификат #%s: цепочка переупорядочена (сертификат сайта — первым)", cid)
         self.db.execute("UPDATE certificates SET cert_path=?, key_path=? WHERE id=?",
                         (str(d / "fullchain.pem"), str(d / "privkey.pem"), cid))
         self._update_from_file(cid)
