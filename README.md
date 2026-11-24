@@ -76,7 +76,7 @@
 ## Быстрый старт
 
 ```bash
-tar xzf nginx-manager-2.11.0.tar.gz && cd nginx-manager-2.11.0
+tar xzf nginx-manager-2.12.0.tar.gz && cd nginx-manager-2.12.0
 sudo ./install.sh
 ```
 
